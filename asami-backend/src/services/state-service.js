@@ -119,10 +119,13 @@ async function applyEmotions(entityId, simulationTime, changes, causeEventId=nul
     const next = round5(clamp(oldIntensity + delta));
     const historyDelta = round5(next - oldIntensity);
     if (Math.abs(historyDelta)<0.000001) continue;
-    await pool.query(`
+    const [updated] = await pool.query(`
       UPDATE entity_emotions_current SET intensity=?,updated_simulation_at=?,version=version+1
       WHERE entity_id=UUID_TO_BIN(?) AND emotion_id=UUID_TO_BIN(?) AND version=?
     `,[next,simulationTime,entityId,row.emotionId,row.version || 1]);
+    if (!updated.affectedRows) {
+      throw Object.assign(new Error("Optimistic lock conflict on emotion"), { code: "OPTIMISTIC_LOCK" });
+    }
     await pool.query(`
       INSERT INTO entity_emotion_history
         (id,entity_id,emotion_id,old_intensity,new_intensity,delta,simulation_time,cause_event_id,cause_action_id)
