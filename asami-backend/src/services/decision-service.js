@@ -36,26 +36,8 @@ function applyRecentActionPenalty(candidates, recentActions) {
   }).sort((a,b) => b.score - a.score);
 }
 
-function applySocialContext(candidates, nearbyEntities, relationships) {
-  if (!Array.isArray(candidates)) return candidates;
-  const socialCandidates = Array.isArray(nearbyEntities) && nearbyEntities.length > 0;
-  const relationshipCount = Array.isArray(relationships) ? relationships.length : 0;
-  return candidates.map(candidate => {
-    if (candidate.action === "TALKING" && socialCandidates) {
-      return { ...candidate, score: Number(candidate.score || 0) + Math.min(0.35, nearbyEntities.length * 0.12) };
-    }
-    if (candidate.action === "PLAYING" && socialCandidates) {
-      return { ...candidate, score: Number(candidate.score || 0) + Math.min(0.18, nearbyEntities.length * 0.06) };
-    }
-    if (candidate.action === "TALKING" && relationshipCount === 0 && !socialCandidates) {
-      return { ...candidate, score: Number(candidate.score || 0) - 0.2 };
-    }
-    return candidate;
-  }).sort((a,b) => b.score - a.score);
-}
-
 async function buildDecisionContext(simulationId, entityId){
-  const [[needs],[traits],[goals],[location],[recentActions],[nearbyEntities],[relationships]] = await Promise.all([
+  const [[needs],[traits],[goals],[location],[recentActions]] = await Promise.all([
     pool.query(`
       SELECT nd.code,enc.value,nd.priority_weight AS priorityWeight
       FROM entity_needs_current enc JOIN need_definitions nd ON nd.id=enc.need_id
@@ -79,29 +61,7 @@ async function buildDecisionContext(simulationId, entityId){
       FROM actions
       WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND status='COMPLETED'
       ORDER BY started_simulation_at DESC LIMIT 6
-    `,[simulationId,entityId]),
-    pool.query(`
-      SELECT BIN_TO_UUID(e.id) AS entityId,e.display_name AS displayName,
-             BIN_TO_UUID(elc.location_id) AS locationId
-      FROM entity_locations_current elc
-      JOIN entities e ON e.id=elc.entity_id
-      JOIN entity_types et ON et.id=e.entity_type_id
-      WHERE elc.simulation_id=UUID_TO_BIN(?)
-        AND et.code='PERSON'
-        AND elc.location_id=(SELECT location_id FROM entity_locations_current WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) LIMIT 1)
-        AND e.id<>UUID_TO_BIN(?) AND e.status='ACTIVE'
-      ORDER BY e.display_name LIMIT 12
-    `,[simulationId,simulationId,entityId,entityId]),
-    pool.query(`
-      SELECT BIN_TO_UUID(r.id) AS id,rt.code AS type,
-             BIN_TO_UUID(CASE WHEN r.source_entity_id=UUID_TO_BIN(?) THEN r.target_entity_id ELSE r.source_entity_id END) AS targetEntityId,
-             r.trust_score AS trust,r.affection_score AS affection,r.familiarity_score AS familiarity,
-             r.closeness_score AS closeness,r.conflict_score AS conflict
-      FROM relationships r JOIN relationship_types rt ON rt.id=r.relationship_type_id
-      WHERE r.simulation_id=UUID_TO_BIN(?) AND r.status='ACTIVE'
-        AND (r.source_entity_id=UUID_TO_BIN(?) OR r.target_entity_id=UUID_TO_BIN(?))
-      ORDER BY r.closeness_score DESC,r.familiarity_score DESC LIMIT 12
-    `,[entityId,simulationId,entityId,entityId])
+    `,[simulationId,entityId])
   ]);
 
   const cognitiveProfile = await getCognitiveProfile(simulationId, entityId);
@@ -114,7 +74,6 @@ async function buildDecisionContext(simulationId, entityId){
 
   candidates = applyPlanBias(candidates, cognitiveProfile.plans);
   candidates = applyRecentActionPenalty(candidates, recentActions.map(row => row.actionType));
-  candidates = applySocialContext(candidates, nearbyEntities, relationships);
 
   return {
     needs,
@@ -122,8 +81,6 @@ async function buildDecisionContext(simulationId, entityId){
     goals,
     location:location[0]||null,
     recentActions:recentActions.map(row => row.actionType),
-    nearbyEntities,
-    relationships,
     cognitiveProfile,
     allowedActionTypes:ACTIONS,
     candidates:candidates.slice(0,6)

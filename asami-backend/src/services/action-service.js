@@ -9,43 +9,12 @@ const skillByAction = { READING:"READING", STUDYING:"WRITING", TALKING:"COMMUNIC
 function getActionDurationMinutes(actionType){ return ACTION_DURATIONS_MINUTES[actionType]||30; }
 
 async function currentLocation(entityId,simulationId){
-  const [rows]=await pool.query(`
-    SELECT BIN_TO_UUID(elc.location_id) AS locationId,l.latitude,l.longitude,l.address_data AS addressData
-    FROM entity_locations_current elc JOIN locations l ON l.entity_id=elc.location_id
-    WHERE elc.entity_id=UUID_TO_BIN(?) AND elc.simulation_id=UUID_TO_BIN(?) LIMIT 1
-  `,[entityId,simulationId]);
-  return rows[0]||null;
+  const [rows]=await pool.query(`SELECT BIN_TO_UUID(location_id) AS locationId FROM entity_locations_current WHERE entity_id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?)`,[entityId,simulationId]);
+  return rows[0]?.locationId||null;
 }
-
-function parseJson(value,fallback={}){
-  if(value && typeof value==='object')return value;
-  if(typeof value!=='string')return fallback;
-  try{return JSON.parse(value);}catch{return fallback;}
-}
-
-async function chooseDestination(simulationId,entityId,originId,actionType){
-  const [rows]=await pool.query(`
-    SELECT BIN_TO_UUID(l.entity_id) AS locationId,l.latitude,l.longitude,l.address_data AS addressData
-    FROM locations l JOIN entities e ON e.id=l.entity_id
-    WHERE e.simulation_id=UUID_TO_BIN(?) AND l.entity_id<>UUID_TO_BIN(?) AND e.status='ACTIVE'
-  `,[simulationId,originId||entityId]);
-  if(!rows.length)return null;
-  const origin=await currentLocation(entityId,simulationId);
-  if(actionType==='WALKING'&&origin){
-    rows.sort((a,b)=>{
-      const da=Math.hypot(Number(a.latitude)-Number(origin.latitude),Number(a.longitude)-Number(origin.longitude));
-      const db=Math.hypot(Number(b.latitude)-Number(origin.latitude),Number(b.longitude)-Number(origin.longitude));
-      return da-db;
-    });
-    return rows[0]?.locationId||null;
-  }
-  const originMeta=parseJson(origin?.addressData);
-  const worldConnections=Array.isArray(originMeta.connections)?originMeta.connections:[];
-  if(worldConnections.length){
-    const connected=rows.filter(row=>worldConnections.includes(parseJson(row.addressData).worldCode));
-    if(connected.length)return connected[Math.floor(Math.random()*connected.length)].locationId;
-  }
-  return rows[Math.floor(Math.random()*rows.length)].locationId;
+async function chooseDestination(simulationId,entityId,originId){
+  const [rows]=await pool.query(`SELECT BIN_TO_UUID(l.entity_id) AS locationId FROM locations l JOIN entities e ON e.id=l.entity_id WHERE l.simulation_id=UUID_TO_BIN(?) AND l.entity_id<>UUID_TO_BIN(?) ORDER BY RAND() LIMIT 1`,[simulationId,originId||entityId]);
+  return rows[0]?.locationId||null;
 }
 
 async function getActiveAction(entityId,simulationId){
@@ -76,7 +45,7 @@ async function startAction({simulationId,entityId,decisionId,intentionId=null,ac
     [actionId,simulationId,entityId,decisionId,actionType,intentionId,simulationTime,targetLocationId?JSON.stringify({locationId:targetLocationId}):null,
       JSON.stringify({targetEntityId,targetLocationId,durationMinutes:duration,expectedCompletionSimulationAt:expectedCompletion.toISOString()})]);
   const eventCode=actionType==="TALKING"?"SOCIAL":"PERSONAL";
-  const eventId=await createEvent({simulationId,eventTypeCode:eventCode,title:`${actionType.toLowerCase().replaceAll("_"," ")}`,description:`Autonomous action started: ${actionType}`,simulationAt:simulationTime,importance:0.45,sourceActionId:actionId,participants:[{entityId,role:"ACTOR"}],metadata:{actionType,targetEntityId,targetLocationId,durationMinutes:duration,status:"ACTIVE"}});
+  const eventId=await createEvent({simulationId,eventTypeCode:eventCode,title:`Asami ${actionType.toLowerCase().replaceAll("_"," ")}`,description:`Autonomous action started: ${actionType}`,simulationAt:simulationTime,importance:0.45,sourceActionId:actionId,participants:[{entityId,role:"ACTOR"}],metadata:{actionType,targetEntityId,targetLocationId,durationMinutes:duration,status:"ACTIVE"}});
   await pool.query(`UPDATE actions SET result=? WHERE id=UUID_TO_BIN(?)`,[JSON.stringify({eventId,actionType,durationMinutes:duration,targetEntityId,targetLocationId}),actionId]);
   return {actionId,eventId,actionType,durationMinutes:duration,expectedCompletionSimulationAt:expectedCompletion};
 }
@@ -87,8 +56,8 @@ async function completeAction({simulationId,entityId,actionId,decisionId=null,ev
   if(!updated.affectedRows)return false;
   await addEffect({simulationId,eventId,effectType:"ACTION_COMPLETED",targetActionId:actionId,targetEntityId:entityId,afterState:{actionType,status:"COMPLETED"},magnitude:1,createdSimulationAt:simulationTime});
   if(actionType==="WALKING"||actionType==="EXPLORING"){
-    const origin=await currentLocation(entityId,simulationId),destination=targetLocationId||await chooseDestination(simulationId,entityId,origin?.locationId,actionType);
-    if(origin?.locationId&&destination&&origin.locationId!==destination)await moveEntity(simulationId,entityId,origin.locationId,destination,simulationTime);
+    const origin=await currentLocation(entityId,simulationId),destination=targetLocationId||await chooseDestination(simulationId,entityId,origin);
+    if(origin&&destination&&origin!==destination)await moveEntity(simulationId,entityId,origin,destination,simulationTime);
   }
   if(actionType==="TALKING"&&targetEntityId)await upsertInteractionRelationship({simulationId,sourceEntityId:entityId,targetEntityId,simulationAt:simulationTime,sourceEventId:eventId,deltas:{familiarity:0.015,closeness:0.008,affection:0.004,trust:0.002}});
   if(intentionId)await pool.query(`UPDATE intentions SET status='COMPLETED',version=version+1 WHERE id=UUID_TO_BIN(?) AND status='ACTIVE'`,[intentionId]);
