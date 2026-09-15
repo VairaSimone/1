@@ -1,9 +1,9 @@
 const { pool } = require("../db/pool");
 const { uuid } = require("../lib/ids");
-
 const { ACTIONS, scoreAction } = require("./decision-rules");
+const { getCognitiveProfile, cognitiveDecisionModifier } = require("./personality-service");
 
-async function buildDecisionContext(simulationId,entityId){
+async function buildDecisionContext(simulationId, entityId){
   const [[needs],[traits],[goals],[location]] = await Promise.all([
     pool.query(`
       SELECT nd.code,enc.value,nd.priority_weight AS priorityWeight
@@ -24,8 +24,10 @@ async function buildDecisionContext(simulationId,entityId){
       WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?)
     `,[simulationId,entityId])
   ]);
-  const candidates=ACTIONS.map(action=>({action,score:scoreAction(action,needs,traits)})).sort((a,b)=>b.score-a.score);
-  return {needs,traits,goals,location:location[0]||null,allowedActionTypes:ACTIONS,candidates:candidates.slice(0,6)};
+  const cognitiveProfile = await getCognitiveProfile(simulationId, entityId);
+  let candidates=ACTIONS.map(action=>({action,score:scoreAction(action,needs,traits)}));
+  candidates = await cognitiveDecisionModifier({ cognitiveProfile }, candidates);
+  return {needs,traits,goals,location:location[0]||null,cognitiveProfile,allowedActionTypes:ACTIONS,candidates:candidates.slice(0,6)};
 }
 
 async function makeDecision({simulationId,entityId,simulationTime,triggerType="AUTONOMOUS",triggerEventId=null,context,aiChoice=null}){
@@ -51,6 +53,6 @@ async function makeDecision({simulationId,entityId,simulationTime,triggerType="A
     SET selected_option_id=UUID_TO_BIN(?),status='EVALUATED',expected_outcome=?
     WHERE id=UUID_TO_BIN(?)
   `,[optionId,JSON.stringify({actionType:chosen}),decisionId]);
-  return {decisionId,actionType:chosen,reason:aiChoice?.reason||"deterministic need/trait score",confidence:aiChoice?.confidence??0.7};
+  return {decisionId,actionType:chosen,reason:aiChoice?.reason||"deterministic need/trait/cognitive score",confidence:aiChoice?.confidence??0.7};
 }
 module.exports={ACTIONS,scoreAction,buildDecisionContext,makeDecision};
