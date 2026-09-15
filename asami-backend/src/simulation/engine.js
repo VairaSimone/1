@@ -2,7 +2,7 @@ const logger = require("../lib/logger");
 const { env } = require("../config/env");
 const simRepo = require("../repositories/simulation-repo");
 const entityRepo = require("../repositories/entity-repo");
-const { ensureEntityState, readNeeds, updateNeeds, applyEmotions, developTraits } = require("../services/state-service");
+const { ensureEntityState, updateNeeds, applyEmotions, developTraits } = require("../services/state-service");
 const { findAutonomousActors, actForEntity, completeGoalForAction } = require("../services/autonomy-service");
 const { perceive } = require("../services/perception-service");
 const { executeAction, learnFromAction } = require("../services/action-service");
@@ -24,7 +24,7 @@ class SimulationEngine {
 
   async start() {
     if(this.interval)return;
-    this.interval=setInterval(()=>this.pulse().catch(err=>logger.error({err},"engine pulse failed")),env.ENGINE_INTERVAL_MS);
+    this.interval=setInterval(()=>this.pulse().catch(err=>logger.error(logger.contextError({phase:"pulse"},err,"engine pulse failed"))),env.ENGINE_INTERVAL_MS);
     await this.pulse();
   }
 
@@ -44,82 +44,120 @@ class SimulationEngine {
     for(const sim of sims){
       if(sim.status!=="RUNNING" || this.running.has(sim.id))continue;
       this.running.add(sim.id);
-      this.runSimulation(sim).catch(err=>logger.error({err,simulationId:sim.id},"simulation failed"))
+      this.runSimulation(sim).catch(err=>logger.error(logger.contextError({simulationId:sim.id,phase:"simulation"},err,"simulation failed")))
         .finally(()=>this.running.delete(sim.id));
     }
   }
 
   async runSimulation(sim) {
-    const clock=await simRepo.getActiveClock(sim.id);
-    if(!clock)return;
-    const nextTime=new Date(new Date(clock.simulationAnchorAt).getTime()+
-      (Date.now()-new Date(clock.realAnchorAt).getTime())*Number(clock.speed));
-    if(nextTime<=new Date(sim.currentSimulationAt))return;
-    const advanced=await simRepo.updateCurrentTimeOptimistic(sim.id,nextTime,sim.version);
-    if(!advanced)return;
+    const context={simulationId:sim.id,simulationVersion:sim.version,simulationTime:sim.currentSimulationAt||null};
+    let tickId=null;
+    let phase="clock";
+    let entityId=null;
+    let actionType=null;
+    try {
+      const clock=await simRepo.getActiveClock(sim.id);
+      if(!clock)return;
+      const nextTime=new Date(new Date(clock.simulationAnchorAt).getTime()+
+        (Date.now()-new Date(clock.realAnchorAt).getTime())*Number(clock.speed));
+      if(nextTime<=new Date(sim.currentSimulationAt))return;
+      const advanced=await simRepo.updateCurrentTimeOptimistic(sim.id,nextTime,sim.version);
+      if(!advanced)return;
+      context.simulationTime=nextTime.toISOString();
 
-    const tickId=await simRepo.createTick(sim.id,nextTime,"AUTONOMOUS",env.ENGINE_VERSION);
-    try{
-      await generateWorldEvents(sim.id,nextTime,tickId);
-      const actors=await findAutonomousActors(sim.id,env.MAX_ENTITIES_PER_TICK);
-      for(const entityId of actors){
-        await ensureEntityState(entityId,nextTime);
-        const perception=await perceive(sim.id,entityId,nextTime);
-        const decision=await actForEntity({simulationId:sim.id,entityId,simulationTime:nextTime,gemini:this.gemini});
-        if(!decision) continue;
-        const action=await executeAction({
-          simulationId:sim.id,entityId,decisionId:decision.decisionId,intentionId:decision.intentionId,
-          actionType:decision.actionType,simulationTime:nextTime,
-          targetEntityId:decision.targetEntityId||null,targetLocationId:decision.targetLocationId||null
-        });
-        const deltaHours=Math.max(0,(new Date(nextTime)-new Date(sim.currentSimulationAt))/3600000);
-        const needChanges=await updateNeeds(entityId,nextTime,deltaHours,action.eventId,action.actionId,decision.actionType);
-        await applyEmotions(entityId,nextTime,needChanges,action.eventId,action.actionId);
-        await learnFromAction(entityId,decision.actionType,nextTime);
-        await completeGoalForAction(decision.goalId,decision.actionType,nextTime);
-        await developTraits(entityId,nextTime,signalForDecision(decision.actionType),action.eventId,action.actionId);
-        await recordHabitEvidence({ entityId, simulationTime: nextTime, actionType: decision.actionType });
-        await updateDevelopment(sim.id,entityId,nextTime);
-        if (decision.actionType === "TALKING" || decision.actionType === "STUDYING" || decision.actionType === "WORKING" || decision.actionType === "EXPLORING") {
-          await updateMentalState(sim.id, entityId, nextTime, {
-            currentFocus: decision.actionType.toLowerCase().replaceAll("_", " "),
-            mentalLoad: decision.actionType === "WORKING" || decision.actionType === "STUDYING" ? 0.55 : 0.35,
-            certainty: decision.confidence
+      phase="tick.create";
+      tickId=await simRepo.createTick(sim.id,nextTime,"AUTONOMOUS",env.ENGINE_VERSION);
+      try{
+        phase="world.events";
+        await generateWorldEvents(sim.id,nextTime,tickId);
+        const actors=await findAutonomousActors(sim.id,env.MAX_ENTITIES_PER_TICK);
+        for(const id of actors){
+          entityId=id;
+          actionType=null;
+          phase="entity.state";
+          await ensureEntityState(entityId,nextTime);
+
+          phase="entity.perception";
+          const perception=await perceive(sim.id,entityId,nextTime);
+
+          phase="entity.decision";
+          const decision=await actForEntity({simulationId:sim.id,entityId,simulationTime:nextTime,gemini:this.gemini});
+          if(!decision) continue;
+          actionType=decision.actionType;
+
+          phase="entity.action";
+          const action=await executeAction({
+            simulationId:sim.id,entityId,decisionId:decision.decisionId,intentionId:decision.intentionId,
+            actionType:decision.actionType,simulationTime:nextTime,
+            targetEntityId:decision.targetEntityId||null,targetLocationId:decision.targetLocationId||null
           });
-        }
-        await createMemory({
-          simulationId:sim.id,entityId,eventId:action.eventId,
-          content:`Experienced ${decision.actionType.toLowerCase().replaceAll("_"," ")} at ${nextTime.toISOString()}`,
-          importance:0.45,strength:0.9,confidence:0.8,emotionalIntensity:0.25,
-          simulationAt:nextTime,metadata:{perceptionSummary:perception.location||null}
-        });
-        this.hub.publish(sim.id,"entity.state",{entityId,decision,action,needChanges});
-      }
-      await decayMemories(sim.id,nextTime);
-      const count=(this.tickCounter.get(sim.id)||0)+1;
-      this.tickCounter.set(sim.id,count);
 
-      if(count % 600 === 0){
-        const asami = await entityRepo.getAsamiCandidate(sim.id);
-        if(asami){
-          await initiateConversation({
-            simulationId:sim.id,
-            asamiEntityId:asami.id,
-            simulationTime:nextTime,
-            gemini:this.gemini,
-            hub:this.hub
+          const deltaHours=Math.max(0,(new Date(nextTime)-new Date(sim.currentSimulationAt))/3600000);
+          phase="entity.needs";
+          const needChanges=await updateNeeds(entityId,nextTime,deltaHours,action.eventId,action.actionId,decision.actionType);
+          phase="entity.emotions";
+          await applyEmotions(entityId,nextTime,needChanges,action.eventId,action.actionId);
+          phase="entity.learning";
+          await learnFromAction(entityId,decision.actionType,nextTime);
+          await completeGoalForAction(decision.goalId,decision.actionType,nextTime);
+          await developTraits(entityId,nextTime,signalForDecision(decision.actionType),action.eventId,action.actionId);
+          await recordHabitEvidence({ entityId, simulationTime: nextTime, actionType: decision.actionType });
+          await updateDevelopment(sim.id,entityId,nextTime);
+          if (decision.actionType === "TALKING" || decision.actionType === "STUDYING" || decision.actionType === "WORKING" || decision.actionType === "EXPLORING") {
+            phase="entity.mental_state";
+            await updateMentalState(sim.id, entityId, nextTime, {
+              currentFocus: decision.actionType.toLowerCase().replaceAll("_", " "),
+              mentalLoad: decision.actionType === "WORKING" || decision.actionType === "STUDYING" ? 0.55 : 0.35,
+              certainty: decision.confidence
+            });
+          }
+          phase="entity.memory";
+          await createMemory({
+            simulationId:sim.id,entityId,eventId:action.eventId,
+            content:`Experienced ${decision.actionType.toLowerCase().replaceAll("_"," ")} at ${nextTime.toISOString()}`,
+            importance:0.45,strength:0.9,confidence:0.8,emotionalIntensity:0.25,
+            simulationAt:nextTime,metadata:{perceptionSummary:perception.location||null}
           });
+          phase="entity.publish";
+          this.hub.publish(sim.id,"entity.state",{entityId,decision,action,needChanges});
         }
-      }
+        phase="memory.decay";
+        await decayMemories(sim.id,nextTime);
+        const count=(this.tickCounter.get(sim.id)||0)+1;
+        this.tickCounter.set(sim.id,count);
 
-      if(count % env.SNAPSHOT_EVERY_TICKS===0){
-        const snapshot=await buildSnapshot(sim.id,nextTime);
-        await simRepo.createSnapshot(sim.id,nextTime,snapshot,1);
+        if(count % 600 === 0){
+          phase="asami.proactive_conversation";
+          const asami = await entityRepo.getAsamiCandidate(sim.id);
+          if(asami){
+            await initiateConversation({
+              simulationId:sim.id,
+              asamiEntityId:asami.id,
+              simulationTime:nextTime,
+              gemini:this.gemini,
+              hub:this.hub
+            });
+          }
+        }
+
+        if(count % env.SNAPSHOT_EVERY_TICKS===0){
+          phase="snapshot";
+          const snapshot=await buildSnapshot(sim.id,nextTime);
+          await simRepo.createSnapshot(sim.id,nextTime,snapshot,1);
+        }
+        phase="tick.finish";
+        await simRepo.finishTick(tickId,"COMPLETED");
+        this.hub.publish(sim.id,"simulation.tick",{tickId,simulationTime:nextTime});
+      }catch(err){
+        const errorContext={...context,tickId,phase,entityId,actionType};
+        try { await simRepo.finishTick(tickId,"FAILED"); } catch (finishErr) {
+          logger.error(logger.contextError({...errorContext,secondaryFailure:"finishTick"},finishErr,"failed to mark simulation tick failed"));
+        }
+        logger.error(logger.contextError(errorContext,err,"simulation tick failed"));
+        throw err;
       }
-      await simRepo.finishTick(tickId,"COMPLETED");
-      this.hub.publish(sim.id,"simulation.tick",{tickId,simulationTime:nextTime});
     }catch(err){
-      try { await simRepo.finishTick(tickId,"FAILED"); } catch (finishErr) { logger.error({finishErr,simulationId:sim.id,tickId},"failed to mark simulation tick failed"); }
+      logger.error(logger.contextError({...context,tickId,phase,entityId,actionType},err,"simulation execution failed"));
       throw err;
     }
   }
