@@ -1,7 +1,52 @@
 const { pool } = require("../db/pool");
 const { uuid } = require("../lib/ids");
 
-async function updateDevelopment(simulationId, entityId, simulationTime) {
+const DEVELOPMENT_ACTION_MINUTES = {
+  SLEEPING: 480, RESTING: 60, EATING: 30, DRINKING: 10, TALKING: 20,
+  PLAYING: 60, STUDYING: 90, READING: 45, WORKING: 240, EXPLORING: 60,
+  WALKING: 30, WATCHING: 45
+};
+
+const DEVELOPMENT_PROFILE = {
+  STUDYING: { cognitive: 1.25, education: 1.35 },
+  READING: { cognitive: 1.1, education: 1.15 },
+  WORKING: { cognitive: 0.9, education: 0.85 },
+  EXPLORING: { cognitive: 0.75, social: 0.2, emotional: 0.15 },
+  TALKING: { social: 1.0, emotional: 0.8 },
+  PLAYING: { social: 0.65, emotional: 0.65 },
+  WALKING: { physical: 0.25, emotional: 0.15 },
+  WATCHING: { emotional: 0.15 },
+  EATING: { physical: 0.1 },
+  DRINKING: { physical: 0.05 },
+  SLEEPING: { physical: 0.15, emotional: 0.2 },
+  RESTING: { physical: 0.1, emotional: 0.15 }
+};
+
+function developmentDelta(actionType, baseHours) {
+  const action = String(actionType || "").toUpperCase();
+  const hours = Math.min(2, Math.max(0.25, Number(baseHours) || 0.5));
+  const profile = DEVELOPMENT_PROFILE[action] || {};
+  const perHour = {
+    physical: 0.00025,
+    cognitive: 0.00075,
+    social: 0.00045,
+    emotional: 0.0004,
+    education: 0.00075
+  };
+  return {
+    physical: Math.min(0.002, perHour.physical * hours * (profile.physical || 0)),
+    cognitive: perHour.cognitive * hours * (profile.cognitive || 0),
+    social: perHour.social * hours * (profile.social || 0),
+    emotional: perHour.emotional * hours * (profile.emotional || 0),
+    education: perHour.education * hours * (profile.education || 0)
+  };
+}
+
+function actionDurationMinutes(actionType) {
+  return DEVELOPMENT_ACTION_MINUTES[String(actionType || "").toUpperCase()] || 30;
+}
+
+async function updateDevelopment(simulationId, entityId, simulationTime, actionType = "") {
   const [rows] = await pool.query(`
     SELECT
       ed.entity_id,
@@ -47,12 +92,13 @@ async function updateDevelopment(simulationId, entityId, simulationTime) {
   const newStage = stages[0] || null;
   const oldStageId = d.developmentStageId || null;
   const newStageId = newStage?.id || null;
+  const delta = developmentDelta(actionType, actionDurationMinutes(actionType) / 60);
 
-  const physical = Math.min(1, Number(d.physical_score));
-  const cognitive = Math.min(1, Number(d.cognitive_score) + 0.002);
-  const social = Math.min(1, Number(d.social_score) + 0.001);
-  const emotional = Math.min(1, Number(d.emotional_score) + 0.001);
-  const education = Math.min(1, Number(d.education_score) + 0.002);
+  const physical = Math.min(1, Number(d.physical_score) + delta.physical);
+  const cognitive = Math.min(1, Number(d.cognitive_score) + delta.cognitive);
+  const social = Math.min(1, Number(d.social_score) + delta.social);
+  const emotional = Math.min(1, Number(d.emotional_score) + delta.emotional);
+  const education = Math.min(1, Number(d.education_score) + delta.education);
 
   const [updated] = await pool.query(`
     UPDATE entity_development
@@ -144,4 +190,4 @@ async function getDevelopmentHistory(entityId, limit = 100) {
   return rows;
 }
 
-module.exports = { updateDevelopment, getDevelopment, getDevelopmentHistory };
+module.exports = { updateDevelopment, getDevelopment, getDevelopmentHistory, developmentDelta, actionDurationMinutes };
