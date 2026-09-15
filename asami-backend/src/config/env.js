@@ -17,6 +17,8 @@ const Env = z.object({
   GEMINI_MODEL: z.string().default("gemini-3.6-flash"),
   GEMINI_TIMEOUT_MS: z.coerce.number().int().positive().default(15000),
   GEMINI_ENABLED: z.coerce.boolean().default(true),
+  GEMINI_AUTONOMY_OUTPUT_TOKEN_CEILING: z.coerce.number().int().min(128).max(20000).default(768),
+  GEMINI_DIALOGUE_OUTPUT_TOKEN_CEILING: z.coerce.number().int().min(256).max(20000).default(1536),
   GEMINI_INPUT_PRICE_USD_PER_1M: z.coerce.number().nonnegative().default(0.75),
   GEMINI_OUTPUT_PRICE_USD_PER_1M: z.coerce.number().nonnegative().default(3.75),
   GEMINI_DAILY_BUDGET_USD: z.coerce.number().positive().default(0.35),
