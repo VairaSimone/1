@@ -34,30 +34,48 @@ class GeminiService {
 
   async generateJson(prompt, schema) {
     if (!this.client) return null;
+
     const timeoutPromise = new Promise((_, reject) =>
       setTimeout(() => reject(Object.assign(new Error("Gemini timeout"), { code: "AI_TIMEOUT" })), env.GEMINI_TIMEOUT_MS)
     );
+
+    const responseSchema = schema === DialogueSchema
+      ? {
+          type: "object",
+          properties: {
+            reply: { type: "string" },
+            emotionalTone: { type: "string" },
+            rememberedReferences: {
+              type: "array",
+              items: { type: "string" }
+            }
+          },
+          required: ["reply", "emotionalTone", "rememberedReferences"]
+        }
+      : schema === DecisionSchema
+        ? {
+            type: "object",
+            properties: {
+              selectedActionType: { type: "string" },
+              targetEntityId: { type: "string", nullable: true },
+              targetLocationId: { type: "string", nullable: true },
+              reason: { type: "string" },
+              confidence: { type: "number" }
+            },
+            required: ["selectedActionType", "reason", "confidence"]
+          }
+        : undefined;
+
     try {
       const responsePromise = this.client.models.generateContent({
         model: this.model,
         contents: prompt,
-config: {
-  responseMimeType: "application/json",
-  responseSchema: schema === DialogueSchema
-    ? {
-        type: "object",
-        properties: {
-          reply: { type: "string" },
-          emotionalTone: { type: "string" },
-          rememberedReferences: {
-            type: "array",
-            items: { type: "string" }
-          }
-        },
-        required: ["reply", "emotionalTone", "rememberedReferences"]
-      }
-    : undefined
-}      });
+        config: {
+          responseMimeType: "application/json",
+          responseSchema
+        }
+      });
+
       const response = await Promise.race([responsePromise, timeoutPromise]);
       const raw = typeof response.text === "string" ? response.text : "";
       const parsed = JSON.parse(raw);
@@ -66,7 +84,7 @@ config: {
       logger.warn({ err }, "Gemini request failed; deterministic fallback will be used");
       return null;
     } finally {
-  clearTimeout(timeoutPromise);
+      clearTimeout(timeoutPromise);
     }
   }
 
