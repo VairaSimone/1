@@ -89,23 +89,28 @@ class GeminiService {
   }
 
   canUseAutonomyDecision(entityId, simulationTime) {
+    if (budget.providerBlockRemainingMs() > 0) return false;
     const previous = this.lastAutonomyDecisionAt.get(entityId);
     if (!previous) {
       this.lastAutonomyDecisionAt.set(entityId, new Date(simulationTime).getTime());
       return true;
     }
     const elapsedMinutes = (new Date(simulationTime).getTime() - previous) / 60000;
-    if (elapsedMinutes < Number(env.GEMINI_AUTONOMY_MIN_INTERVAL_MINUTES)) return false;
+    const configuredInterval = Number(env.GEMINI_AUTONOMY_MIN_INTERVAL_MINUTES);
+    const safeInterval = Math.max(360, Number.isFinite(configuredInterval) ? configuredInterval : 360);
+    if (elapsedMinutes < safeInterval) return false;
     this.lastAutonomyDecisionAt.set(entityId, new Date(simulationTime).getTime());
     return true;
   }
 
   async generateJson(prompt, schema, { kind = "autonomy", thinkingLevel = "low" } = {}) {
     if (!this.client) return null;
-    const outputTokenCeiling = kind === "dialogue" ? 1100 : 500;
+    const outputTokenCeiling = kind === "dialogue"
+      ? Number(env.GEMINI_DIALOGUE_OUTPUT_TOKEN_CEILING)
+      : Number(env.GEMINI_AUTONOMY_OUTPUT_TOKEN_CEILING);
     const reservation = await budget.reserve({ prompt, outputTokenCeiling, kind });
     if (!reservation.allowed) {
-      logger.info({ kind, reason: reservation.reason }, "Gemini budget reached; deterministic fallback used");
+      logger.info({ kind, reason: reservation.reason, retryAfterMs: reservation.retryAfterMs }, "Gemini request skipped by local gate; deterministic fallback used");
       return null;
     }
     let timeoutId = null;
@@ -138,9 +143,9 @@ class GeminiService {
                 } },
                 goalProposal: { type: "object", nullable: true, properties: { title: { type: "string" }, description: { type: "string" }, priority: { type: "number" }, reason: { type: "string" } } },
                 preferences: numberArray({ targetType: { type: "string" }, targetEntityId: { type: "string", nullable: true }, value: { type: "number" }, strength: { type: "number" }, confidence: { type: "number" }, topic: { type: "string" } }),
-                beliefs: numberArray({ predicate: { type: "string" }, subjectEntityId: { type: "string", nullable: true }, objectValue: {}, confidence: { type: "number" }, importance: { type: "number" } }),
+                beliefs: numberArray({ predicate: { type: "string" }, subjectEntityId: { type: "string", nullable: true }, objectValue: { type: "string" }, confidence: { type: "number" }, importance: { type: "number" } }),
                 knowledge: numberArray({ knowledgeType: { type: "string" }, content: { type: "string" }, subjectEntityId: { type: "string", nullable: true }, objectEntityId: { type: "string", nullable: true }, predicate: { type: "string", nullable: true }, confidence: { type: "number" }, importance: { type: "number" } }),
-                habitCandidate: { type: "object", nullable: true, properties: { name: { type: "string" }, description: { type: "string" }, frequency: { type: "string" }, triggerDefinition: {}, actionDefinition: {}, confidence: { type: "number" } } },
+                habitCandidate: { type: "object", nullable: true, properties: { name: { type: "string" }, description: { type: "string" }, frequency: { type: "string" }, triggerDefinition: { type: "string" }, actionDefinition: { type: "string" }, confidence: { type: "number" } } },
                 reflection: { type: "object", nullable: true, properties: { thought: { type: "string", nullable: true }, currentFocus: { type: "string", nullable: true }, currentConcern: { type: "string", nullable: true }, mentalLoad: { type: "number" }, rumination: { type: "number" }, certainty: { type: "number" } } },
                 planProposal: { type: "object", nullable: true, properties: { title: { type: "string" }, strategy: { type: "object" }, steps: { type: "array", items: { type: "object", properties: { title: { type: "string" }, description: { type: "string" }, actionType: { type: "string" } }, required: ["title"] } } } }
               },
@@ -174,7 +179,16 @@ class GeminiService {
       if (!finalized) {
         try { await budget.release(reservation); } catch (releaseErr) { logger.error({ err: releaseErr, kind }, "Failed to release Gemini budget reservation"); }
       }
-      logger.warn({ err, kind }, "Gemini request failed; deterministic fallback will be used");
+      const status = Number(err?.status || err?.code);
+      const rawMessage = String(err?.message || "");
+      const retryMatch = rawMessage.match(/retryDelay[^0-9]*(\d+(?:\.\d+)?)s/i);
+      const retryMs = retryMatch ? Math.ceil(Number(retryMatch[1]) * 1000) : 60_000;
+      if (status === 429 || /RESOURCE_EXHAUSTED|quota exceeded|rate.?limit/i.test(rawMessage)) {
+        budget.blockProvider(Math.max(60_000, retryMs));
+        logger.warn({ kind, retryAfterMs: Math.max(60_000, retryMs) }, "Gemini provider quota/rate limit reached; local circuit breaker enabled");
+      } else {
+        logger.warn({ err, kind }, "Gemini request failed; deterministic fallback will be used");
+      }
       return null;
     } finally {
       if (timeoutId) clearTimeout(timeoutId);
