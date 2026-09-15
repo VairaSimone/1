@@ -8,17 +8,17 @@ Il motore segue la catena:
 
 `CLOCK -> WORLD -> PERCEPTION -> NEEDS -> EMOTION -> MEMORY -> GOALS -> DECISION -> ACTION -> EVENT -> EFFECT -> HISTORY -> LEARNING -> DEVELOPMENT`
 
-Gemini viene usato solo nei punti cognitivi dove serve generazione/interpretazione. Il motore continua a funzionare in fallback deterministico quando Gemini non è configurato o non è disponibile.
+Gemini viene usato come livello cognitivo opzionale: interviene sui casi realmente ambigui e nella conversazione, mentre la simulazione continua autonomamente con regole deterministiche quando Gemini non serve o non è disponibile.
 
 ## Requisiti
 
 - Node.js 20+
-- MySQL 8.0+ (il dump allegato è stato generato da MySQL 8.0.40; il progetto non richiede alterazioni di schema)
+- MySQL 8.0+
 - API key Gemini solo se si vogliono le capacità cognitive generative
 
 ## Installazione
 
-1. Importare `Dump20260914.sql` nel database MySQL.
+1. Importare il dump SQL nel database MySQL.
 2. Copiare `.env.example` in `.env` e compilare almeno la configurazione MySQL.
 3. Installare le dipendenze:
 
@@ -34,27 +34,34 @@ npm start
 
 Il server HTTP e il worker della simulazione partono nello stesso processo.
 
-Per eseguire solo il worker:
+## Gemini e controllo costi
 
-```bash
-npm run worker
-```
-
-## Gemini
-
-Impostare:
+Il default è `gemini-3.6-flash` con un budget tecnico prudenziale:
 
 ```dotenv
 GEMINI_ENABLED=true
-GEMINI_API_KEY=...
-GEMINI_MODEL=...
+GEMINI_MODEL=gemini-3.6-flash
+GEMINI_DAILY_BUDGET_USD=0.35
+GEMINI_MONTHLY_BUDGET_USD=10
+GEMINI_DAILY_MAX_REQUESTS=100
+GEMINI_MONTHLY_MAX_REQUESTS=2500
+GEMINI_AUTONOMY_MIN_INTERVAL_MINUTES=10
 ```
+
+Il backend crea automaticamente la tabella `gemini_usage` al primo avvio. Il consumo viene registrato con i token riportati dall'API Gemini, compresi i token di reasoning, e una richiesta viene bloccata prima dell'invio quando il budget giornaliero o mensile non è più disponibile.
+
+Le decisioni autonome usano Gemini solo quando la scelta deterministica è debole o realmente ambigua. Le scelte evidenti restano interamente locali. Il sistema non riduce il set di azioni di Asami e non sostituisce il motore deterministico: Gemini serve a risolvere i casi che beneficiano maggiormente del ragionamento generativo.
+
+Il consumo corrente è disponibile tramite:
+
+`GET /api/gemini/usage`
 
 Le risposte Gemini vengono richieste in JSON e validate con Zod. Il risultato dell'AI viene prima ridotto a una struttura interna sicura e solo dopo usato dalla logica deterministica.
 
 ## API principali
 
 - `GET /api/health`
+- `GET /api/gemini/usage`
 - `GET /api/simulations`
 - `GET /api/simulations/:simulationId`
 - `POST /api/simulations`
@@ -69,8 +76,7 @@ Le risposte Gemini vengono richieste in JSON e validate con Zod. Il risultato de
 - `GET /api/simulations/:simulationId/memories/:entityId`
 - `GET /api/simulations/:simulationId/relationships/:entityId`
 - `GET /api/simulations/:simulationId/development/:entityId`
-- `POST /api/simulations/:simulationId/conversations`
-- `POST /api/simulations/:simulationId/conversations/:conversationId/messages`
+- `POST /api/simulations/:simulationId/conversations/messages`
 
 WebSocket:
 
@@ -80,30 +86,9 @@ Gli eventi includono `simulation.tick`, `world.event`, `entity.state`, `action.c
 
 ## Nota sul database
 
-Il progetto **non esegue migrazioni che alterino lo schema**.
+Il dump contiene le tabelle necessarie alla simulazione. Il backend usa `UUID_TO_BIN()` / `BIN_TO_UUID()` per i PK `BINARY(16)` e filtra sempre per `simulation_id` quando lo schema lo prevede.
 
-Il dump contiene le tabelle correnti e storiche già necessarie, inclusi:
-
-- `simulations`, `simulation_clock_segments`, `simulation_ticks`, `simulation_snapshots`
-- `entities`, `entity_locations_current`, `entity_location_history`
-- `entity_needs_current`, `entity_need_history`
-- `entity_emotions_current`, `entity_emotion_history`
-- `entity_traits_current`, `entity_trait_history`
-- `memories`, `memory_state_history`
-- `goals`, `plans`, `plan_steps`, `intentions`
-- `decisions`, `decision_options`, `decision_outcomes`
-- `actions`, `activities`, `movements`
-- `events`, `event_effects`, `event_causes`, `event_participants`
-- `relationships`, `relationship_history`
-- comunicazione, conoscenza, credenze, sviluppo e autonomia.
-
-Il backend usa `UUID_TO_BIN()` / `BIN_TO_UUID()` per i PK `BINARY(16)` e filtra sempre per `simulation_id` quando lo schema lo prevede.
-
-## Avvertenza progettuale
-
-Lo schema è molto ricco ma non contiene un catalogo esplicito di "strategie comportamentali" o una colonna dedicata alla persona dell'utente. Il motore therefore usa le tabelle esistenti (`attributes`, traits, needs, preferences, goals, memories, routines, autonomy policies/triggers) e non inventa un'ulteriore tabella.
-
-Per una simulazione multi-agente futura sarà opportuno alimentare il mondo con più `entities`; il motore tratta ogni entità ACTOR come potenziale agente autonomo, mentre le decisioni vengono effettivamente calcolate per gli attori abilitati all'autonomia.
+La sola struttura aggiunta automaticamente dal backend è `gemini_usage`, usata esclusivamente per il controllo di spesa e il conteggio dei token; non modifica le tabelle del modello di simulazione.
 
 ## Test
 
