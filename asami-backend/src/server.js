@@ -1,4 +1,5 @@
 const http = require("http");
+const crypto = require("crypto");
 const express = require("express");
 const { WebSocketServer } = require("ws");
 const { env } = require("./config/env");
@@ -19,8 +20,13 @@ async function main(){
   app.disable("x-powered-by");
   app.use(express.json({limit:"1mb"}));
   app.use((req,res,next)=>{
+    req.id=req.headers["x-request-id"] || crypto.randomUUID();
+    res.setHeader("X-Request-Id",req.id);
+    next();
+  });
+  app.use((req,res,next)=>{
     res.header("Access-Control-Allow-Origin",env.CORS_ORIGIN);
-    res.header("Access-Control-Allow-Headers","Content-Type,Idempotency-Key");
+    res.header("Access-Control-Allow-Headers","Content-Type,Idempotency-Key,X-Request-Id");
     res.header("Access-Control-Allow-Methods","GET,POST,OPTIONS");
     if(req.method==="OPTIONS")return res.sendStatus(204);
     next();
@@ -59,7 +65,7 @@ async function main(){
       await close();
       process.exit(0);
     }catch(err){
-      logger.error({err,signal},"shutdown failed");
+      logger.error(logger.contextError({signal,phase:"shutdown"},err,"shutdown failed"));
       try{await close();}catch{}
       process.exit(1);
     }
@@ -68,4 +74,4 @@ async function main(){
   process.once("SIGTERM",()=>shutdown("SIGTERM"));
 }
 
-main().catch(err=>{logger.fatal({err},"startup failed");process.exit(1);});
+main().catch(err=>{logger.fatal(logger.contextError({phase:"startup"},err,"startup failed"));process.exit(1);});
