@@ -36,6 +36,31 @@ function applyRecentActionPenalty(candidates, recentActions) {
   }).sort((a,b) => b.score - a.score);
 }
 
+const LOCATION_ACTION_BIAS = {
+  HOME:      {SLEEPING:.50,RESTING:.30,EATING:.18,DRINKING:.12},
+  CAFE:      {TALKING:.45,DRINKING:.35,EATING:.20,PLAYING:.08,READING:.05},
+  SHOP:      {EATING:.36,DRINKING:.42,EXPLORING:.05,WALKING:.05},
+  LIBRARY:   {READING:.45,STUDYING:.50,WORKING:.05,TALKING:-.08},
+  SCHOOL:    {STUDYING:.48,READING:.30,TALKING:.06,PLAYING:.03},
+  PARK:      {WALKING:.32,PLAYING:.35,TALKING:.25,EXPLORING:.28},
+  SQUARE:    {TALKING:.35,WALKING:.20,PLAYING:.18,EXPLORING:.08},
+  COMMUNITY: {TALKING:.35,WORKING:.22,STUDYING:.18,PLAYING:.12},
+  GYM:       {PLAYING:.48,WALKING:.20,RESTING:.10},
+  CLINIC:    {RESTING:.20,WALKING:.05},
+  NATURE:    {EXPLORING:.42,WALKING:.36,PLAYING:.18},
+  WORKSHOP:  {WORKING:.46,STUDYING:.14,EXPLORING:.10}
+};
+
+function applyLocationBias(candidates, location) {
+  const type = normalizeAction(location?.locationType);
+  const bias = LOCATION_ACTION_BIAS[type];
+  if (!bias) return candidates;
+  return candidates.map(candidate => ({
+    ...candidate,
+    score: Math.max(-1, Number(candidate.score || 0) + Number(bias[normalizeAction(candidate.action)] || 0))
+  })).sort((a,b) => b.score - a.score);
+}
+
 async function buildDecisionContext(simulationId, entityId){
   const [[needs],[traits],[goals],[location],[recentActions]] = await Promise.all([
     pool.query(`
@@ -53,8 +78,10 @@ async function buildDecisionContext(simulationId, entityId){
       ORDER BY priority DESC LIMIT 10
     `,[simulationId,entityId]),
     pool.query(`
-      SELECT BIN_TO_UUID(location_id) AS locationId FROM entity_locations_current
-      WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?)
+      SELECT BIN_TO_UUID(elc.location_id) AS locationId,l.location_type AS locationType,l.address_data AS addressData
+      FROM entity_locations_current elc JOIN locations l ON l.entity_id=elc.location_id AND l.simulation_id=elc.simulation_id
+      WHERE elc.simulation_id=UUID_TO_BIN(?) AND elc.entity_id=UUID_TO_BIN(?)
+      LIMIT 1
     `,[simulationId,entityId]),
     pool.query(`
       SELECT action_type AS actionType
@@ -74,6 +101,7 @@ async function buildDecisionContext(simulationId, entityId){
 
   candidates = applyPlanBias(candidates, cognitiveProfile.plans);
   candidates = applyRecentActionPenalty(candidates, recentActions.map(row => row.actionType));
+  candidates = applyLocationBias(candidates, location[0]||null);
 
   return {
     needs,
@@ -114,4 +142,4 @@ async function makeDecision({simulationId,entityId,simulationTime,triggerType="A
   `,[optionId,JSON.stringify({actionType:chosen}),decisionId]);
   return {decisionId,actionType:chosen,reason:aiCandidate?.action===chosen && aiChoice?.reason ? aiChoice.reason : "deterministic need/trait/cognitive score",confidence:aiCandidate?.action===chosen ? (aiChoice?.confidence??0.7) : 0.7};
 }
-module.exports={ACTIONS,scoreAction,buildDecisionContext,makeDecision};
+module.exports={ACTIONS,scoreAction,buildDecisionContext,makeDecision,applyLocationBias,LOCATION_ACTION_BIAS};

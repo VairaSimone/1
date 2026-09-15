@@ -85,8 +85,6 @@ function canUseGeminiDecision(entityId,simulationTime){
   if(previous===undefined){lastAutonomyDecisionAt.set(entityId,now);return true;}
   const configured=Number(env.GEMINI_AUTONOMY_MIN_INTERVAL_MINUTES);
   const requested=Number.isFinite(configured) ? configured : 30;
-  // Existing .env files may still contain the old 360-minute value. Keep a
-  // predictable upper bound so Gemini is genuinely available to the simulation.
   const intervalMinutes=Math.min(60,Math.max(30,requested));
   const interval=intervalMinutes*60000;
   if(now-previous<interval)return false;
@@ -111,7 +109,8 @@ async function actForEntity({simulationId,entityId,simulationTime,gemini}){
     aiChoice=await gemini.chooseDecision({
       entity:{id:entity.id,name:entity.displayName},
       needs:context.needs,traits:context.traits,goals:context.goals,
-      memories,allowedActionTypes:context.allowedActionTypes,candidates:context.candidates
+      memories,allowedActionTypes:context.allowedActionTypes,candidates:context.candidates,
+      location:context.location
     });
   }
 
@@ -174,8 +173,16 @@ async function completeGoalForAction(goalId,actionType,simulationTime){
 async function selectTalkTarget(simulationId,entityId,actionType){
   if(actionType!=="TALKING")return null;
   const [rows]=await pool.query(`
-    SELECT BIN_TO_UUID(id) AS id FROM entities
-    WHERE simulation_id=UUID_TO_BIN(?) AND id<>UUID_TO_BIN(?) AND status NOT IN ('INACTIVE','DEAD')
+    SELECT BIN_TO_UUID(other.id) AS id
+    FROM entity_locations_current meLoc
+    JOIN entity_locations_current otherLoc
+      ON otherLoc.simulation_id=meLoc.simulation_id
+     AND otherLoc.location_id=meLoc.location_id
+     AND otherLoc.entity_id<>meLoc.entity_id
+    JOIN entities other ON other.id=otherLoc.entity_id
+    JOIN persons otherPerson ON otherPerson.entity_id=other.id
+    WHERE meLoc.simulation_id=UUID_TO_BIN(?) AND meLoc.entity_id=UUID_TO_BIN(?)
+      AND other.status NOT IN ('INACTIVE','DEAD')
     ORDER BY RAND() LIMIT 1
   `,[simulationId,entityId]);
   return rows[0]?.id||null;

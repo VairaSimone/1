@@ -7,14 +7,63 @@ const ACTION_DURATIONS_MINUTES = { SLEEPING:480, RESTING:60, EATING:30, DRINKING
 const skillByAction = { READING:"READING", STUDYING:"WRITING", TALKING:"COMMUNICATION", EXPLORING:"NAVIGATION", PLAYING:"SPORTS", EATING:"COOKING", WALKING:"SELF_CARE" };
 
 function getActionDurationMinutes(actionType){ return ACTION_DURATIONS_MINUTES[actionType]||30; }
+function parseJson(value,fallback={}){if(value===null||value===undefined)return fallback;if(typeof value==='object')return value;try{return JSON.parse(value);}catch{return fallback;}}
 
 async function currentLocation(entityId,simulationId){
   const [rows]=await pool.query(`SELECT BIN_TO_UUID(location_id) AS locationId FROM entity_locations_current WHERE entity_id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?)`,[entityId,simulationId]);
   return rows[0]?.locationId||null;
 }
-async function chooseDestination(simulationId,entityId,originId){
-  const [rows]=await pool.query(`SELECT BIN_TO_UUID(l.entity_id) AS locationId FROM locations l JOIN entities e ON e.id=l.entity_id WHERE l.simulation_id=UUID_TO_BIN(?) AND l.entity_id<>UUID_TO_BIN(?) ORDER BY RAND() LIMIT 1`,[simulationId,originId||entityId]);
-  return rows[0]?.locationId||null;
+
+async function loadLocationGraph(simulationId){
+  const [rows]=await pool.query(`SELECT BIN_TO_UUID(entity_id) AS locationId,address_data AS addressData FROM locations WHERE simulation_id=UUID_TO_BIN(?)`,[simulationId]);
+  return rows.map(row=>({locationId:row.locationId,data:parseJson(row.addressData)}));
+}
+
+function nextHop(locations,originId,targetId=null){
+  if(!originId)return null;
+  const byId=new Map(locations.map(x=>[x.locationId,x]));
+  const origin=byId.get(originId);if(!origin)return null;
+  const originCode=origin.data?.worldCode;if(!originCode)return null;
+  const byCode=new Map(locations.map(x=>[x.data?.worldCode,x]));
+  const connections=Array.isArray(origin.data?.connections)?origin.data.connections:[];
+  if(!targetId){
+    const neighbors=connections.map(code=>byCode.get(code)).filter(Boolean);
+    return neighbors[Math.floor(Math.random()*neighbors.length)]?.locationId||null;
+  }
+  if(targetId===originId)return null;
+  const target=byId.get(targetId);if(!target)return null;
+  const targetCode=target.data?.worldCode;if(!targetCode)return null;
+  const queue=[[originCode,null]],visited=new Set([originCode]);
+  while(queue.length){
+    const [code,firstCode]=queue.shift();
+    const node=byCode.get(code);const neighbors=Array.isArray(node?.data?.connections)?node.data.connections:[];
+    for(const neighborCode of neighbors){
+      if(visited.has(neighborCode))continue;
+      const hop=firstCode||neighborCode;
+      if(neighborCode===targetCode)return byCode.get(hop)?.locationId||null;
+      visited.add(neighborCode);queue.push([neighborCode,hop]);
+    }
+  }
+  return null;
+}
+
+async function chooseDestination(simulationId,entityId,originId,targetId=null){
+  if(!originId)return null;
+  const locations=await loadLocationGraph(simulationId);
+  return nextHop(locations,originId,targetId);
+}
+
+async function getActiveRelationshipType(simulationId,sourceEntityId,targetEntityId){
+  const [rows]=await pool.query(`
+    SELECT rt.code AS type
+    FROM relationships r JOIN relationship_types rt ON rt.id=r.relationship_type_id
+    WHERE r.simulation_id=UUID_TO_BIN(?) AND r.status='ACTIVE'
+      AND ((r.source_entity_id=UUID_TO_BIN(?) AND r.target_entity_id=UUID_TO_BIN(?))
+        OR (r.source_entity_id=UUID_TO_BIN(?) AND r.target_entity_id=UUID_TO_BIN(?)))
+    ORDER BY CASE rt.code WHEN 'PARTNER' THEN 3 WHEN 'FRIEND' THEN 2 WHEN 'ACQUAINTANCE' THEN 1 ELSE 0 END DESC
+    LIMIT 1
+  `,[simulationId,sourceEntityId,targetEntityId,targetEntityId,sourceEntityId]);
+  return rows[0]?.type||"ACQUAINTANCE";
 }
 
 async function getActiveAction(entityId,simulationId){
@@ -56,10 +105,17 @@ async function completeAction({simulationId,entityId,actionId,decisionId=null,ev
   if(!updated.affectedRows)return false;
   await addEffect({simulationId,eventId,effectType:"ACTION_COMPLETED",targetActionId:actionId,targetEntityId:entityId,afterState:{actionType,status:"COMPLETED"},magnitude:1,createdSimulationAt:simulationTime});
   if(actionType==="WALKING"||actionType==="EXPLORING"){
-    const origin=await currentLocation(entityId,simulationId),destination=targetLocationId||await chooseDestination(simulationId,entityId,origin);
+    const origin=await currentLocation(entityId,simulationId),destination=await chooseDestination(simulationId,entityId,origin,targetLocationId);
     if(origin&&destination&&origin!==destination)await moveEntity(simulationId,entityId,origin,destination,simulationTime);
   }
-  if(actionType==="TALKING"&&targetEntityId)await upsertInteractionRelationship({simulationId,sourceEntityId:entityId,targetEntityId,simulationAt:simulationTime,sourceEventId:eventId,deltas:{familiarity:0.015,closeness:0.008,affection:0.004,trust:0.002}});
+  if(actionType==="TALKING"&&targetEntityId){
+    const typeCode=await getActiveRelationshipType(simulationId,entityId,targetEntityId);
+    const difficult=Math.random()<0.10;
+    const deltas=difficult
+      ? {familiarity:.006,closeness:-.003,affection:-.008,trust:-.012,attraction:-.006,conflict:.045,irritation:.05,respect:-.004}
+      : {familiarity:.015,closeness:.008,affection:.004,trust:.002,attraction:.003,respect:.002,conflict:-.002,irritation:-.003};
+    await upsertInteractionRelationship({simulationId,sourceEntityId:entityId,targetEntityId,simulationAt:simulationTime,sourceEventId:eventId,typeCode,deltas});
+  }
   if(intentionId)await pool.query(`UPDATE intentions SET status='COMPLETED',version=version+1 WHERE id=UUID_TO_BIN(?) AND status='ACTIVE'`,[intentionId]);
   if(decisionId)await pool.query(`UPDATE decisions SET status='EXECUTED',actual_outcome=? WHERE id=UUID_TO_BIN(?) AND status IN ('EVALUATED','CREATED')`,[JSON.stringify({actionId,eventId,success:true}),decisionId]);
   return true;
@@ -86,4 +142,4 @@ async function learnFromAction(entityId,actionType,simulationTime){
   const s=rows[0],next=Math.min(1,Number(s.proficiency)+0.004),conf=Math.min(1,Number(s.confidence)+0.003);
   await pool.query(`UPDATE entity_skills SET proficiency=?,confidence=?,last_used_simulation_at=?,updated_simulation_at=?,version=version+1 WHERE entity_id=UUID_TO_BIN(?) AND skill_id=UUID_TO_BIN(?) AND version=?`,[next,conf,simulationTime,simulationTime,entityId,s.skillId,s.version]);
 }
-module.exports={startAction,completeAction,executeAction,getActiveAction,learnFromAction,getActionDurationMinutes};
+module.exports={startAction,completeAction,executeAction,getActiveAction,learnFromAction,getActionDurationMinutes,currentLocation,chooseDestination,nextHop};

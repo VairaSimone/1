@@ -9,13 +9,14 @@ const { perceive } = require("../services/perception-service");
 const { startAction, completeAction, getActiveAction, learnFromAction } = require("../services/action-service");
 const { createMemory, decayMemories } = require("../services/memory-service");
 const { generateWorldEvents } = require("../services/world-service");
+const { ensureWorld, evolveRelationships } = require("../services/world-population-service");
 const { updateDevelopment } = require("../services/development-service");
 const { initiateConversation } = require("../services/chat-service");
 const { recordHabitEvidence } = require("../services/habit-service");
 const { updateMentalState } = require("../services/personality-service");
 
 class SimulationEngine {
-  constructor({gemini,hub}){this.gemini=gemini;this.hub=hub;this.running=new Set();this.interval=null;this.tickCounter=new Map();}
+  constructor({gemini,hub}){this.gemini=gemini;this.hub=hub;this.running=new Set();this.interval=null;this.tickCounter=new Map();this.worldMaintenanceAt=new Map();}
   async start(){if(this.interval)return;this.interval=setInterval(()=>this.pulse().catch(err=>logger.error(logger.contextError({phase:"pulse"},err,"engine pulse failed"))),env.ENGINE_INTERVAL_MS);await this.pulse();}
   async stop({drainTimeoutMs=5000}={}){if(this.interval){clearInterval(this.interval);this.interval=null;}const deadline=Date.now()+Math.max(0,Number(drainTimeoutMs)||5000);while(this.running.size&&Date.now()<deadline)await new Promise(r=>setTimeout(r,50));if(this.running.size)logger.warn({activeSimulations:this.running.size},"engine shutdown timeout reached; stopping with active simulations");}
   async pulse(){const sims=await simRepo.listSimulations();for(const sim of sims){if(sim.status!=="RUNNING"||this.running.has(sim.id))continue;this.running.add(sim.id);this.runSimulation(sim).catch(err=>logger.error(logger.contextError({simulationId:sim.id,phase:"simulation"},err,"simulation failed"))).finally(()=>this.running.delete(sim.id));}}
@@ -29,7 +30,15 @@ class SimulationEngine {
       const advanced=await simRepo.updateCurrentTimeOptimistic(sim.id,nextTime,sim.version);if(!advanced)return;context.simulationTime=nextTime.toISOString();
       phase="tick.create";tickId=await simRepo.createTick(sim.id,nextTime,"AUTONOMOUS",env.ENGINE_VERSION);
       try{
-        phase="world.events";await generateWorldEvents(sim.id,nextTime,tickId);
+        const elapsedMinutes=Math.min(360,Math.max(0,(nextTime-previousTime)/60000));
+        const lastMaintenance=this.worldMaintenanceAt.get(sim.id);
+        const maintenanceDue=lastMaintenance===undefined||nextTime.getTime()-lastMaintenance>=3600000;
+        if(maintenanceDue){
+          phase="world.initialize";await ensureWorld(sim.id,nextTime);
+          phase="world.relationships";await evolveRelationships(sim.id,nextTime);
+          this.worldMaintenanceAt.set(sim.id,nextTime.getTime());
+        }
+        phase="world.events";await generateWorldEvents(sim.id,nextTime,tickId,elapsedMinutes);
         const actors=await findAutonomousActors(sim.id,env.MAX_ENTITIES_PER_TICK);
         for(const id of actors){
           entityId=id;actionType=null;phase="entity.state";await ensureEntityState(entityId,nextTime);
@@ -66,9 +75,6 @@ class SimulationEngine {
           }
 
           phase="entity.perception";const perception=await perceive(sim.id,entityId,nextTime);
-          // Needs and emotions evolve even when the entity is idle. This keeps
-          // internal pressure and emotional state independent of whether a
-          // decision/action was produced during the current tick.
           phase="entity.needs";const needChanges=await updateNeeds(entityId,nextTime,elapsedHours);
           phase="entity.emotions";await applyEmotions(entityId,nextTime,needChanges,null,null,null,elapsedHours);
           phase="entity.decision";const decision=await actForEntity({simulationId:sim.id,entityId,simulationTime:nextTime,gemini:this.gemini});if(!decision){
