@@ -1,8 +1,15 @@
 const { pool } = require("../db/pool");
+const { env } = require("../config/env");
 const { createEvent, addEffect } = require("./event-service");
 
-async function generateWorldEvents(simulationId,simulationTime,tickId){
-  if(Math.random()>0.18)return [];
+function eventProbability(elapsedSimulationMinutes, eventsPerSimulationHour = env.WORLD_EVENT_RATE_PER_SIM_HOUR) {
+  const minutes = Math.max(0, Number(elapsedSimulationMinutes) || 0);
+  const hourlyRate = Math.max(0, Number(eventsPerSimulationHour) || 0);
+  return 1 - Math.exp(-(hourlyRate * minutes) / 60);
+}
+
+async function generateWorldEvents(simulationId,simulationTime,tickId,elapsedSimulationMinutes=0){
+  if(Math.random()>eventProbability(elapsedSimulationMinutes))return [];
   const [actors]=await pool.query(`
     SELECT BIN_TO_UUID(e.id) AS entityId
     FROM entities e JOIN entity_types et ON et.id=e.entity_type_id
@@ -42,4 +49,4 @@ async function processWorldEffects(simulationId,simulationTime){
   );
   return rows;
 }
-module.exports={generateWorldEvents,processWorldEffects};
+module.exports={generateWorldEvents,processWorldEffects,eventProbability};
