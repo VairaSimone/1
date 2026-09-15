@@ -1,4 +1,4 @@
-const { pool } = require("../db/pool");
+const { pool, withTransaction } = require("../db/pool");
 const { uuid } = require("../lib/ids");
 async function listActors(simulationId, limit = 100) {
   const [rows] = await pool.query(`
@@ -121,70 +121,61 @@ async function listDefinitions() {
 }
 
 async function ensureObserver(simulationId) {
-  const [existing] = await pool.query(`
-    SELECT BIN_TO_UUID(e.id) AS id,
-           e.display_name AS displayName,
-           e.status
-    FROM entities e
-    JOIN entity_types et ON et.id = e.entity_type_id
-    WHERE e.simulation_id = UUID_TO_BIN(?)
-      AND et.code = 'PERSON'
-      AND e.display_name = 'Observer'
-    LIMIT 1
-  `, [simulationId])
+  return withTransaction(async conn => {
+    const [sims] = await conn.query(`
+      SELECT current_simulation_at
+      FROM simulations
+      WHERE id=UUID_TO_BIN(?)
+      LIMIT 1
+      FOR UPDATE
+    `, [simulationId]);
+    if (!sims.length) throw Object.assign(new Error("Simulation not found"), { code: "NOT_FOUND" });
 
-  if (existing.length) {
-    return existing[0]
-  }
+    const [existing] = await conn.query(`
+      SELECT BIN_TO_UUID(e.id) AS id,
+             e.display_name AS displayName,
+             e.status
+      FROM entities e
+      JOIN entity_types et ON et.id = e.entity_type_id
+      WHERE e.simulation_id = UUID_TO_BIN(?)
+        AND et.code = 'PERSON'
+        AND e.display_name = 'Observer'
+      LIMIT 1
+    `, [simulationId]);
 
-  const [types] = await pool.query(`
-    SELECT id
-    FROM entity_types
-    WHERE code = 'PERSON'
-      AND active = 1
-    LIMIT 1
-  `)
+    if (existing.length) return existing[0];
 
-  if (!types.length) {
-    throw new Error('Database is missing active PERSON entity type')
-  }
+    const [types] = await conn.query(`
+      SELECT id
+      FROM entity_types
+      WHERE code = 'PERSON'
+        AND active = 1
+      LIMIT 1
+    `);
 
-  const observerId = uuid()
+    if (!types.length) throw new Error('Database is missing active PERSON entity type');
 
-  await pool.query(`
-    INSERT INTO entities
-      (id, simulation_id, entity_type_id, display_name, description,
-       status, attributes, created_simulation_at, version)
-    SELECT
-      UUID_TO_BIN(?),
-      UUID_TO_BIN(?),
-      ?,
-      'Observer',
-      'Human observer interacting with Asami',
-      'INACTIVE',
-      JSON_OBJECT(),
-      current_simulation_at,
-      1
-    FROM simulations
-    WHERE id = UUID_TO_BIN(?)
-  `, [observerId, simulationId, types[0].id, simulationId])
+    const observerId = uuid();
+    const currentSimulationAt = sims[0].current_simulation_at;
 
-  await pool.query(`
-    INSERT INTO persons
-      (entity_id, first_name, birth_simulation_at)
-    SELECT
-      UUID_TO_BIN(?),
-      'Observer',
-      current_simulation_at
-    FROM simulations
-    WHERE id = UUID_TO_BIN(?)
-  `, [observerId, simulationId])
+    await conn.query(`
+      INSERT INTO entities
+        (id, simulation_id, entity_type_id, display_name, description,
+         status, attributes, created_simulation_at, version)
+      VALUES
+        (UUID_TO_BIN(?), UUID_TO_BIN(?), ?, 'Observer',
+         'Human observer interacting with Asami', 'INACTIVE', JSON_OBJECT(), ?, 1)
+    `, [observerId, simulationId, types[0].id, currentSimulationAt]);
 
-  return {
-    id: observerId,
-    displayName: 'Observer',
-    status: 'INACTIVE'
-  }
+    await conn.query(`
+      INSERT INTO persons
+        (entity_id, first_name, birth_simulation_at)
+      VALUES
+        (UUID_TO_BIN(?), 'Observer', ?)
+    `, [observerId, currentSimulationAt]);
+
+    return { id: observerId, displayName: 'Observer', status: 'INACTIVE' };
+  });
 }
 
 module.exports = { listActors, getEntity, getAsamiCandidate, getDashboard, listDefinitions, ensureObserver };
