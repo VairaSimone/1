@@ -27,12 +27,24 @@ async function getEntity(simulationId, entityId) {
 }
 
 async function getAsamiCandidate(simulationId, preferredEntityId = null) {
-  if (preferredEntityId) return getEntity(simulationId, preferredEntityId);
+  if (preferredEntityId) {
+    const [rows] = await pool.query(`
+      SELECT BIN_TO_UUID(e.id) AS id, e.display_name AS displayName,
+             et.code AS entityType, e.status, e.description, e.attributes, e.version
+      FROM entities e JOIN entity_types et ON et.id=e.entity_type_id
+      WHERE e.simulation_id=UUID_TO_BIN(?)
+        AND e.id=UUID_TO_BIN(?)
+        AND et.code='PERSON'
+        AND e.status <> 'DEAD'
+      LIMIT 1
+    `, [simulationId, preferredEntityId]);
+    return rows[0] || null;
+  }
   const [rows] = await pool.query(`
     SELECT BIN_TO_UUID(e.id) AS id, e.display_name AS displayName,
            et.code AS entityType, e.status, e.description, e.attributes, e.version
     FROM entities e JOIN entity_types et ON et.id=e.entity_type_id
-    WHERE e.simulation_id=UUID_TO_BIN(?) AND et.code='PERSON'
+    WHERE e.simulation_id=UUID_TO_BIN(?) AND et.code='PERSON' AND e.status <> 'DEAD'
     ORDER BY CASE WHEN LOWER(e.display_name)='asami' THEN 0 ELSE 1 END,
              e.created_simulation_at LIMIT 1
   `, [simulationId]);
