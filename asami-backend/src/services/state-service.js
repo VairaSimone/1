@@ -6,6 +6,17 @@ function round5(value) { return Math.round((Number(value) + Number.EPSILON) * 10
 
 const PRESSURE_NEEDS = new Set(["HUNGER","THIRST","SLEEPINESS","SOCIAL_NEED","FUN","CURIOSITY","ACHIEVEMENT","BELONGING"]);
 
+const ACTION_PRESSURE_FLOORS = {
+  TALKING: { SOCIAL_NEED: 0.18, BELONGING: 0.15 },
+  PLAYING: { FUN: 0.18, SOCIAL_NEED: 0.10 },
+  STUDYING: { ACHIEVEMENT: 0.15, CURIOSITY: 0.15 },
+  READING: { CURIOSITY: 0.15, ACHIEVEMENT: 0.12 },
+  EXPLORING: { CURIOSITY: 0.15 },
+  WORKING: { ACHIEVEMENT: 0.15 },
+  WALKING: { FUN: 0.15, CURIOSITY: 0.10 },
+  WATCHING: { FUN: 0.15 }
+};
+
 async function ensureEntityState(entityId, simulationTime) {
   const [[needDefs],[emotionDefs],[traitDefs],[skillDefs]] = await Promise.all([
     pool.query("SELECT id,default_value FROM need_definitions WHERE active=1"),
@@ -44,7 +55,8 @@ async function readNeeds(entityId) {
 
 async function updateNeeds(entityId,simulationTime,deltaHours,causeEventId=null,causeActionId=null,activeActionType=null) {
   const rows=await readNeeds(entityId); const changes=[];
-  const actionHours=Math.min(Math.max(Number(deltaHours)||0,0),0.25);
+  const hours=Math.min(Math.max(Number(deltaHours)||0,0),6);
+  const actionHours=Math.min(hours,0.25);
   const gains={
     SLEEPING:{SLEEPINESS:-1.8,ENERGY:0.9,COMFORT:0.35,SAFETY:0.08},
     EATING:{HUNGER:-2.4,ENERGY:0.1,COMFORT:0.15,SAFETY:0.03},
@@ -60,20 +72,34 @@ async function updateNeeds(entityId,simulationTime,deltaHours,causeEventId=null,
     WATCHING:{FUN:-1.1,ENERGY:0.05,COMFORT:0.06,SAFETY:0.02},
     SCHOOL:{ACHIEVEMENT:-0.6,CURIOSITY:-0.4,ENERGY:-0.12,FUN:-0.05,COMFORT:-0.03,SAFETY:0.01}
   };
+
   for(const r of rows){
     const decayRate=Math.max(0,Number(r.decayRate)||0), recoveryRate=Math.max(0,Number(r.recoveryRate)||0);
     let delta;
-    if(PRESSURE_NEEDS.has(r.code)) delta=decayRate*Number(deltaHours||0);
-    else if(r.code==="SAFETY") delta=recoveryRate*0.25*Number(deltaHours||0);
-    else if(r.code==="COMFORT") delta=(recoveryRate*0.15-decayRate*0.05)*Number(deltaHours||0);
-    else delta=-decayRate*Number(deltaHours||0);
+    if(PRESSURE_NEEDS.has(r.code)) delta=decayRate*hours;
+    else if(r.code==="SAFETY") delta=recoveryRate*0.25*hours;
+    else if(r.code==="COMFORT") delta=(recoveryRate*0.15-decayRate*0.05)*hours;
+    else delta=-decayRate*hours;
+
     if(activeActionType){
       const gain=(gains[activeActionType]||{})[r.code]||0;
       const rawGain=gain*actionHours;
-      if(PRESSURE_NEEDS.has(r.code) && rawGain<0) delta+=Math.max(rawGain,-Number(r.value)*0.35);
-      else delta+=rawGain;
+      const floor=ACTION_PRESSURE_FLOORS[activeActionType]?.[r.code];
+      if(PRESSURE_NEEDS.has(r.code) && rawGain<0 && floor !== undefined){
+        const satisfiable=Math.max(0,Number(r.value)-floor);
+        delta+=Math.max(rawGain,-satisfiable);
+      } else if(PRESSURE_NEEDS.has(r.code) && rawGain<0) {
+        delta+=Math.max(rawGain,-Number(r.value)*0.25);
+      } else {
+        delta+=rawGain;
+      }
     }
-    const oldValue=round5(r.value), next=round5(clamp(oldValue+delta)), historyDelta=round5(next-oldValue);
+
+    const oldValue=round5(r.value);
+    let next=round5(clamp(oldValue+delta));
+    const floor=ACTION_PRESSURE_FLOORS[activeActionType]?.[r.code];
+    if(PRESSURE_NEEDS.has(r.code) && floor !== undefined && activeActionType) next=Math.max(next,floor);
+    const historyDelta=round5(next-oldValue);
     if(Math.abs(historyDelta)<0.000001) continue;
     const [current]=await pool.query(`SELECT version FROM entity_needs_current WHERE entity_id=UUID_TO_BIN(?) AND need_id=? LIMIT 1`,[entityId,r.needId]);
     if(!current.length) continue;
