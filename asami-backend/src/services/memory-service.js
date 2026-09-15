@@ -1,6 +1,51 @@
 const { pool } = require("../db/pool");
 const { uuid } = require("../lib/ids");
 
+function normalizeJson(value) {
+  if (Buffer.isBuffer(value)) value = value.toString();
+  if (typeof value !== "string") return value;
+  try { return JSON.parse(value); } catch { return value; }
+}
+
+function buildMemoryContext({ perception, decision, actionType, needChanges, simulationAt }) {
+  const p = perception || {};
+  const location = p.location || null;
+  const nearby = Array.isArray(p.nearby) ? p.nearby : [];
+  const recentEvents = Array.isArray(p.recentEvents) ? p.recentEvents : [];
+  const relationships = Array.isArray(p.relationships) ? p.relationships : [];
+  const needs = Array.isArray(needChanges) ? needChanges : [];
+
+  const locationLabel = location?.addressData?.name || location?.addressData?.label || location?.locationType || location?.locationId || "unknown location";
+  const observedPeople = nearby.slice(0, 5).map(person => person.displayName || person.entityId);
+  const eventTypes = recentEvents.slice(0, 5).map(event => event.type || event.title).filter(Boolean);
+  const relationshipRefs = relationships.slice(0, 5).map(r => ({
+    id: r.id,
+    trust: Number(r.trust || 0),
+    affection: Number(r.affection || 0),
+    closeness: Number(r.closeness || 0)
+  }));
+
+  return {
+    actionType,
+    simulationAt,
+    location: {
+      id: location?.locationId || null,
+      type: location?.locationType || null,
+      label: locationLabel
+    },
+    observedPeople,
+    recentEventTypes: eventTypes,
+    relationshipRefs,
+    needChanges: needs.slice(0, 12),
+    decision: {
+      actionType: decision?.actionType || actionType,
+      goalId: decision?.goalId || null,
+      confidence: Number(decision?.confidence || 0),
+      reason: decision?.reason || null
+    }
+  };
+}
+
 async function createMemory({
   simulationId,
   entityId,
@@ -39,37 +84,12 @@ async function createMemory({
         version
       )
     VALUES (
-      UUID_TO_BIN(?),
-      UUID_TO_BIN(?),
-      UUID_TO_BIN(?),
-      ?,
-      ?,
-      ?,
-      ?,
-      ?,
-      ?,
-      UUID_TO_BIN(?),
-      UUID_TO_BIN(?),
-      UUID_TO_BIN(?),
-      ?,
-      'ACTIVE',
-      ?,
-      1
+      UUID_TO_BIN(?), UUID_TO_BIN(?), UUID_TO_BIN(?), ?, ?, ?, ?, ?, ?,
+      UUID_TO_BIN(?), UUID_TO_BIN(?), UUID_TO_BIN(?), ?, 'ACTIVE', ?, 1
     )
   `, [
-    id,
-    simulationId,
-    entityId,
-    type,
-    content,
-    importance,
-    strength,
-    confidence,
-    emotionalIntensity,
-    eventId,
-    activityId,
-    locationId,
-    simulationAt,
+    id, simulationId, entityId, type, content, importance, strength, confidence,
+    emotionalIntensity, eventId, activityId, locationId, simulationAt,
     metadata ? JSON.stringify(metadata) : null
   ]);
 
@@ -113,11 +133,11 @@ async function listMemories(simulationId,entityId,limit=100){
     WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?)
     ORDER BY importance DESC,strength DESC,created_simulation_at DESC LIMIT ?
   `,[simulationId,entityId,Math.min(limit,500)]);
-  return rows;
+  return rows.map(row => ({ ...row, metadata: normalizeJson(row.metadata) }));
 }
 
 async function recallContext(simulationId,entityId,limit=8){
   return listMemories(simulationId,entityId,limit);
 }
 
-module.exports={createMemory,decayMemories,listMemories,recallContext};
+module.exports={createMemory,decayMemories,listMemories,recallContext,buildMemoryContext};
