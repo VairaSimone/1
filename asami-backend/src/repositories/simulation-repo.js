@@ -40,7 +40,7 @@ async function createSimulation({ name, startedSimulationAt, asami }) {
     await conn.query(`
       INSERT INTO simulation_clock_segments
         (id,simulation_id,real_anchor_at,simulation_anchor_at,speed,status,created_real_at)
-      VALUES (UUID_TO_BIN(?),UUID_TO_BIN(?),CURRENT_TIMESTAMP(3),?,?,'ACTIVE',CURRENT_TIMESTAMP(3))
+      VALUES (UUID_TO_BIN(?),UUID_TO_BIN(?),UTC_TIMESTAMP(3),?,?,'ACTIVE',UTC_TIMESTAMP(3))
     `, [segmentId, id, t, asami?.speed ?? env.DEFAULT_SPEED]);
 
     const [types] = await conn.query(
@@ -139,12 +139,12 @@ async function setStatus(id, status) {
       await conn.query(`
         INSERT INTO simulation_clock_segments
           (id,simulation_id,real_anchor_at,simulation_anchor_at,speed,status,created_real_at)
-        VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),CURRENT_TIMESTAMP(3),?,?,'ACTIVE',CURRENT_TIMESTAMP(3))
+        VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UTC_TIMESTAMP(3),?,?,'ACTIVE',UTC_TIMESTAMP(3))
       `,[segmentId,id,nowSim,speed]);
     } else if(status!=="RUNNING" && active.length){
       await conn.query(`
         UPDATE simulation_clock_segments
-        SET status='CLOSED',ended_real_at=CURRENT_TIMESTAMP(3),ended_simulation_at=?
+        SET status='CLOSED',ended_real_at=UTC_TIMESTAMP(3),ended_simulation_at=?
         WHERE id=?
       `,[nowSim,active[0].id]);
     }
@@ -178,7 +178,7 @@ const endSimulationTime =
 await conn.query(`
   UPDATE simulation_clock_segments
   SET status='CLOSED',
-      ended_real_at=CURRENT_TIMESTAMP(3),
+      ended_real_at=UTC_TIMESTAMP(3),
       ended_simulation_at=?
   WHERE id=?
 `, [endSimulationTime, c.id]);
@@ -187,7 +187,7 @@ await conn.query(`
     await conn.query(`
       INSERT INTO simulation_clock_segments
         (id,simulation_id,real_anchor_at,simulation_anchor_at,speed,status,created_real_at)
-      VALUES (UUID_TO_BIN(?),UUID_TO_BIN(?),CURRENT_TIMESTAMP(3),?,?,'ACTIVE',CURRENT_TIMESTAMP(3))
+      VALUES (UUID_TO_BIN(?),UUID_TO_BIN(?),UTC_TIMESTAMP(3),?,?,'ACTIVE',UTC_TIMESTAMP(3))
     `, [segmentId, id, simulationTime, speed]);
 
     return getSimulation(id, conn);
@@ -219,7 +219,7 @@ async function createTick(id, simulationTime, tickType, engineVersion) {
   await pool.query(`
     INSERT INTO simulation_ticks
       (id,simulation_id,simulation_time,real_started_at,tick_type,status,engine_version)
-    VALUES (UUID_TO_BIN(?),UUID_TO_BIN(?),?,CURRENT_TIMESTAMP(3),?,'RUNNING',?)
+    VALUES (UUID_TO_BIN(?),UUID_TO_BIN(?),?,UTC_TIMESTAMP(3),?,'RUNNING',?)
   `, [tickId, id, simulationTime, tickType, engineVersion]);
   return tickId;
 }
@@ -227,7 +227,7 @@ async function createTick(id, simulationTime, tickType, engineVersion) {
 async function finishTick(tickId, status = "COMPLETED") {
   await pool.query(`
     UPDATE simulation_ticks
-    SET status=?, real_finished_at=CURRENT_TIMESTAMP(3)
+    SET status=?, real_finished_at=UTC_TIMESTAMP(3)
     WHERE id=UUID_TO_BIN(?)
   `, [status, tickId]);
 }

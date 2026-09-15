@@ -18,13 +18,13 @@ async function runIdempotent(simulationId,operationKey,operationType,fn){
   try{
     const result=await fn();
     await pool.query(`
-      UPDATE simulation_operations SET status='COMPLETED',result=?,completed_real_at=CURRENT_TIMESTAMP(3)
+      UPDATE simulation_operations SET status='COMPLETED',result=?,completed_real_at=UTC_TIMESTAMP(3)
       WHERE simulation_id=UUID_TO_BIN(?) AND operation_key=?
     `,[JSON.stringify(result),simulationId,operationKey]);
     return result;
   }catch(err){
     await pool.query(`
-      UPDATE simulation_operations SET status='FAILED',result=?,completed_real_at=CURRENT_TIMESTAMP(3)
+      UPDATE simulation_operations SET status='FAILED',result=?,completed_real_at=UTC_TIMESTAMP(3)
       WHERE simulation_id=UUID_TO_BIN(?) AND operation_key=?
     `,[JSON.stringify({error:err.message}),simulationId,operationKey]);
     throw err;
