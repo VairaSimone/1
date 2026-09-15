@@ -95,7 +95,7 @@ async function decayMemories(simulationId, simulationTime) {
     await pool.query(`
       INSERT INTO memory_state_history
       (id,memory_id,operation,old_strength,new_strength,old_importance,new_importance,old_confidence,new_confidence,simulation_time)
-      VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),'DECAY',?,?,?,?,?,?,?)
+      VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),'WEAKENED',?,?,?,?,?,?,?)
     `,[uuid(),m.id,m.strength,next,m.importance,m.importance,m.confidence,m.confidence,simulationTime]);
   }
 }
