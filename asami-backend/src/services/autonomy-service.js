@@ -24,7 +24,7 @@ async function findAutonomousActors(simulationId, limit=100){
 
 async function createGoalIfNeeded(simulationId,entityId,simulationTime,needs){
   const [active]=await pool.query(`
-    SELECT id FROM goals WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?)
+    SELECT BIN_TO_UUID(id) AS id FROM goals WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?)
       AND status IN ('DRAFT','ACTIVE','PAUSED') LIMIT 1
   `,[simulationId,entityId]);
   if(active.length)return active[0].id;
