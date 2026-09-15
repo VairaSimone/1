@@ -99,7 +99,13 @@ export function useSimulation() {
     return () => { disposed = true; if (retryTimer) window.clearTimeout(retryTimer); if (refreshTimer.current) window.clearTimeout(refreshTimer.current); wsRef.current?.close(); wsRef.current = null; setWsConnected(false) }
   }, [simulationId, refresh, asamiId])
 
-  useEffect(() => { if (!simulationId) return; const timer = window.setInterval(() => refresh(true).catch(() => undefined), 1500); return () => window.clearInterval(timer) }, [simulationId, refresh])
+  // WebSocket is the primary realtime channel. Poll only as a low-frequency
+  // fallback while it is disconnected, avoiding continuous dashboard queries.
+  useEffect(() => {
+    if (!simulationId || wsConnected) return
+    const timer = window.setInterval(() => refresh(true).catch(() => undefined), 5000)
+    return () => window.clearInterval(timer)
+  }, [simulationId, refresh, wsConnected])
 
   const createSimulation = useCallback(async (payload: Record<string, unknown>) => {
     const created = await api.createSimulation(payload); setSimulationIdState(created.simulation.id); localStorage.setItem(ACTIVE_SIM_KEY, created.simulation.id); setAsamiIdState(created.asamiEntityId); localStorage.setItem(ASAMI_ENTITY_KEY, created.asamiEntityId); await loadSimulations(); return created
