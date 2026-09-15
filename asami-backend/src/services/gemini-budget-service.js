@@ -93,25 +93,41 @@ async function reserve({ prompt, outputTokenCeiling, kind }) {
         ON DUPLICATE KEY UPDATE period_key=VALUES(period_key)
       `, [type, key]);
     }
-    const [[dayRow]] = await conn.query(`SELECT reserved_usd,requests,updated_real_at FROM gemini_usage WHERE period_type='DAY' AND period_key=? FOR UPDATE`, [day]);
-    const [[monthRow]] = await conn.query(`SELECT reserved_usd,requests FROM gemini_usage WHERE period_type='MONTH' AND period_key=? FOR UPDATE`, [month]);
-    const lastReservationAt = dayRow.updated_real_at ? new Date(dayRow.updated_real_at).getTime() : 0;
+    const [[dayRow]] = await conn.query(`
+      SELECT reserved_usd,estimated_usd,requests,
+             TIMESTAMPDIFF(MICROSECOND, updated_real_at, CURRENT_TIMESTAMP(3)) / 1000 AS elapsed_ms
+      FROM gemini_usage
+      WHERE period_type='DAY' AND period_key=?
+      FOR UPDATE
+    `, [day]);
+    const [[monthRow]] = await conn.query(`
+      SELECT reserved_usd,estimated_usd,requests
+      FROM gemini_usage
+      WHERE period_type='MONTH' AND period_key=?
+      FOR UPDATE
+    `, [month]);
+
     const minSpacingMs = 12_500;
-    if (lastReservationAt && Date.now() - lastReservationAt < minSpacingMs) {
-      const retryAfterMs = minSpacingMs - (Date.now() - lastReservationAt);
+    const elapsedMs = Math.max(0, Number(dayRow.elapsed_ms || 0));
+    if (elapsedMs > 0 && elapsedMs < minSpacingMs) {
+      const retryAfterMs = Math.ceil(minSpacingMs - elapsedMs);
       await conn.rollback();
       return { allowed: false, reason: "RATE_LIMIT_PACED", retryAfterMs, estimatedUsd };
     }
+
     const dailyLimit = Number(env.GEMINI_DAILY_BUDGET_USD);
     const monthlyLimit = Number(env.GEMINI_MONTHLY_BUDGET_USD);
     const dailyRequests = Math.min(Number(env.GEMINI_DAILY_MAX_REQUESTS), 18);
     const monthlyRequests = Math.min(Number(env.GEMINI_MONTHLY_MAX_REQUESTS), 500);
-    const canSpend = Number(dayRow.reserved_usd) + estimatedUsd <= dailyLimit + 1e-9 &&
-      Number(monthRow.reserved_usd) + estimatedUsd <= monthlyLimit + 1e-9 &&
+    const dailyCommitted = Number(dayRow.estimated_usd) + Number(dayRow.reserved_usd);
+    const monthlyCommitted = Number(monthRow.estimated_usd) + Number(monthRow.reserved_usd);
+    const canSpend = dailyCommitted + estimatedUsd <= dailyLimit + 1e-9 &&
+      monthlyCommitted + estimatedUsd <= monthlyLimit + 1e-9 &&
       Number(dayRow.requests) < dailyRequests && Number(monthRow.requests) < monthlyRequests;
     if (!canSpend) {
       await conn.rollback();
-      return { allowed: false, reason: Number(monthRow.reserved_usd) + estimatedUsd > monthlyLimit ? "MONTHLY_BUDGET" : "DAILY_BUDGET", estimatedUsd };
+      const dailyBlocked = dailyCommitted + estimatedUsd > dailyLimit + 1e-9 || Number(dayRow.requests) >= dailyRequests;
+      return { allowed: false, reason: dailyBlocked ? "DAILY_BUDGET" : "MONTHLY_BUDGET", estimatedUsd };
     }
     await conn.query(`UPDATE gemini_usage SET reserved_usd=reserved_usd+?,requests=requests+1 WHERE period_type='DAY' AND period_key=?`, [estimatedUsd, day]);
     await conn.query(`UPDATE gemini_usage SET reserved_usd=reserved_usd+? WHERE period_type='MONTH' AND period_key=?`, [estimatedUsd, month]);
