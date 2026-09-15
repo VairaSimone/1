@@ -82,8 +82,18 @@ async function applyEmotions(entityId,simulationTime,changes,causeEventId=null,c
   const [rows]=await pool.query(`SELECT BIN_TO_UUID(eec.emotion_id) AS emotionId,ed.code,eec.intensity,eec.version,ed.decay_rate AS decayRate FROM entity_emotions_current eec JOIN emotion_definitions ed ON ed.id=eec.emotion_id WHERE eec.entity_id=UUID_TO_BIN(?) AND ed.active=1`,[entityId]);
   const hours=Math.min(Math.max(Number(deltaHours)||0,0),6),appraisal=emotionAppraisal(actionType,changes),result=[];
   for(const row of rows){
-    const oldIntensity=round5(row.intensity),passiveDecay=-Math.max(0,Number(row.decayRate)||0)*hours,actionDelta=Number(appraisal[row.code]||0)*hours,delta=passiveDecay+actionDelta,next=round5(clamp(oldIntensity+delta)),historyDelta=round5(next-oldIntensity); if(Math.abs(historyDelta)<0.000001)continue;
-    const [updated]=await pool.query(`UPDATE entity_emotions_current SET intensity=?,updated_simulation_at=?,version=version+1 WHERE entity_id=UUID_TO_BIN(?) AND emotion_id=UUID_TO_BIN(?) AND version=?`,[next,simulationTime,entityId,row.emotionId,row.version||1]); if(!updated.affectedRows)continue;
+    const oldIntensity=round5(row.intensity);
+    // Emotional decay returns the current intensity toward the baseline (0).
+    // It must be proportional to the current value; otherwise a zero-intensity
+    // emotion can never rise because a fixed decay is subtracted from it first.
+    const passiveDecay=-Math.max(0,Number(row.decayRate)||0)*oldIntensity*hours;
+    const actionDelta=Number(appraisal[row.code]||0)*hours;
+    const delta=passiveDecay+actionDelta;
+    const next=round5(clamp(oldIntensity+delta));
+    const historyDelta=round5(next-oldIntensity);
+    if(Math.abs(historyDelta)<0.000001)continue;
+    const [updated]=await pool.query(`UPDATE entity_emotions_current SET intensity=?,updated_simulation_at=?,version=version+1 WHERE entity_id=UUID_TO_BIN(?) AND emotion_id=UUID_TO_BIN(?) AND version=?`,[next,simulationTime,entityId,row.emotionId,row.version||1]);
+    if(!updated.affectedRows)continue;
     await pool.query(`INSERT INTO entity_emotion_history(id,entity_id,emotion_id,old_intensity,new_intensity,delta,simulation_time,cause_event_id,cause_action_id) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,?,UUID_TO_BIN(?),UUID_TO_BIN(?))`,[uuid(),entityId,row.emotionId,oldIntensity,next,historyDelta,simulationTime,causeEventId,causeActionId]);
     result.push({code:row.code,old:oldIntensity,new:next,delta:historyDelta});
   }
