@@ -47,14 +47,20 @@ async function buildDecisionContext(simulationId, entityId){
   ]);
   const cognitiveProfile = await getCognitiveProfile(simulationId, entityId);
   let candidates=ACTIONS.map(action=>({action,score:scoreAction(action,needs,traits)}));
-  candidates = await cognitiveDecisionModifier({ cognitiveProfile }, candidates);
+
+  // cognitiveDecisionModifier works on one action at a time, not on the whole candidates array.
+  candidates = candidates.map(candidate => ({
+    ...candidate,
+    score: Number(candidate.score || 0) + cognitiveDecisionModifier(cognitiveProfile, candidate.action)
+  })).sort((a,b) => b.score - a.score);
+
   candidates = applyPlanBias(candidates, cognitiveProfile.plans);
   return {needs,traits,goals,location:location[0]||null,cognitiveProfile,allowedActionTypes:ACTIONS,candidates:candidates.slice(0,6)};
 }
 
 async function makeDecision({simulationId,entityId,simulationTime,triggerType="AUTONOMOUS",triggerEventId=null,context,aiChoice=null}){
   const decisionId=uuid();
-  const candidates=context.candidates;
+  const candidates=Array.isArray(context?.candidates) ? context.candidates : [];
   const chosen=aiChoice?.selectedActionType && ACTIONS.includes(aiChoice.selectedActionType)
     ? aiChoice.selectedActionType : candidates[0]?.action || "RESTING";
   await pool.query(`
