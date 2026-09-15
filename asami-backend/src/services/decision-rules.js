@@ -30,21 +30,28 @@ function scoreAction(action,needs,traits){
   let score=0;
 
   if(action === "SLEEPING"){
-    // Needs represent unmet pressure: high sleepiness and low energy should
-    // increase the motivation to sleep, while high energy should reduce it.
     const sleepiness = needValue(needs, "SLEEPINESS");
     const energy = needValue(needs, "ENERGY");
     score += sleepiness * 2.0 * needWeight(needs, "SLEEPINESS");
     score += (1 - energy) * 1.4 * needWeight(needs, "ENERGY");
 
-    // Once sleepiness is low and energy is high, sleeping should no longer
-    // remain the dominant action simply because sleep itself restores energy.
     if(sleepiness < 0.18 && energy > 0.72) score *= 0.15;
   } else if(action === "RESTING"){
     const energy = needValue(needs, "ENERGY");
     const comfort = needValue(needs, "COMFORT");
-    score += (1 - energy) * 1.0 * needWeight(needs, "ENERGY");
-    score += comfort * 0.7 * needWeight(needs, "COMFORT");
+
+    // Rest is useful when energy is genuinely low or comfort pressure is
+    // significant. Once energy is recovered, resting must quickly lose
+    // priority so the actor can return to normal activities.
+    if(energy >= 0.72 && comfort < 0.65){
+      score = 0;
+    } else {
+      score += Math.max(0, 1 - energy) * 1.0 * needWeight(needs, "ENERGY");
+      score += comfort * 0.7 * needWeight(needs, "COMFORT");
+
+      if(energy >= 0.82) score *= 0.25;
+      else if(energy >= 0.72) score *= 0.5;
+    }
   } else {
     for(const [code,w] of Object.entries(actionNeeds[action]||{})){
       score += needValue(needs, code) * w * needWeight(needs, code);
