@@ -84,7 +84,11 @@ function canUseGeminiDecision(entityId,simulationTime){
   const previous=lastAutonomyDecisionAt.get(entityId);
   if(previous===undefined){lastAutonomyDecisionAt.set(entityId,now);return true;}
   const configured=Number(env.GEMINI_AUTONOMY_MIN_INTERVAL_MINUTES);
-  const interval=Math.max(30,Number.isFinite(configured)?configured:30)*60000;
+  const requested=Number.isFinite(configured) ? configured : 30;
+  // Existing .env files may still contain the old 360-minute value. Keep a
+  // predictable upper bound so Gemini is genuinely available to the simulation.
+  const intervalMinutes=Math.min(60,Math.max(30,requested));
+  const interval=intervalMinutes*60000;
   if(now-previous<interval)return false;
   lastAutonomyDecisionAt.set(entityId,now);
   return true;
