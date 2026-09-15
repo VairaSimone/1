@@ -47,13 +47,22 @@ async function main(){
   await engine.start();
   server.listen(env.PORT,env.HOST,()=>logger.info({port:env.PORT,host:env.HOST},"Asami backend listening"));
 
+  let shuttingDown=false;
   const shutdown=async(signal)=>{
+    if(shuttingDown)return;
+    shuttingDown=true;
     logger.info({signal},"shutdown started");
-    await engine.stop();
-    await new Promise(resolve=>server.close(resolve));
-    wss.close();
-    await close();
-    process.exit(0);
+    try{
+      await engine.stop({drainTimeoutMs:5000});
+      await new Promise(resolve=>server.close(resolve));
+      wss.close();
+      await close();
+      process.exit(0);
+    }catch(err){
+      logger.error({err,signal},"shutdown failed");
+      try{await close();}catch{}
+      process.exit(1);
+    }
   };
   process.once("SIGINT",()=>shutdown("SIGINT"));
   process.once("SIGTERM",()=>shutdown("SIGTERM"));
