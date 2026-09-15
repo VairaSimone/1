@@ -68,6 +68,12 @@ function buildRouter({hub,gemini}){
     const op=req.header("Idempotency-Key")||`speed:${body.speed}:${Date.now()}`;
     const result=await runIdempotent(id,op,"CHANGE_SPEED",async()=>{
       const clock=await simRepo.getActiveClock(id);
+      if(!clock){
+        throw Object.assign(new Error("Simulation has no active clock; resume the simulation before changing its speed"),{
+          code:"CLOCK_NOT_ACTIVE",
+          statusCode:409
+        });
+      }
       let at = computeCurrentSimulationTime(clock);
       const anchor = new Date(clock.simulationAnchorAt);
       if (at < anchor) at = anchor;
