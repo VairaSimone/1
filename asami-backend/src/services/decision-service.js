@@ -3,6 +3,27 @@ const { uuid } = require("../lib/ids");
 const { ACTIONS, scoreAction } = require("./decision-rules");
 const { getCognitiveProfile, cognitiveDecisionModifier } = require("./personality-service");
 
+function normalizeAction(value) {
+  return String(value || "").trim().toUpperCase();
+}
+
+function applyPlanBias(candidates, plans) {
+  if (!Array.isArray(candidates) || !Array.isArray(plans)) return candidates;
+  const activeStepActions = new Set();
+  for (const plan of plans) {
+    const step = (plan.steps || []).find(s => s.status === "ACTIVE" || s.status === "PENDING");
+    const action = normalizeAction(step?.actionType || step?.result?.actionType);
+    if (action) activeStepActions.add(action);
+  }
+  if (!activeStepActions.size) return candidates;
+  return candidates.map(candidate => {
+    const action = normalizeAction(candidate.action);
+    return activeStepActions.has(action)
+      ? { ...candidate, score: Number(candidate.score || 0) + 0.4 }
+      : candidate;
+  }).sort((a,b) => b.score - a.score);
+}
+
 async function buildDecisionContext(simulationId, entityId){
   const [[needs],[traits],[goals],[location]] = await Promise.all([
     pool.query(`
@@ -27,6 +48,7 @@ async function buildDecisionContext(simulationId, entityId){
   const cognitiveProfile = await getCognitiveProfile(simulationId, entityId);
   let candidates=ACTIONS.map(action=>({action,score:scoreAction(action,needs,traits)}));
   candidates = await cognitiveDecisionModifier({ cognitiveProfile }, candidates);
+  candidates = applyPlanBias(candidates, cognitiveProfile.plans);
   return {needs,traits,goals,location:location[0]||null,cognitiveProfile,allowedActionTypes:ACTIONS,candidates:candidates.slice(0,6)};
 }
 
