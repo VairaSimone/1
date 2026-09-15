@@ -5,7 +5,7 @@ async function updateDevelopment(simulationId, entityId, simulationTime) {
   const [rows] = await pool.query(`
     SELECT
       ed.entity_id,
-      ed.development_stage_id,
+      BIN_TO_UUID(ed.development_stage_id) AS developmentStageId,
       ed.physical_score,
       ed.cognitive_score,
       ed.social_score,
@@ -15,10 +15,8 @@ async function updateDevelopment(simulationId, entityId, simulationTime) {
       e.created_simulation_at,
       p.birth_simulation_at
     FROM entity_development ed
-    JOIN entities e
-      ON e.id = ed.entity_id
-    LEFT JOIN persons p
-      ON p.entity_id = ed.entity_id
+    JOIN entities e ON e.id = ed.entity_id
+    LEFT JOIN persons p ON p.entity_id = ed.entity_id
     WHERE ed.entity_id = UUID_TO_BIN(?)
       AND e.simulation_id = UUID_TO_BIN(?)
     LIMIT 1
@@ -47,7 +45,7 @@ async function updateDevelopment(simulationId, entityId, simulationTime) {
   `, [ageDays, ageDays]);
 
   const newStage = stages[0] || null;
-  const oldStageId = d.development_stage_id ? Buffer.from(d.development_stage_id).toString("hex") : null;
+  const oldStageId = d.developmentStageId || null;
   const newStageId = newStage?.id || null;
 
   const cognitive = Math.min(1, Number(d.cognitive_score) + 0.002);
@@ -77,12 +75,11 @@ async function updateDevelopment(simulationId, entityId, simulationTime) {
     throw Object.assign(new Error("Optimistic lock conflict on development"), { code: "OPTIMISTIC_LOCK" });
   }
 
-  const stageChanged = (oldStageId || null) !== (newStageId || null);
-  if (stageChanged) {
+  if (oldStageId !== newStageId) {
     await pool.query(`
       INSERT INTO development_history
         (id,entity_id,old_stage_id,new_stage_id,simulation_time,reason,source_event_id)
-      VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,? ,NULL)
+      VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,NULL)
     `, [
       uuid(), entityId, oldStageId, newStageId, simulationTime,
       newStage ? `Development stage changed to ${newStage.name}` : "Development stage recalculated"
