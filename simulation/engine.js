@@ -8,6 +8,7 @@ const { perceive } = require("../services/perception-service");
 const { executeAction, learnFromAction } = require("../services/action-service");
 const { createMemory, decayMemories, buildMemoryContext } = require("../services/memory-service");
 const { generateWorldEvents } = require("../services/world-service");
+const { ensureWorld, evolveRelationships } = require("../services/world-population-service");
 const { updateDevelopment } = require("../services/development-service");
 const { initiateConversation } = require("../services/chat-service");
 const { recordHabitEvidence, updateMentalState } = require("../services/personality-service");
@@ -19,6 +20,7 @@ class SimulationEngine {
     this.running=new Set();
     this.interval=null;
     this.tickCounter=new Map();
+    this.worldInitialized=new Set();
   }
 
   async start() {
@@ -55,6 +57,11 @@ class SimulationEngine {
 
     const tickId=await simRepo.createTick(sim.id,nextTime,"AUTONOMOUS",env.ENGINE_VERSION);
     try{
+      if(!this.worldInitialized.has(sim.id)){
+        const world=await ensureWorld(sim.id,nextTime);
+        this.worldInitialized.add(sim.id);
+        logger.info({simulationId:sim.id,...world},"Simulation world initialized");
+      }
       await generateWorldEvents(sim.id,nextTime,tickId,deltaMinutes);
       const actors=await findAutonomousActors(sim.id,env.MAX_ENTITIES_PER_TICK);
       for(const entityId of actors){
@@ -74,13 +81,11 @@ class SimulationEngine {
         await developTraits(entityId,nextTime,signalForDecision(decision.actionType),action.eventId,action.actionId);
         await recordHabitEvidence({ entityId, simulationTime: nextTime, actionType: decision.actionType });
         await updateDevelopment(sim.id,entityId,nextTime,decision.actionType);
-
         await updateMentalState(sim.id, entityId, nextTime, {
           currentFocus: decision.actionType.toLowerCase().replaceAll("_", " "),
           mentalLoad: mentalLoadForAction(decision.actionType),
           certainty: decision.confidence
         });
-
         const memoryContext=buildMemoryContext({
           perception,
           decision,
@@ -107,8 +112,12 @@ class SimulationEngine {
       const count=(this.tickCounter.get(sim.id)||0)+1;
       this.tickCounter.set(sim.id,count);
 
-      // Keep proactive conversation periodic in simulation time. Legacy env files
-      // may contain very large values, so bound the cadence to a maximum of 90 ticks.
+      if(count % 30 === 0){
+        await evolveRelationships(sim.id,nextTime);
+        const world=await ensureWorld(sim.id,nextTime);
+        if(world.createdPeople) logger.info({simulationId:sim.id,...world},"Simulation population reconciled");
+      }
+
       const proactiveEveryTicks=Math.min(90,Math.max(1,Number(env.GEMINI_PROACTIVE_EVERY_TICKS)||90));
       if(count % proactiveEveryTicks === 0){
         const asami = await entityRepo.getAsamiCandidate(sim.id);
