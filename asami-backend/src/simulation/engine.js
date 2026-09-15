@@ -66,10 +66,18 @@ class SimulationEngine {
           }
 
           phase="entity.perception";const perception=await perceive(sim.id,entityId,nextTime);
-          phase="entity.decision";const decision=await actForEntity({simulationId:sim.id,entityId,simulationTime:nextTime,gemini:this.gemini});if(!decision)continue;actionType=decision.actionType;
+          // Needs and emotions evolve even when the entity is idle. This keeps
+          // internal pressure and emotional state independent of whether a
+          // decision/action was produced during the current tick.
+          phase="entity.needs";const needChanges=await updateNeeds(entityId,nextTime,elapsedHours);
+          phase="entity.emotions";await applyEmotions(entityId,nextTime,needChanges,null,null,null,elapsedHours);
+          phase="entity.decision";const decision=await actForEntity({simulationId:sim.id,entityId,simulationTime:nextTime,gemini:this.gemini});if(!decision){
+            phase="entity.publish";this.hub.publish(sim.id,"entity.state",{entityId,decision:null,action:null,status:"IDLE",needChanges});continue;
+          }
+          actionType=decision.actionType;
           phase="entity.action.start";const action=await startAction({simulationId:sim.id,entityId,decisionId:decision.decisionId,intentionId:decision.intentionId,actionType:decision.actionType,simulationTime:nextTime,targetEntityId:decision.targetEntityId||null,targetLocationId:decision.targetLocationId||null});
           await pool.query(`UPDATE actions SET result=? WHERE id=UUID_TO_BIN(?)`,[JSON.stringify({eventId:action.eventId,actionType:action.actionType,durationMinutes:action.durationMinutes,targetEntityId:decision.targetEntityId||null,targetLocationId:decision.targetLocationId||null,goalId:decision.goalId||null}),action.actionId]);
-          phase="entity.publish";this.hub.publish(sim.id,"entity.state",{entityId,decision,action,status:"ACTIVE"});
+          phase="entity.publish";this.hub.publish(sim.id,"entity.state",{entityId,decision,action,status:"ACTIVE",needChanges});
         }
         phase="memory.decay";await decayMemories(sim.id,nextTime);const count=(this.tickCounter.get(sim.id)||0)+1;this.tickCounter.set(sim.id,count);
         if(count%600===0){phase="asami.proactive_conversation";const asami=await entityRepo.getAsamiCandidate(sim.id);if(asami)await initiateConversation({simulationId:sim.id,asamiEntityId:asami.id,simulationTime:nextTime,gemini:this.gemini,hub:this.hub});}
