@@ -48,10 +48,11 @@ async function updateDevelopment(simulationId, entityId, simulationTime) {
   const oldStageId = d.developmentStageId || null;
   const newStageId = newStage?.id || null;
 
+  const physical = Math.min(1, Number(d.physical_score));
   const cognitive = Math.min(1, Number(d.cognitive_score) + 0.002);
   const social = Math.min(1, Number(d.social_score) + 0.001);
-  const education = Math.min(1, Number(d.education_score) + 0.002);
   const emotional = Math.min(1, Number(d.emotional_score) + 0.001);
+  const education = Math.min(1, Number(d.education_score) + 0.002);
 
   const [updated] = await pool.query(`
     UPDATE entity_development
@@ -67,7 +68,7 @@ async function updateDevelopment(simulationId, entityId, simulationTime) {
     WHERE entity_id = UUID_TO_BIN(?)
       AND version = ?
   `, [
-    Number(d.physical_score), cognitive, social, emotional, education,
+    physical, cognitive, social, emotional, education,
     newStageId, simulationTime, entityId, d.version
   ]);
 
@@ -86,30 +87,61 @@ async function updateDevelopment(simulationId, entityId, simulationTime) {
     ]);
   }
 
-  return { ageDays, stage: newStage, cognitive, social, education, emotional };
+  return {
+    entityId: d.entity_id,
+    developmentStageId: newStageId,
+    physicalScore: physical,
+    cognitiveScore: cognitive,
+    socialScore: social,
+    emotionalScore: emotional,
+    educationScore: education,
+    ageDays,
+    stage: newStage,
+    updatedSimulationAt: simulationTime,
+    version: Number(d.version) + 1
+  };
 }
 
-async function getDevelopment(simulationId,entityId){
-  const [rows]=await pool.query(`
-    SELECT ed.physical_score AS physical,ed.cognitive_score AS cognitive,ed.social_score AS social,
-           ed.emotional_score AS emotional,ed.education_score AS education,
-           ds.code AS stageCode,ds.name AS stageName,ed.updated_simulation_at AS updatedAt
+async function getDevelopment(simulationId, entityId) {
+  const [rows] = await pool.query(`
+    SELECT
+      BIN_TO_UUID(ed.entity_id) AS entityId,
+      BIN_TO_UUID(ed.development_stage_id) AS developmentStageId,
+      ed.physical_score AS physicalScore,
+      ed.cognitive_score AS cognitiveScore,
+      ed.social_score AS socialScore,
+      ed.emotional_score AS emotionalScore,
+      ed.education_score AS educationScore,
+      ed.updated_simulation_at AS updatedSimulationAt,
+      ed.version
     FROM entity_development ed
-    LEFT JOIN development_stages ds ON ds.id=ed.development_stage_id
-    JOIN entities e ON e.id=ed.entity_id
-    WHERE e.simulation_id=UUID_TO_BIN(?) AND ed.entity_id=UUID_TO_BIN(?)
-  `,[simulationId,entityId]);
-  return rows[0]||null;
+    JOIN entities e ON e.id = ed.entity_id
+    WHERE e.simulation_id = UUID_TO_BIN(?)
+      AND ed.entity_id = UUID_TO_BIN(?)
+    LIMIT 1
+  `, [simulationId, entityId]);
+  return rows[0] || null;
 }
-async function getDevelopmentHistory(entityId,limit=100){
-  const [rows]=await pool.query(`
-    SELECT BIN_TO_UUID(dh.id) AS id,dh.simulation_time AS simulationTime,dh.reason,
-           old_s.code AS oldStage,new_s.code AS newStage
+
+async function getDevelopmentHistory(entityId, limit = 100) {
+  const [rows] = await pool.query(`
+    SELECT
+      dh.simulation_time AS simulationAt,
+      dh.simulation_time AS updatedSimulationAt,
+      BIN_TO_UUID(dh.entity_id) AS entityId,
+      BIN_TO_UUID(dh.old_stage_id) AS oldStageId,
+      BIN_TO_UUID(dh.new_stage_id) AS newStageId,
+      old_s.code AS oldStage,
+      new_s.code AS newStage,
+      dh.reason
     FROM development_history dh
-    LEFT JOIN development_stages old_s ON old_s.id=dh.old_stage_id
-    LEFT JOIN development_stages new_s ON new_s.id=dh.new_stage_id
-    WHERE dh.entity_id=UUID_TO_BIN(?) ORDER BY dh.simulation_time DESC LIMIT ?
-  `,[entityId,limit]);
+    LEFT JOIN development_stages old_s ON old_s.id = dh.old_stage_id
+    LEFT JOIN development_stages new_s ON new_s.id = dh.new_stage_id
+    WHERE dh.entity_id = UUID_TO_BIN(?)
+    ORDER BY dh.simulation_time DESC
+    LIMIT ?
+  `, [entityId, limit]);
   return rows;
 }
-module.exports={updateDevelopment,getDevelopment,getDevelopmentHistory};
+
+module.exports = { updateDevelopment, getDevelopment, getDevelopmentHistory };
