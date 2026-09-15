@@ -6,7 +6,7 @@ const { ensureEntityState, readNeeds, updateNeeds, applyEmotions, developTraits 
 const { findAutonomousActors, actForEntity, completeGoalForAction } = require("../services/autonomy-service");
 const { perceive } = require("../services/perception-service");
 const { executeAction, learnFromAction } = require("../services/action-service");
-const { createMemory, decayMemories } = require("../services/memory-service");
+const { createMemory, decayMemories, buildMemoryContext } = require("../services/memory-service");
 const { generateWorldEvents } = require("../services/world-service");
 const { updateDevelopment } = require("../services/development-service");
 const { initiateConversation } = require("../services/chat-service");
@@ -46,13 +46,16 @@ class SimulationEngine {
     if(!clock)return;
     const nextTime=new Date(new Date(clock.simulationAnchorAt).getTime()+
       (Date.now()-new Date(clock.realAnchorAt).getTime())*Number(clock.speed));
-    if(nextTime<=new Date(sim.currentSimulationAt))return;
+    const previousTime=new Date(sim.currentSimulationAt);
+    if(nextTime<=previousTime)return;
+    const deltaHours=Math.max(0,(nextTime-previousTime)/3600000);
+    const deltaMinutes=deltaHours*60;
     const advanced=await simRepo.updateCurrentTimeOptimistic(sim.id,nextTime,sim.version);
     if(!advanced)return;
 
     const tickId=await simRepo.createTick(sim.id,nextTime,"AUTONOMOUS",env.ENGINE_VERSION);
     try{
-      await generateWorldEvents(sim.id,nextTime,tickId);
+      await generateWorldEvents(sim.id,nextTime,tickId,deltaMinutes);
       const actors=await findAutonomousActors(sim.id,env.MAX_ENTITIES_PER_TICK);
       for(const entityId of actors){
         await ensureEntityState(entityId,nextTime);
@@ -64,26 +67,39 @@ class SimulationEngine {
           actionType:decision.actionType,simulationTime:nextTime,
           targetEntityId:decision.targetEntityId||null,targetLocationId:decision.targetLocationId||null
         });
-        const deltaHours=Math.max(0,(new Date(nextTime)-new Date(sim.currentSimulationAt))/3600000);
         const needChanges=await updateNeeds(entityId,nextTime,deltaHours,action.eventId,action.actionId,decision.actionType);
         await applyEmotions(entityId,nextTime,needChanges,action.eventId,action.actionId);
         await learnFromAction(entityId,decision.actionType,nextTime);
         await completeGoalForAction(decision.goalId,decision.actionType,nextTime);
         await developTraits(entityId,nextTime,signalForDecision(decision.actionType),action.eventId,action.actionId);
         await recordHabitEvidence({ entityId, simulationTime: nextTime, actionType: decision.actionType });
-        await updateDevelopment(sim.id,entityId,nextTime);
-        if (decision.actionType === "TALKING" || decision.actionType === "STUDYING" || decision.actionType === "WORKING" || decision.actionType === "EXPLORING") {
-          await updateMentalState(sim.id, entityId, nextTime, {
-            currentFocus: decision.actionType.toLowerCase().replaceAll("_", " "),
-            mentalLoad: decision.actionType === "WORKING" || decision.actionType === "STUDYING" ? 0.55 : 0.35,
-            certainty: decision.confidence
-          });
-        }
+        await updateDevelopment(sim.id,entityId,nextTime,decision.actionType);
+
+        await updateMentalState(sim.id, entityId, nextTime, {
+          currentFocus: decision.actionType.toLowerCase().replaceAll("_", " "),
+          mentalLoad: mentalLoadForAction(decision.actionType),
+          certainty: decision.confidence
+        });
+
+        const memoryContext=buildMemoryContext({
+          perception,
+          decision,
+          actionType:decision.actionType,
+          needChanges,
+          simulationAt:nextTime
+        });
         await createMemory({
-          simulationId:sim.id,entityId,eventId:action.eventId,
-          content:`Experienced ${decision.actionType.toLowerCase().replaceAll("_"," ")} at ${nextTime.toISOString()}`,
-          importance:0.45,strength:0.9,confidence:0.8,emotionalIntensity:0.25,
-          simulationAt:nextTime,metadata:{perceptionSummary:perception.location||null}
+          simulationId:sim.id,
+          entityId,
+          eventId:action.eventId,
+          locationId:perception.location?.locationId||decision.targetLocationId||null,
+          content:memoryContent(decision,perception,needChanges),
+          importance:0.45,
+          strength:0.9,
+          confidence:Math.max(0.5,Math.min(1,Number(decision.confidence)||0.7)),
+          emotionalIntensity:0.25,
+          simulationAt:nextTime,
+          metadata:memoryContext
         });
         this.hub.publish(sim.id,"entity.state",{entityId,decision,action,needChanges});
       }
@@ -119,6 +135,25 @@ class SimulationEngine {
   }
 }
 
+function mentalLoadForAction(action){
+  const map={
+    STUDYING:0.65, WORKING:0.65, READING:0.5, EXPLORING:0.45,
+    TALKING:0.35, PLAYING:0.25, WATCHING:0.2, WALKING:0.2,
+    SLEEPING:0.05, RESTING:0.1, EATING:0.1, DRINKING:0.1
+  };
+  return map[action] ?? 0.3;
+}
+
+function memoryContent(decision,perception,needChanges){
+  const action=decision.actionType.toLowerCase().replaceAll("_"," ");
+  const location=perception?.location?.locationType || "an unknown place";
+  const people=Array.isArray(perception?.nearby) ? perception.nearby.length : 0;
+  const events=Array.isArray(perception?.recentEvents) ? perception.recentEvents.length : 0;
+  const changes=Array.isArray(needChanges) ? needChanges.filter(x=>Math.abs(Number(x.delta||0))>0.01).slice(0,3) : [];
+  const changeText=changes.map(x=>`${x.code}:${Number(x.delta).toFixed(3)}`).join(", ");
+  return `Experienced ${action} at ${location}; observed ${people} nearby people and ${events} recent events${changeText ? `; need changes ${changeText}` : ""}.`;
+}
+
 function signalForDecision(action){
   const map={
     TALKING:{EXTRAVERSION:1,SOCIABILITY:1,EMPATHY:0.2},
@@ -147,4 +182,4 @@ async function buildSnapshot(simulationId,simulationTime){
   return {simulationId,simulationTime,entities};
 }
 
-module.exports={SimulationEngine,signalForDecision,buildSnapshot};
+module.exports={SimulationEngine,signalForDecision,buildSnapshot,mentalLoadForAction,memoryContent};
