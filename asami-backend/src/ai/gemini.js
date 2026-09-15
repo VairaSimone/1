@@ -21,6 +21,7 @@ class GeminiService {
   constructor() {
     this.client = null;
     this.model = env.GEMINI_MODEL;
+    this.lastAutonomyDecisionAt = new Map();
   }
 
   async init() {
@@ -36,6 +37,18 @@ class GeminiService {
       dailyBudgetUsd: env.GEMINI_DAILY_BUDGET_USD,
       monthlyBudgetUsd: env.GEMINI_MONTHLY_BUDGET_USD
     }, "Gemini cognitive budget enabled");
+    return true;
+  }
+
+  canUseAutonomyDecision(entityId, simulationTime) {
+    const previous = this.lastAutonomyDecisionAt.get(entityId);
+    if (!previous) {
+      this.lastAutonomyDecisionAt.set(entityId, new Date(simulationTime).getTime());
+      return true;
+    }
+    const elapsedMinutes = (new Date(simulationTime).getTime() - previous) / 60000;
+    if (elapsedMinutes < Number(env.GEMINI_AUTONOMY_MIN_INTERVAL_MINUTES)) return false;
+    this.lastAutonomyDecisionAt.set(entityId, new Date(simulationTime).getTime());
     return true;
   }
 
@@ -111,11 +124,11 @@ class GeminiService {
       [
         "You are the cognitive layer of an autonomous life simulation.",
         "Return JSON only. Never invent IDs. Select only one action type from allowedActionTypes.",
-        "Only influence the decision; do not replace the simulation's deterministic rules.",
+        "Use the deterministic context to resolve ambiguity; do not replace the simulation rules.",
         JSON.stringify(context)
       ].join("\n"),
       DecisionSchema,
-      { kind: "autonomy", thinkingLevel: "low" }
+      { kind: "autonomy", thinkingLevel: "medium" }
     );
   }
 
