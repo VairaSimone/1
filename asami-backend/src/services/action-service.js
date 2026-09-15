@@ -1,145 +1,47 @@
 const { pool } = require("../db/pool");
 const { uuid } = require("../lib/ids");
 const { createEvent, addEffect } = require("./event-service");
-const { upsertInteractionRelationship } = require("./relationship-service");
+const { processSocialInteraction } = require("./social-relationship-service");
 
 const ACTION_DURATIONS_MINUTES = { SLEEPING:480, RESTING:60, EATING:30, DRINKING:10, TALKING:20, PLAYING:60, STUDYING:90, READING:45, WORKING:240, EXPLORING:60, WALKING:30, WATCHING:45 };
 const skillByAction = { READING:"READING", STUDYING:"WRITING", TALKING:"COMMUNICATION", EXPLORING:"NAVIGATION", PLAYING:"SPORTS", EATING:"COOKING", WALKING:"SELF_CARE" };
-
 function getActionDurationMinutes(actionType){ return ACTION_DURATIONS_MINUTES[actionType]||30; }
 function parseJson(value,fallback={}){if(value===null||value===undefined)return fallback;if(typeof value==='object')return value;try{return JSON.parse(value);}catch{return fallback;}}
-
-async function currentLocation(entityId,simulationId){
-  const [rows]=await pool.query(`SELECT BIN_TO_UUID(location_id) AS locationId FROM entity_locations_current WHERE entity_id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?)`,[entityId,simulationId]);
-  return rows[0]?.locationId||null;
-}
-
-async function loadLocationGraph(simulationId){
-  const [rows]=await pool.query(`SELECT BIN_TO_UUID(entity_id) AS locationId,address_data AS addressData FROM locations WHERE simulation_id=UUID_TO_BIN(?)`,[simulationId]);
-  return rows.map(row=>({locationId:row.locationId,data:parseJson(row.addressData)}));
-}
-
+async function currentLocation(entityId,simulationId){const [rows]=await pool.query(`SELECT BIN_TO_UUID(location_id) AS locationId FROM entity_locations_current WHERE entity_id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?)`,[entityId,simulationId]);return rows[0]?.locationId||null;}
+async function loadLocationGraph(simulationId){const [rows]=await pool.query(`SELECT BIN_TO_UUID(entity_id) AS locationId,address_data AS addressData FROM locations WHERE simulation_id=UUID_TO_BIN(?)`,[simulationId]);return rows.map(row=>({locationId:row.locationId,data:parseJson(row.addressData)}));}
 function nextHop(locations,originId,targetId=null){
-  if(!originId)return null;
-  const byId=new Map(locations.map(x=>[x.locationId,x]));
-  const origin=byId.get(originId);if(!origin)return null;
-  const originCode=origin.data?.worldCode;if(!originCode)return null;
-  const byCode=new Map(locations.map(x=>[x.data?.worldCode,x]));
+  if(!originId)return null;const byId=new Map(locations.map(x=>[x.locationId,x]));const origin=byId.get(originId);if(!origin)return null;const originCode=origin.data?.worldCode;if(!originCode)return null;const byCode=new Map(locations.map(x=>[x.data?.worldCode,x]));
   const connections=Array.isArray(origin.data?.connections)?origin.data.connections:[];
-  if(!targetId){
-    const neighbors=connections.map(code=>byCode.get(code)).filter(Boolean);
-    return neighbors[Math.floor(Math.random()*neighbors.length)]?.locationId||null;
-  }
-  if(targetId===originId)return null;
-  const target=byId.get(targetId);if(!target)return null;
-  const targetCode=target.data?.worldCode;if(!targetCode)return null;
-  const queue=[[originCode,null]],visited=new Set([originCode]);
-  while(queue.length){
-    const [code,firstCode]=queue.shift();
-    const node=byCode.get(code);const neighbors=Array.isArray(node?.data?.connections)?node.data.connections:[];
-    for(const neighborCode of neighbors){
-      if(visited.has(neighborCode))continue;
-      const hop=firstCode||neighborCode;
-      if(neighborCode===targetCode)return byCode.get(hop)?.locationId||null;
-      visited.add(neighborCode);queue.push([neighborCode,hop]);
-    }
-  }
-  return null;
+  if(!targetId){const neighbors=connections.map(code=>byCode.get(code)).filter(Boolean);return neighbors[Math.floor(Math.random()*neighbors.length)]?.locationId||null;}
+  if(targetId===originId)return null;const target=byId.get(targetId);if(!target)return null;const targetCode=target.data?.worldCode;if(!targetCode)return null;
+  const queue=[[originCode,null]],visited=new Set([originCode]);while(queue.length){const [code,firstCode]=queue.shift();const node=byCode.get(code);const neighbors=Array.isArray(node?.data?.connections)?node.data.connections:[];for(const neighborCode of neighbors){if(visited.has(neighborCode))continue;const hop=firstCode||neighborCode;if(neighborCode===targetCode)return byCode.get(hop)?.locationId||null;visited.add(neighborCode);queue.push([neighborCode,hop]);}}return null;
 }
-
-async function chooseDestination(simulationId,entityId,originId,targetId=null){
-  if(!originId)return null;
-  const locations=await loadLocationGraph(simulationId);
-  return nextHop(locations,originId,targetId);
+async function chooseDestination(simulationId,entityId,originId,targetId=null){if(!originId)return null;const locations=await loadLocationGraph(simulationId);return nextHop(locations,originId,targetId);}
+async function getActiveRelationshipType(simulationId,sourceEntityId,targetEntityId){const [rows]=await pool.query(`SELECT rt.code AS type FROM relationships r JOIN relationship_types rt ON rt.id=r.relationship_type_id WHERE r.simulation_id=UUID_TO_BIN(?) AND r.status='ACTIVE' AND ((r.source_entity_id=UUID_TO_BIN(?) AND r.target_entity_id=UUID_TO_BIN(?)) OR (r.source_entity_id=UUID_TO_BIN(?) AND r.target_entity_id=UUID_TO_BIN(?))) ORDER BY CASE rt.code WHEN 'PARTNER' THEN 3 WHEN 'FRIEND' THEN 2 WHEN 'ACQUAINTANCE' THEN 1 ELSE 0 END DESC LIMIT 1`,[simulationId,sourceEntityId,targetEntityId,targetEntityId,sourceEntityId]);return rows[0]?.type||"ACQUAINTANCE";}
+async function getActiveAction(entityId,simulationId){const [rows]=await pool.query(`SELECT BIN_TO_UUID(id) AS id,action_type AS actionType,started_simulation_at AS startedSimulationAt,completed_simulation_at AS completedSimulationAt,BIN_TO_UUID(decision_id) AS decisionId,BIN_TO_UUID(source_intention_id) AS intentionId,target AS target,parameters AS parameters,result AS result,version FROM actions WHERE entity_id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?) AND status='ACTIVE' ORDER BY started_simulation_at DESC LIMIT 1`,[entityId,simulationId]);const action=rows[0]||null;if(!action)return null;for(const key of ["parameters","result"]){if(Buffer.isBuffer(action[key]))action[key]=action[key].toString();if(typeof action[key]==="string"){try{action[key]=JSON.parse(action[key]);}catch{action[key]={};}}}if(Buffer.isBuffer(action.target))action.target=action.target.toString();action.metadata={...(action.parameters||{}),...(action.result||{})};return action;}
+async function startAction({simulationId,entityId,decisionId,intentionId=null,actionType,simulationTime,targetEntityId=null,targetLocationId=null,relationshipIntent="NONE"}){
+  const actionId=uuid(),duration=getActionDurationMinutes(actionType),expectedCompletion=new Date(new Date(simulationTime).getTime()+duration*60000);
+  await pool.query(`INSERT INTO actions (id,simulation_id,entity_id,decision_id,action_type,source_type,source_intention_id,started_simulation_at,status,target,parameters,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,'AUTONOMOUS',UUID_TO_BIN(?),?,'ACTIVE',?,?,1)`,[actionId,simulationId,entityId,decisionId,actionType,intentionId,simulationTime,targetLocationId?JSON.stringify({locationId:targetLocationId}):null,JSON.stringify({targetEntityId,targetLocationId,relationshipIntent,durationMinutes:duration,expectedCompletionSimulationAt:expectedCompletion.toISOString()})]);
+  const eventCode=actionType==="TALKING"?"SOCIAL":"PERSONAL";const eventId=await createEvent({simulationId,eventTypeCode:eventCode,title:`Asami ${actionType.toLowerCase().replaceAll("_"," ")}`,description:`Autonomous action started: ${actionType}`,simulationAt:simulationTime,importance:0.45,sourceActionId:actionId,participants:[{entityId,role:"ACTOR"}],metadata:{actionType,targetEntityId,targetLocationId,relationshipIntent,durationMinutes:duration,status:"ACTIVE"}});
+  await pool.query(`UPDATE actions SET result=? WHERE id=UUID_TO_BIN(?)`,[JSON.stringify({eventId,actionType,durationMinutes:duration,targetEntityId,targetLocationId,relationshipIntent}),actionId]);
+  return {actionId,eventId,actionType,durationMinutes:duration,relationshipIntent,expectedCompletionSimulationAt:expectedCompletion};
 }
-
-async function getActiveRelationshipType(simulationId,sourceEntityId,targetEntityId){
-  const [rows]=await pool.query(`
-    SELECT rt.code AS type
-    FROM relationships r JOIN relationship_types rt ON rt.id=r.relationship_type_id
-    WHERE r.simulation_id=UUID_TO_BIN(?) AND r.status='ACTIVE'
-      AND ((r.source_entity_id=UUID_TO_BIN(?) AND r.target_entity_id=UUID_TO_BIN(?))
-        OR (r.source_entity_id=UUID_TO_BIN(?) AND r.target_entity_id=UUID_TO_BIN(?)))
-    ORDER BY CASE rt.code WHEN 'PARTNER' THEN 3 WHEN 'FRIEND' THEN 2 WHEN 'ACQUAINTANCE' THEN 1 ELSE 0 END DESC
-    LIMIT 1
-  `,[simulationId,sourceEntityId,targetEntityId,targetEntityId,sourceEntityId]);
-  return rows[0]?.type||"ACQUAINTANCE";
-}
-
-async function getActiveAction(entityId,simulationId){
-  const [rows]=await pool.query(`
-    SELECT BIN_TO_UUID(id) AS id,action_type AS actionType,started_simulation_at AS startedSimulationAt,
-           completed_simulation_at AS completedSimulationAt,BIN_TO_UUID(decision_id) AS decisionId,
-           BIN_TO_UUID(source_intention_id) AS intentionId,target AS target,parameters AS parameters,result AS result,version
-    FROM actions WHERE entity_id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?) AND status='ACTIVE'
-    ORDER BY started_simulation_at DESC LIMIT 1
-  `,[entityId,simulationId]);
-  const action=rows[0]||null;
-  if(!action)return null;
-  for(const key of ["parameters","result"]){
-    if(Buffer.isBuffer(action[key]))action[key]=action[key].toString();
-    if(typeof action[key]==="string"){try{action[key]=JSON.parse(action[key]);}catch{action[key]={};}}
-  }
-  if(Buffer.isBuffer(action.target))action.target=action.target.toString();
-  action.metadata={...(action.parameters||{}),...(action.result||{})};
-  return action;
-}
-
-async function startAction({simulationId,entityId,decisionId,intentionId=null,actionType,simulationTime,targetEntityId=null,targetLocationId=null}){
-  const actionId=uuid();
-  const duration=getActionDurationMinutes(actionType);
-  const expectedCompletion=new Date(new Date(simulationTime).getTime()+duration*60000);
-  await pool.query(`INSERT INTO actions (id,simulation_id,entity_id,decision_id,action_type,source_type,source_intention_id,started_simulation_at,status,target,parameters,version)
-    VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,'AUTONOMOUS',UUID_TO_BIN(?),?,'ACTIVE',?,?,1)`,
-    [actionId,simulationId,entityId,decisionId,actionType,intentionId,simulationTime,targetLocationId?JSON.stringify({locationId:targetLocationId}):null,
-      JSON.stringify({targetEntityId,targetLocationId,durationMinutes:duration,expectedCompletionSimulationAt:expectedCompletion.toISOString()})]);
-  const eventCode=actionType==="TALKING"?"SOCIAL":"PERSONAL";
-  const eventId=await createEvent({simulationId,eventTypeCode:eventCode,title:`Asami ${actionType.toLowerCase().replaceAll("_"," ")}`,description:`Autonomous action started: ${actionType}`,simulationAt:simulationTime,importance:0.45,sourceActionId:actionId,participants:[{entityId,role:"ACTOR"}],metadata:{actionType,targetEntityId,targetLocationId,durationMinutes:duration,status:"ACTIVE"}});
-  await pool.query(`UPDATE actions SET result=? WHERE id=UUID_TO_BIN(?)`,[JSON.stringify({eventId,actionType,durationMinutes:duration,targetEntityId,targetLocationId}),actionId]);
-  return {actionId,eventId,actionType,durationMinutes:duration,expectedCompletionSimulationAt:expectedCompletion};
-}
-
-async function completeAction({simulationId,entityId,actionId,decisionId=null,eventId,intentionId=null,actionType,simulationTime,targetEntityId=null,targetLocationId=null}){
-  const [updated]=await pool.query(`UPDATE actions SET status='COMPLETED',completed_simulation_at=?,result=? WHERE id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?) AND status='ACTIVE'`,
-    [simulationTime,JSON.stringify({eventId,actionType,success:true,targetEntityId,targetLocationId}),actionId,entityId,simulationId]);
-  if(!updated.affectedRows)return false;
+async function completeAction({simulationId,entityId,actionId,decisionId=null,eventId,intentionId=null,actionType,simulationTime,targetEntityId=null,targetLocationId=null,relationshipIntent="NONE"}){
+  const [updated]=await pool.query(`UPDATE actions SET status='COMPLETED',completed_simulation_at=?,result=? WHERE id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?) AND status='ACTIVE'`,[simulationTime,JSON.stringify({eventId,actionType,success:true,targetEntityId,targetLocationId,relationshipIntent}),actionId,entityId,simulationId]);if(!updated.affectedRows)return false;
   await addEffect({simulationId,eventId,effectType:"ACTION_COMPLETED",targetActionId:actionId,targetEntityId:entityId,afterState:{actionType,status:"COMPLETED"},magnitude:1,createdSimulationAt:simulationTime});
-  if(actionType==="WALKING"||actionType==="EXPLORING"){
-    const origin=await currentLocation(entityId,simulationId),destination=await chooseDestination(simulationId,entityId,origin,targetLocationId);
-    if(origin&&destination&&origin!==destination)await moveEntity(simulationId,entityId,origin,destination,simulationTime);
-  }
-  if(actionType==="TALKING"&&targetEntityId){
-    const typeCode=await getActiveRelationshipType(simulationId,entityId,targetEntityId);
-    const difficult=Math.random()<0.10;
-    const deltas=difficult
-      ? {familiarity:.006,closeness:-.003,affection:-.008,trust:-.012,attraction:-.006,conflict:.045,irritation:.05,respect:-.004}
-      : {familiarity:.015,closeness:.008,affection:.004,trust:.002,attraction:.003,respect:.002,conflict:-.002,irritation:-.003};
-    await upsertInteractionRelationship({simulationId,sourceEntityId:entityId,targetEntityId,simulationAt:simulationTime,sourceEventId:eventId,typeCode,deltas});
-  }
+  if(actionType==="WALKING"||actionType==="EXPLORING"){const origin=await currentLocation(entityId,simulationId),destination=await chooseDestination(simulationId,entityId,origin,targetLocationId);if(origin&&destination&&origin!==destination)await moveEntity(simulationId,entityId,origin,destination,simulationTime);}
+  if(actionType==="TALKING"&&targetEntityId)await processSocialInteraction({simulationId,sourceEntityId:entityId,targetEntityId,simulationAt:simulationTime,eventId,relationshipIntent,locationId:await currentLocation(entityId,simulationId)});
   if(intentionId)await pool.query(`UPDATE intentions SET status='COMPLETED',version=version+1 WHERE id=UUID_TO_BIN(?) AND status='ACTIVE'`,[intentionId]);
-  if(decisionId)await pool.query(`UPDATE decisions SET status='EXECUTED',actual_outcome=? WHERE id=UUID_TO_BIN(?) AND status IN ('EVALUATED','CREATED')`,[JSON.stringify({actionId,eventId,success:true}),decisionId]);
-  return true;
+  if(decisionId)await pool.query(`UPDATE decisions SET status='EXECUTED',actual_outcome=? WHERE id=UUID_TO_BIN(?) AND status IN ('EVALUATED','CREATED')`,[JSON.stringify({actionId,eventId,success:true,relationshipIntent}),decisionId]);return true;
 }
-
 async function executeAction(args){const started=await startAction(args);await completeAction({...args,actionId:started.actionId,eventId:started.eventId,decisionId:args.decisionId});return {actionId:started.actionId,eventId:started.eventId};}
-
 async function moveEntity(simulationId,entityId,origin,destination,simulationTime){
-  const [existing]=await pool.query(`SELECT id FROM movements WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND status IN ('PLANNED','ACTIVE') LIMIT 1`,[simulationId,entityId]);
-  if(existing.length)return;
-  await pool.query(`INSERT INTO movements (id,simulation_id,entity_id,origin_location_id,destination_location_id,started_simulation_at,expected_arrival_simulation_at,status,reason,source_activity_id,version)
-    VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,'ACTIVE','autonomous action',NULL,1)`,[uuid(),simulationId,entityId,origin,destination,simulationTime,new Date(new Date(simulationTime).getTime()+15*60000)]);
+  const [existing]=await pool.query(`SELECT id FROM movements WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND status IN ('PLANNED','ACTIVE') LIMIT 1`,[simulationId,entityId]);if(existing.length)return;
+  await pool.query(`INSERT INTO movements (id,simulation_id,entity_id,origin_location_id,destination_location_id,started_simulation_at,expected_arrival_simulation_at,status,reason,source_activity_id,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,'ACTIVE','autonomous action',NULL,1)`,[uuid(),simulationId,entityId,origin,destination,simulationTime,new Date(new Date(simulationTime).getTime()+15*60000)]);
   await pool.query(`INSERT INTO entity_location_history (id,simulation_id,entity_id,location_id,entered_simulation_at,reason,source_event_id) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,'AUTONOMOUS',NULL)`,[uuid(),simulationId,entityId,destination,simulationTime]);
   await pool.query(`UPDATE entity_location_history SET exited_simulation_at=? WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND location_id=UUID_TO_BIN(?) AND exited_simulation_at IS NULL AND entered_simulation_at<?`,[simulationTime,simulationId,entityId,origin,simulationTime]);
-  await pool.query(`INSERT INTO entity_locations_current(entity_id,simulation_id,location_id,since_simulation_at,reason,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,'AUTONOMOUS',1)
-    ON DUPLICATE KEY UPDATE location_id=VALUES(location_id),since_simulation_at=VALUES(since_simulation_at),reason=VALUES(reason),version=version+1`,[entityId,simulationId,destination,simulationTime]);
+  await pool.query(`INSERT INTO entity_locations_current(entity_id,simulation_id,location_id,since_simulation_at,reason,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,'AUTONOMOUS',1) ON DUPLICATE KEY UPDATE location_id=VALUES(location_id),since_simulation_at=VALUES(since_simulation_at),reason=VALUES(reason),version=version+1`,[entityId,simulationId,destination,simulationTime]);
   await pool.query(`UPDATE movements SET status='COMPLETED',actual_arrival_simulation_at=?,version=version+1 WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND status='ACTIVE' AND destination_location_id=UUID_TO_BIN(?)`,[simulationTime,simulationId,entityId,destination]);
 }
-
-async function learnFromAction(entityId,actionType,simulationTime){
-  const skill=skillByAction[actionType];if(!skill)return;
-  const [rows]=await pool.query(`SELECT BIN_TO_UUID(es.skill_id) AS skillId,es.proficiency,es.confidence,es.version FROM entity_skills es JOIN skill_definitions sd ON sd.id=es.skill_id WHERE es.entity_id=UUID_TO_BIN(?) AND sd.code=? LIMIT 1`,[entityId,skill]);
-  if(!rows.length)return;
-  const s=rows[0],next=Math.min(1,Number(s.proficiency)+0.004),conf=Math.min(1,Number(s.confidence)+0.003);
-  await pool.query(`UPDATE entity_skills SET proficiency=?,confidence=?,last_used_simulation_at=?,updated_simulation_at=?,version=version+1 WHERE entity_id=UUID_TO_BIN(?) AND skill_id=UUID_TO_BIN(?) AND version=?`,[next,conf,simulationTime,simulationTime,entityId,s.skillId,s.version]);
-}
+async function learnFromAction(entityId,actionType,simulationTime){const skill=skillByAction[actionType];if(!skill)return;const [rows]=await pool.query(`SELECT BIN_TO_UUID(es.skill_id) AS skillId,es.proficiency,es.confidence,es.version FROM entity_skills es JOIN skill_definitions sd ON sd.id=es.skill_id WHERE es.entity_id=UUID_TO_BIN(?) AND sd.code=? LIMIT 1`,[entityId,skill]);if(!rows.length)return;const s=rows[0],next=Math.min(1,Number(s.proficiency)+0.004),conf=Math.min(1,Number(s.confidence)+0.003);await pool.query(`UPDATE entity_skills SET proficiency=?,confidence=?,last_used_simulation_at=?,updated_simulation_at=?,version=version+1 WHERE entity_id=UUID_TO_BIN(?) AND skill_id=UUID_TO_BIN(?) AND version=?`,[next,conf,simulationTime,simulationTime,entityId,s.skillId,s.version]);}
 module.exports={startAction,completeAction,executeAction,getActiveAction,learnFromAction,getActionDurationMinutes,currentLocation,chooseDestination,nextHop};
