@@ -24,23 +24,37 @@ async function ensureEntityState(entityId, simulationTime) {
     pool.query("SELECT id,default_value FROM trait_definitions WHERE active=1"),
     pool.query("SELECT id FROM skill_definitions WHERE active=1")
   ]);
+
   for (const d of needDefs) {
     await pool.query(`
       INSERT IGNORE INTO entity_needs_current(entity_id,need_id,value,updated_simulation_at,version)
       VALUES(UUID_TO_BIN(?),?,?,?,1)
     `,[entityId, d.id, d.default_value, simulationTime]);
   }
+
   for (const d of emotionDefs) {
     await pool.query(`
       INSERT IGNORE INTO entity_emotions_current(entity_id,emotion_id,intensity,updated_simulation_at,version)
       VALUES(UUID_TO_BIN(?),?,?,?,1)
     `,[entityId, d.id, d.default_value, simulationTime]);
+
+    // Existing simulations created while emotion defaults were incorrectly 0
+    // are initialized once from the corrected definition defaults.
+    await pool.query(`
+      UPDATE entity_emotions_current
+      SET intensity=?, updated_simulation_at=?
+      WHERE entity_id=UUID_TO_BIN(?)
+        AND emotion_id=UUID_TO_BIN(?)
+        AND version=1
+        AND intensity=0
+    `,[d.default_value, simulationTime, entityId, d.id]);
   }
+
   for (const d of traitDefs) {
     await pool.query(`
       INSERT IGNORE INTO entity_traits_current(entity_id,trait_id,value,updated_simulation_at,version)
       VALUES(UUID_TO_BIN(?),?,?,?,1)
-    `,[entityId, d.id, d.default_value, simulationTime]);
+    `,[entityId, d.id, 0.5, simulationTime]);
   }
   for (const d of skillDefs) {
     await pool.query(`
@@ -65,8 +79,6 @@ async function updateNeeds(entityId, simulationTime, deltaHours, causeEventId=nu
   const rows = await readNeeds(entityId);
   const changes=[];
 
-  // An autonomous action is instantaneous in the current engine. Never apply a
-  // full multi-hour simulation jump as though the action lasted that entire time.
   const actionHours = Math.min(Math.max(Number(deltaHours) || 0, 0), 0.25);
 
   const gains = {
@@ -157,19 +169,12 @@ async function updateNeeds(entityId, simulationTime, deltaHours, causeEventId=nu
 
     let delta;
     if (PRESSURE_NEEDS.has(r.code)) {
-      // Pressure rises with time until an action satisfies it.
       delta = decayRate * Number(deltaHours || 0);
     } else if (r.code === "SAFETY") {
-      // Safety represents a positive resource. It does not evaporate just because
-      // time passes; it is restored slowly in a normal/safe environment and can
-      // later be explicitly reduced by danger events.
       delta = recoveryRate * 0.25 * Number(deltaHours || 0);
     } else if (r.code === "COMFORT") {
-      // Comfort should remain reasonably stable instead of inevitably reaching 0.
-      // Give it a small passive recovery while keeping the actual action effects.
       delta = (recoveryRate * 0.15 - decayRate * 0.05) * Number(deltaHours || 0);
     } else {
-      // Energy and other resource-like needs deplete over time.
       delta = -decayRate * Number(deltaHours || 0);
     }
 
@@ -204,25 +209,77 @@ async function updateNeeds(entityId, simulationTime, deltaHours, causeEventId=nu
   return changes;
 }
 
-async function applyEmotions(entityId, simulationTime, changes, causeEventId=null, causeActionId=null) {
+function emotionAppraisal(actionType, needs) {
+  const deltas = Object.fromEntries([
+    "JOY","SADNESS","ANGER","FEAR","ANXIETY","FRUSTRATION","EXCITEMENT","CALM","DISGUST","SHAME"
+  ].map(code => [code, 0]));
+
+  const add = (code, value) => { deltas[code] += value; };
+
+  const actionEffects = {
+    TALKING: { JOY: 0.035, CALM: 0.02, EXCITEMENT: 0.012, ANXIETY: -0.008, SADNESS: -0.008 },
+    PLAYING: { JOY: 0.045, EXCITEMENT: 0.035, CALM: 0.008, FRUSTRATION: -0.02, SADNESS: -0.01 },
+    EATING: { JOY: 0.02, CALM: 0.025, FRUSTRATION: -0.02, ANXIETY: -0.01 },
+    DRINKING: { CALM: 0.025, JOY: 0.012, ANXIETY: -0.012 },
+    SLEEPING: { CALM: 0.04, JOY: 0.015, ANXIETY: -0.02, FRUSTRATION: -0.02 },
+    RESTING: { CALM: 0.03, JOY: 0.012, ANXIETY: -0.015, FRUSTRATION: -0.015 },
+    STUDYING: { EXCITEMENT: 0.012, JOY: 0.012, FRUSTRATION: 0.008, CALM: 0.008 },
+    READING: { JOY: 0.018, CALM: 0.018, EXCITEMENT: 0.01 },
+    EXPLORING: { EXCITEMENT: 0.05, JOY: 0.025, FEAR: 0.018, ANXIETY: 0.01 },
+    WALKING: { CALM: 0.025, JOY: 0.012, ANXIETY: -0.01 },
+    WORKING: { FRUSTRATION: 0.012, ACHIEVEMENT: 0 },
+    SCHOOL: { FRUSTRATION: 0.008, EXCITEMENT: 0.008, ANXIETY: 0.004 },
+    WATCHING: { JOY: 0.022, CALM: 0.015, EXCITEMENT: 0.018 }
+  };
+
+  for (const [code, value] of Object.entries(actionEffects[actionType] || {})) {
+    if (deltas[code] !== undefined) add(code, value);
+  }
+
+  const pressure = Object.fromEntries(needs.map(n => [n.code, clamp(n.new)]));
+  const social = pressure.SOCIAL_NEED || 0;
+  const belonging = pressure.BELONGING || 0;
+  const hunger = pressure.HUNGER || 0;
+  const thirst = pressure.THIRST || 0;
+  const sleepiness = pressure.SLEEPINESS || 0;
+  const fun = pressure.FUN || 0;
+  const achievement = pressure.ACHIEVEMENT || 0;
+  const curiosity = pressure.CURIOSITY || 0;
+  const safety = pressure.SAFETY ?? 1;
+  const energy = pressure.ENERGY ?? 1;
+
+  if (social > 0.65) { add("SADNESS", social * 0.012); add("ANXIETY", social * 0.008); add("FRUSTRATION", social * 0.01); }
+  if (belonging > 0.65) { add("SADNESS", belonging * 0.015); add("ANXIETY", belonging * 0.01); }
+  if (hunger > 0.7) { add("FRUSTRATION", hunger * 0.018); add("ANGER", hunger * 0.01); }
+  if (thirst > 0.7) { add("FRUSTRATION", thirst * 0.02); add("ANXIETY", thirst * 0.008); }
+  if (sleepiness > 0.7) { add("FRUSTRATION", sleepiness * 0.012); add("SADNESS", sleepiness * 0.008); }
+  if (fun > 0.75) { add("SADNESS", fun * 0.01); add("FRUSTRATION", fun * 0.008); }
+  if (achievement > 0.75) { add("FRUSTRATION", achievement * 0.01); }
+  if (curiosity > 0.75) { add("EXCITEMENT", curiosity * 0.012); }
+  if (safety < 0.45) { add("FEAR", (0.45 - safety) * 0.06); add("ANXIETY", (0.45 - safety) * 0.04); }
+  if (energy < 0.3) { add("FRUSTRATION", (0.3 - energy) * 0.04); add("SADNESS", (0.3 - energy) * 0.025); }
+
+  return deltas;
+}
+
+async function applyEmotions(entityId, simulationTime, changes, causeEventId=null, causeActionId=null, actionType=null) {
   const [rows] = await pool.query(`
     SELECT BIN_TO_UUID(eec.emotion_id) AS emotionId, ed.code, eec.intensity, eec.version, ed.decay_rate AS decayRate
     FROM entity_emotions_current eec JOIN emotion_definitions ed ON ed.id=eec.emotion_id
     WHERE eec.entity_id=UUID_TO_BIN(?) AND ed.active=1
   `,[entityId]);
-  const map = new Map(changes.map(c => [c.code, c.delta]));
+
+  const appraisal = emotionAppraisal(actionType, changes);
   const result=[];
+
   for (const row of rows) {
-    let delta = -Number(row.decayRate) * 0.001;
-    if (map.has("HUNGER")) delta += Math.max(0,map.get("HUNGER")) * -0.6;
-    if (map.has("FUN")) delta += map.get("FUN") * 0.5;
-    if (map.has("SOCIAL_NEED")) delta += map.get("SOCIAL_NEED") * 0.4;
-    if (map.has("SAFETY")) delta += map.get("SAFETY") * -0.5;
-    if (row.code === "CALM" && map.get("ENERGY") > 0) delta += 0.01;
     const oldIntensity = round5(row.intensity);
+    const passiveDecay = -Math.max(0, Number(row.decayRate) || 0) * 0.02;
+    const delta = passiveDecay + Number(appraisal[row.code] || 0);
     const next = round5(clamp(oldIntensity + delta));
     const historyDelta = round5(next - oldIntensity);
     if (Math.abs(historyDelta)<0.000001) continue;
+
     const [updated] = await pool.query(`
       UPDATE entity_emotions_current SET intensity=?,updated_simulation_at=?,version=version+1
       WHERE entity_id=UUID_TO_BIN(?) AND emotion_id=UUID_TO_BIN(?) AND version=?
@@ -269,7 +326,7 @@ async function developTraits(entityId, simulationTime, signals, causeEventId=nul
         (id,entity_id,trait_id,old_value,new_value,delta,changed_simulation_at,cause_event_id,cause_action_id,change_reason)
       VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,?,UUID_TO_BIN(?),UUID_TO_BIN(?),?)
     `,[uuid(),entityId,t.traitId,old,next,historyDelta,simulationTime,causeEventId,causeActionId,"behavioral reinforcement"]);
-    out.push({code:t.code,old,next,delta:historyDelta});
+    out.push({code:t.CODE||t.code,old,next,delta:historyDelta});
   }
   return out;
 }
