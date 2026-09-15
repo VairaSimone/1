@@ -95,7 +95,9 @@ class GeminiService {
       return true;
     }
     const elapsedMinutes = (new Date(simulationTime).getTime() - previous) / 60000;
-    if (elapsedMinutes < Number(env.GEMINI_AUTONOMY_MIN_INTERVAL_MINUTES)) return false;
+    const configuredInterval = Number(env.GEMINI_AUTONOMY_MIN_INTERVAL_MINUTES);
+    const safeInterval = Math.max(360, Number.isFinite(configuredInterval) ? configuredInterval : 360);
+    if (elapsedMinutes < safeInterval) return false;
     this.lastAutonomyDecisionAt.set(entityId, new Date(simulationTime).getTime());
     return true;
   }
