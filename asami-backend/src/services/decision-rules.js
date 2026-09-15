@@ -18,7 +18,7 @@ const actionNeeds = {
 
 const actionNeedGates = {
   EATING: ["HUNGER", 0.15],
-  DRINKING: ["THIRST", 0.15],
+  DRINKING: ["THIRST", 0.25],
   TALKING: ["SOCIAL_NEED", 0.12],
   PLAYING: ["FUN", 0.18],
   STUDYING: ["ACHIEVEMENT", 0.18],
@@ -57,7 +57,7 @@ function scoreAction(action,needs,traits){
       score = 0;
     } else {
       score += Math.max(0, 1 - energy) * 1.0 * needWeight(needs, "ENERGY");
-      score += comfort * 0.7 * needWeight(needs, "COMFORT");
+      score += Math.max(0, 0.65 - comfort) * 0.7 * needWeight(needs, "COMFORT");
       if(energy >= 0.82) score *= 0.25;
       else if(energy >= 0.72) score *= 0.5;
     }
