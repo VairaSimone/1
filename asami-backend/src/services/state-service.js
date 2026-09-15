@@ -21,7 +21,7 @@ async function ensureEntityState(entityId, simulationTime) {
     await pool.query(`INSERT IGNORE INTO entity_emotions_current(entity_id,emotion_id,intensity,updated_simulation_at,version)
       VALUES(UUID_TO_BIN(?),?,?,?,1)`, [entityId,d.id,d.default_value,simulationTime]);
     await pool.query(`UPDATE entity_emotions_current SET intensity=?,updated_simulation_at=?
-      WHERE entity_id=UUID_TO_BIN(?) AND emotion_id=UUID_TO_BIN(?) AND version=1 AND intensity=0`,
+      WHERE entity_id=UUID_TO_BIN(?) AND emotion_id=? AND version=1 AND intensity=0`,
       [d.default_value,simulationTime,entityId,d.id]);
   }
   for (const d of traitDefs) {
@@ -51,7 +51,7 @@ async function updateNeeds(entityId,simulationTime,deltaHours,causeEventId=null,
     DRINKING:{THIRST:-3,ENERGY:0.1,SAFETY:0.02},
     TALKING:{SOCIAL_NEED:-0.45,BELONGING:-0.18},
     PLAYING:{FUN:-0.5,SOCIAL_NEED:-0.12,COMFORT:0.04},
-    RESTING:{ENERGY:0.6,COMFORT:0.5,SLEEPINESS:-0.2,SAFETY:0.06},
+    RESTING:{ENERGY:0.6,COMFORT:0.5,SLEEPINESS:-0.2},
     STUDYING:{ACHIEVEMENT:-0.8,CURIOSITY:-0.5,ENERGY:-0.15,FUN:-0.1,COMFORT:-0.03},
     READING:{CURIOSITY:-0.4,ACHIEVEMENT:-0.3,FUN:0.1,COMFORT:0.03},
     EXPLORING:{CURIOSITY:-1.2,FUN:-0.5,ENERGY:-0.15,COMFORT:-0.05,SAFETY:-0.02},
@@ -67,26 +67,22 @@ async function updateNeeds(entityId,simulationTime,deltaHours,causeEventId=null,
     else if(r.code==="SAFETY") delta=recoveryRate*0.25*Number(deltaHours||0);
     else if(r.code==="COMFORT") delta=(recoveryRate*0.15-decayRate*0.05)*Number(deltaHours||0);
     else delta=-decayRate*Number(deltaHours||0);
-
     if(activeActionType){
       const gain=(gains[activeActionType]||{})[r.code]||0;
       const rawGain=gain*actionHours;
-      // Satisfaction effects cannot erase a pressure completely in one action.
-      // This prevents SOCIAL_NEED and BELONGING from getting permanently pinned at 0.
       if(PRESSURE_NEEDS.has(r.code) && rawGain<0) delta+=Math.max(rawGain,-Number(r.value)*0.35);
       else delta+=rawGain;
     }
-
     const oldValue=round5(r.value), next=round5(clamp(oldValue+delta)), historyDelta=round5(next-oldValue);
     if(Math.abs(historyDelta)<0.000001) continue;
-    const [current]=await pool.query(`SELECT version FROM entity_needs_current WHERE entity_id=UUID_TO_BIN(?) AND need_id=UUID_TO_BIN(?) LIMIT 1`,[entityId,r.needId]);
+    const [current]=await pool.query(`SELECT version FROM entity_needs_current WHERE entity_id=UUID_TO_BIN(?) AND need_id=? LIMIT 1`,[entityId,r.needId]);
     if(!current.length) continue;
     const expectedVersion=current[0].version;
     const [updated]=await pool.query(`UPDATE entity_needs_current SET value=?,updated_simulation_at=?,version=version+1
-      WHERE entity_id=UUID_TO_BIN(?) AND need_id=UUID_TO_BIN(?) AND version=?`,[next,simulationTime,entityId,r.needId,expectedVersion]);
+      WHERE entity_id=UUID_TO_BIN(?) AND need_id=? AND version=?`,[next,simulationTime,entityId,r.needId,expectedVersion]);
     if(!updated.affectedRows) throw Object.assign(new Error("Optimistic lock conflict on need"),{code:"OPTIMISTIC_LOCK"});
     await pool.query(`INSERT INTO entity_need_history(id,entity_id,need_id,old_value,new_value,delta,simulation_time,cause_event_id,cause_action_id)
-      VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,?,UUID_TO_BIN(?),UUID_TO_BIN(?))`,
+      VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),?, ?,?,?,?,UUID_TO_BIN(?),UUID_TO_BIN(?))`,
       [uuid(),entityId,r.needId,oldValue,next,historyDelta,simulationTime,causeEventId,causeActionId]);
     changes.push({code:r.code,old:oldValue,new:next,delta:historyDelta});
   }
