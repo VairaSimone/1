@@ -44,7 +44,8 @@ class SimulationEngine {
     for(const sim of sims){
       if(sim.status!=="RUNNING" || this.running.has(sim.id))continue;
       this.running.add(sim.id);
-      this.runSimulation(sim).catch(err=>logger.error(logger.contextError({simulationId:sim.id,phase:"simulation"},err,"simulation failed")))
+      this.runSimulation(sim)
+        .catch(err=>logger.error(logger.contextError({simulationId:sim.id,phase:"simulation"},err,"simulation failed")))
         .finally(()=>this.running.delete(sim.id));
     }
   }
@@ -153,11 +154,11 @@ class SimulationEngine {
         try { await simRepo.finishTick(tickId,"FAILED"); } catch (finishErr) {
           logger.error(logger.contextError({...errorContext,secondaryFailure:"finishTick"},finishErr,"failed to mark simulation tick failed"));
         }
-        logger.error(logger.contextError(errorContext,err,"simulation tick failed"));
-        throw err;
+        throw Object.assign(err,{simulationContext:errorContext});
       }
     }catch(err){
-      logger.error(logger.contextError({...context,tickId,phase,entityId,actionType},err,"simulation execution failed"));
+      const mergedContext={...context,...(err.simulationContext||{}),phase,entityId,actionType};
+      logger.error(logger.contextError(mergedContext,err,"simulation failed"));
       throw err;
     }
   }
