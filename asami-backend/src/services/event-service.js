@@ -57,7 +57,7 @@ async function listEvents(simulationId,{from,to,limit=100}={}) {
 }
 
 async function listTimeline(simulationId,entityId,limit=200){
-  const params=[simulationId,entityId,entityId,simulationId,entityId,limit];
+  const params=[entityId,simulationId,simulationId,entityId,Math.min(limit,500)];
   const [rows]=await pool.query(`
     SELECT * FROM (
       SELECT e.simulation_at AS at,'EVENT' AS kind,BIN_TO_UUID(e.id) AS id,
@@ -72,7 +72,7 @@ async function listTimeline(simulationId,entityId,limit=200){
       FROM actions a
       WHERE a.simulation_id=UUID_TO_BIN(?) AND a.entity_id=UUID_TO_BIN(?)
     ) x ORDER BY at DESC LIMIT ?
-  `,[entityId,simulationId,simulationId,entityId,limit]);
+  `,params);
   return rows;
 }
 
