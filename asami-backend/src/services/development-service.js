@@ -1,5 +1,4 @@
 const { pool } = require("../db/pool");
-const { createEvent } = require("./event-service");
 const { uuid } = require("../lib/ids");
 
 async function updateDevelopment(simulationId, entityId, simulationTime) {
@@ -21,19 +20,15 @@ async function updateDevelopment(simulationId, entityId, simulationTime) {
     LEFT JOIN persons p
       ON p.entity_id = ed.entity_id
     WHERE ed.entity_id = UUID_TO_BIN(?)
+      AND e.simulation_id = UUID_TO_BIN(?)
     LIMIT 1
-  `, [entityId]);
+  `, [entityId, simulationId]);
 
   if (!rows.length) return null;
 
   const d = rows[0];
-
   const birthAt = d.birth_simulation_at || d.created_simulation_at;
-
-  const ageDays = Math.max(
-    0,
-    (new Date(simulationTime) - new Date(birthAt)) / 86400000
-  );
+  const ageDays = Math.max(0, (new Date(simulationTime) - new Date(birthAt)) / 86400000);
 
   const [stages] = await pool.query(`
     SELECT
@@ -52,26 +47,13 @@ async function updateDevelopment(simulationId, entityId, simulationTime) {
   `, [ageDays, ageDays]);
 
   const newStage = stages[0] || null;
+  const oldStageId = d.development_stage_id ? Buffer.from(d.development_stage_id).toString("hex") : null;
+  const newStageId = newStage?.id || null;
 
-  const cognitive = Math.min(
-    1,
-    Number(d.cognitive_score) + 0.002
-  );
-
-  const social = Math.min(
-    1,
-    Number(d.social_score) + 0.001
-  );
-
-  const education = Math.min(
-    1,
-    Number(d.education_score) + 0.002
-  );
-
-  const emotional = Math.min(
-    1,
-    Number(d.emotional_score) + 0.001
-  );
+  const cognitive = Math.min(1, Number(d.cognitive_score) + 0.002);
+  const social = Math.min(1, Number(d.social_score) + 0.001);
+  const education = Math.min(1, Number(d.education_score) + 0.002);
+  const emotional = Math.min(1, Number(d.emotional_score) + 0.001);
 
   const [updated] = await pool.query(`
     UPDATE entity_development
@@ -87,32 +69,27 @@ async function updateDevelopment(simulationId, entityId, simulationTime) {
     WHERE entity_id = UUID_TO_BIN(?)
       AND version = ?
   `, [
-    Number(d.physical_score),
-    cognitive,
-    social,
-    emotional,
-    education,
-    newStage?.id || null,
-    simulationTime,
-    entityId,
-    d.version
+    Number(d.physical_score), cognitive, social, emotional, education,
+    newStageId, simulationTime, entityId, d.version
   ]);
 
   if (!updated.affectedRows) {
-    throw Object.assign(
-      new Error("Optimistic lock conflict on development"),
-      { code: "OPTIMISTIC_LOCK" }
-    );
+    throw Object.assign(new Error("Optimistic lock conflict on development"), { code: "OPTIMISTIC_LOCK" });
   }
 
-  return {
-    ageDays,
-    stage: newStage,
-    cognitive,
-    social,
-    education,
-    emotional
-  };
+  const stageChanged = (oldStageId || null) !== (newStageId || null);
+  if (stageChanged) {
+    await pool.query(`
+      INSERT INTO development_history
+        (id,entity_id,old_stage_id,new_stage_id,simulation_time,reason,source_event_id)
+      VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,? ,NULL)
+    `, [
+      uuid(), entityId, oldStageId, newStageId, simulationTime,
+      newStage ? `Development stage changed to ${newStage.name}` : "Development stage recalculated"
+    ]);
+  }
+
+  return { ageDays, stage: newStage, cognitive, social, education, emotional };
 }
 
 async function getDevelopment(simulationId,entityId){
@@ -127,7 +104,6 @@ async function getDevelopment(simulationId,entityId){
   `,[simulationId,entityId]);
   return rows[0]||null;
 }
-
 async function getDevelopmentHistory(entityId,limit=100){
   const [rows]=await pool.query(`
     SELECT BIN_TO_UUID(dh.id) AS id,dh.simulation_time AS simulationTime,dh.reason,
