@@ -1,0 +1,16 @@
+services:
+  asami-backend:
+    build: ../asami-backend
+    restart: unless-stopped
+    env_file:
+      - ../asami-backend/.env
+    expose:
+      - "3000"
+
+  asami-frontend:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    depends_on:
+      - asami-backend

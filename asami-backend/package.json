@@ -1,0 +1,25 @@
+{
+  "name": "asami-backend",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Autonomous life simulation backend for Asami",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "worker": "node src/worker.js",
+    "test": "node --test test/**/*.test.js",
+    "check": "node --check src/server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@google/genai": "2.22.0",
+    "dotenv": "17.4.2",
+    "express": "5.2.1",
+    "mysql2": "3.24.4",
+    "pino": "10.3.1",
+    "ws": "8.21.3",
+    "zod": "4.6.5"
+  }
+}
