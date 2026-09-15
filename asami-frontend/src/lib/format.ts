@@ -27,3 +27,9 @@ export function pct(value?: number | null) {
 export function clamp01(value: number) {
   return Math.max(0, Math.min(1, Number(value) || 0))
 }
+
+export function formatValue(value: unknown) {
+  if (value === null || value === undefined || value === '') return ''
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return String(value)
+  try { return JSON.stringify(value) } catch { return String(value) }
+}

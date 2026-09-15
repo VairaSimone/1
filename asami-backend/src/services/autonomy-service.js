@@ -1,7 +1,10 @@
 const { pool } = require("../db/pool");
+const { env } = require("../config/env");
 const { buildDecisionContext, makeDecision } = require("./decision-service");
 const { getEntity } = require("../repositories/entity-repo");
 const { recallContext } = require("./memory-service");
+
+const lastAutonomyDecisionAt=new Map();
 
 async function findAutonomousActors(simulationId, limit=100){
   const [rows]=await pool.query(`
@@ -29,8 +32,6 @@ async function createGoalIfNeeded(simulationId,entityId,simulationTime,needs){
   `,[simulationId,entityId]);
   if(active.length)return active[0].id;
 
-  // Goals are driven by unmet pressures, not by positive resources such as
-  // Safety or Comfort. A resource at 100% must never create an endless goal.
   const goalPressureCodes=new Set([
     "HUNGER","THIRST","SLEEPINESS","SOCIAL_NEED","FUN",
     "CURIOSITY","ACHIEVEMENT","BELONGING"
@@ -77,6 +78,18 @@ function shouldAskGemini(entity, context) {
   return false;
 }
 
+function canUseGeminiDecision(entityId,simulationTime){
+  const now=new Date(simulationTime).getTime();
+  if(!Number.isFinite(now))return false;
+  const previous=lastAutonomyDecisionAt.get(entityId);
+  if(previous===undefined){lastAutonomyDecisionAt.set(entityId,now);return true;}
+  const configured=Number(env.GEMINI_AUTONOMY_MIN_INTERVAL_MINUTES);
+  const interval=Math.max(0,Number.isFinite(configured)?configured:10)*60000;
+  if(now-previous<interval)return false;
+  lastAutonomyDecisionAt.set(entityId,now);
+  return true;
+}
+
 async function actForEntity({simulationId,entityId,simulationTime,gemini}){
   const entity=await getEntity(simulationId,entityId);
   if(!entity)return null;
@@ -89,7 +102,7 @@ async function actForEntity({simulationId,entityId,simulationTime,gemini}){
     gemini &&
     gemini.client &&
     shouldAskGemini(entity,context) &&
-    gemini.canUseAutonomyDecision(entity.id,simulationTime)
+    canUseGeminiDecision(entity.id,simulationTime)
   ){
     aiChoice=await gemini.chooseDecision({
       entity:{id:entity.id,name:entity.displayName},
@@ -140,4 +153,4 @@ async function selectTalkTarget(simulationId,entityId,actionType){
   return rows[0]?.id||null;
 }
 
-module.exports={findAutonomousActors,actForEntity,completeGoalForAction,shouldAskGemini};
+module.exports={findAutonomousActors,actForEntity,completeGoalForAction,shouldAskGemini,canUseGeminiDecision};

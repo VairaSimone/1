@@ -12,6 +12,7 @@ import type {
 } from '../types'
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/$/, '')
+const REQUEST_TIMEOUT_MS = 15000
 
 class ApiError extends Error {
   status: number
@@ -25,18 +26,28 @@ class ApiError extends Error {
 }
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const controller = new AbortController()
+  const timeout = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
+  const abortFromCaller = () => controller.abort()
+  options.signal?.addEventListener('abort', abortFromCaller, { once: true })
+
   let response: Response
   try {
     response = await fetch(`${API_BASE}${path}`, {
       ...options,
+      signal: controller.signal,
       headers: {
         Accept: 'application/json',
         ...(options.body ? { 'Content-Type': 'application/json' } : {}),
         ...(options.headers || {}),
       },
     })
-  } catch {
-    throw new ApiError('Impossibile raggiungere il backend.', 0)
+  } catch (error) {
+    const aborted = error instanceof DOMException && error.name === 'AbortError'
+    throw new ApiError(aborted ? 'La richiesta al backend è scaduta.' : 'Impossibile raggiungere il backend.', 0)
+  } finally {
+    window.clearTimeout(timeout)
+    options.signal?.removeEventListener('abort', abortFromCaller)
   }
 
   const text = await response.text()
@@ -82,10 +93,10 @@ export const api = {
   development: (simulationId: string, entityId: string) => request<{ current: Development | null; history: DevelopmentHistoryItem[] }>(`/simulations/${simulationId}/development/${entityId}`),
   conversationMessages: (simulationId: string, conversationId: string) => request<ChatMessage[]>(`/simulations/${simulationId}/conversations/${conversationId}/messages`),
   observer: (simulationId: string) =>
-  request<{ id: string; displayName: string; status: string }>(
-    `/simulations/${simulationId}/observer`,
-    { method: 'POST' }
-  ),
+    request<{ id: string; displayName: string; status: string }>(
+      `/simulations/${simulationId}/observer`,
+      { method: 'POST' }
+    ),
   sendMessage: (simulationId: string, payload: { senderEntityId: string; asamiEntityId?: string; conversationId?: string; content: string }) => request<ChatResponse>(`/simulations/${simulationId}/conversations/messages`, {
     method: 'POST',
     body: JSON.stringify(payload),

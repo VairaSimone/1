@@ -50,7 +50,7 @@ async function startAction({simulationId,entityId,decisionId,intentionId=null,ac
   return {actionId,eventId,actionType,durationMinutes:duration,expectedCompletionSimulationAt:expectedCompletion};
 }
 
-async function completeAction({simulationId,entityId,actionId,eventId,intentionId=null,actionType,simulationTime,targetEntityId=null,targetLocationId=null}){
+async function completeAction({simulationId,entityId,actionId,decisionId=null,eventId,intentionId=null,actionType,simulationTime,targetEntityId=null,targetLocationId=null}){
   const [updated]=await pool.query(`UPDATE actions SET status='COMPLETED',completed_simulation_at=?,result=? WHERE id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?) AND status='ACTIVE'`,
     [simulationTime,JSON.stringify({eventId,actionType,success:true,targetEntityId,targetLocationId}),actionId,entityId,simulationId]);
   if(!updated.affectedRows)return false;
@@ -61,11 +61,11 @@ async function completeAction({simulationId,entityId,actionId,eventId,intentionI
   }
   if(actionType==="TALKING"&&targetEntityId)await upsertInteractionRelationship({simulationId,sourceEntityId:entityId,targetEntityId,simulationAt:simulationTime,sourceEventId:eventId,deltas:{familiarity:0.015,closeness:0.008,affection:0.004,trust:0.002}});
   if(intentionId)await pool.query(`UPDATE intentions SET status='COMPLETED',version=version+1 WHERE id=UUID_TO_BIN(?) AND status='ACTIVE'`,[intentionId]);
-  await pool.query(`UPDATE decisions SET status='EXECUTED',actual_outcome=? WHERE id=UUID_TO_BIN(?)`,[JSON.stringify({actionId,eventId,success:true}),actionId]);
+  if(decisionId)await pool.query(`UPDATE decisions SET status='EXECUTED',actual_outcome=? WHERE id=UUID_TO_BIN(?) AND status IN ('EVALUATED','CREATED')`,[JSON.stringify({actionId,eventId,success:true}),decisionId]);
   return true;
 }
 
-async function executeAction(args){const started=await startAction(args);await completeAction({...args,actionId:started.actionId,eventId:started.eventId});return {actionId:started.actionId,eventId:started.eventId};}
+async function executeAction(args){const started=await startAction(args);await completeAction({...args,actionId:started.actionId,eventId:started.eventId,decisionId:args.decisionId});return {actionId:started.actionId,eventId:started.eventId};}
 
 async function moveEntity(simulationId,entityId,origin,destination,simulationTime){
   const [existing]=await pool.query(`SELECT id FROM movements WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND status IN ('PLANNED','ACTIVE') LIMIT 1`,[simulationId,entityId]);

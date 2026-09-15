@@ -22,7 +22,7 @@ async function ensureEntityState(entityId,simulationTime){
     await pool.query(`INSERT IGNORE INTO entity_emotions_current(entity_id,emotion_id,intensity,updated_simulation_at,version) VALUES(UUID_TO_BIN(?),?,?,?,1)`,[entityId,d.id,d.default_value,simulationTime]);
     await pool.query(`UPDATE entity_emotions_current SET intensity=?,updated_simulation_at=? WHERE entity_id=UUID_TO_BIN(?) AND emotion_id=? AND version=1 AND intensity=0`,[d.default_value,simulationTime,entityId,d.id]);
   }
-  for(const d of traitDefs) await pool.query(`INSERT IGNORE INTO entity_traits_current(entity_id,trait_id,value,updated_simulation_at,version) VALUES(UUID_TO_BIN(?),?,?,?,1)`,[entityId,d.id,0.5,simulationTime]);
+  for(const d of traitDefs) await pool.query(`INSERT IGNORE INTO entity_traits_current(entity_id,trait_id,value,updated_simulation_at,version) VALUES(UUID_TO_BIN(?),?,?,?,1)`,[entityId,d.id,d.default_value,simulationTime]);
   for(const d of skillDefs) await pool.query(`INSERT IGNORE INTO entity_skills(entity_id,skill_id,updated_simulation_at,version) VALUES(UUID_TO_BIN(?),?, ?,1)`,[entityId,d.id,simulationTime]);
 }
 
