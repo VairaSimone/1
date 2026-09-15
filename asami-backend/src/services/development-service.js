@@ -2,40 +2,117 @@ const { pool } = require("../db/pool");
 const { createEvent } = require("./event-service");
 const { uuid } = require("../lib/ids");
 
-async function updateDevelopment(simulationId,entityId,simulationTime){
-  const [rows]=await pool.query(`
-    SELECT ed.entity_id,ed.development_stage_id,ed.physical_score,ed.cognitive_score,ed.social_score,ed.emotional_score,ed.education_score,
-           e.created_simulation_at
-    FROM entity_development ed JOIN entities e ON e.id=ed.entity_id
-    WHERE ed.entity_id=UUID_TO_BIN(?) LIMIT 1
-  `,[entityId]);
-  if(!rows.length)return null;
-  const d=rows[0];
-  const ageDays=(new Date(simulationTime)-new Date(d.birth_simulation_at))/86400000;
-  const [stages]=await pool.query(`
-    SELECT BIN_TO_UUID(id) AS id,code,name,min_age_days AS minAge,max_age_days AS maxAge,configuration
-    FROM development_stages WHERE active=1 AND min_age_days<=?
-      AND (max_age_days IS NULL OR max_age_days>?) ORDER BY min_age_days DESC LIMIT 1
-  `,[ageDays,ageDays]);
-  const newStage=stages[0]||null;
-  const score=Math.min(1, Math.max(0, (Number(d.cognitive_score)+Number(d.social_score)+Number(d.education_score))/3+0.002));
-  const cognitive=Math.min(1,Number(d.cognitive_score)+0.002);
-  const social=Math.min(1,Number(d.social_score)+0.001);
-  const education=Math.min(1,Number(d.education_score)+0.002);
-  const emotional=Math.min(1,Number(d.emotional_score)+0.001);
-  const [updated]=await pool.query(`
-    UPDATE entity_development SET physical_score=?,cognitive_score=?,social_score=?,emotional_score=?,education_score=?,
-      development_stage_id=UUID_TO_BIN(?),updated_simulation_at=?,version=version+1
-    WHERE entity_id=UUID_TO_BIN(?) AND version=?
-  `,[Number(d.physical_score),cognitive,social,emotional,education,newStage?.id||null,simulationTime,entityId,d.version||1]);
-  if(!updated.affectedRows) throw Object.assign(new Error("Optimistic lock conflict on development"),{code:"OPTIMISTIC_LOCK"});
-  if((d.old_stage_id||null)!==(newStage?.id||null)){
-    await pool.query(`
-      INSERT INTO development_history(id,entity_id,old_stage_id,new_stage_id,simulation_time,reason)
-      VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,'stage/score development')
-    `,[uuid(),entityId,d.old_stage_id||null,newStage?.id||null,simulationTime]);
+async function updateDevelopment(simulationId, entityId, simulationTime) {
+  const [rows] = await pool.query(`
+    SELECT
+      ed.entity_id,
+      ed.development_stage_id,
+      ed.physical_score,
+      ed.cognitive_score,
+      ed.social_score,
+      ed.emotional_score,
+      ed.education_score,
+      ed.version,
+      e.created_simulation_at,
+      p.birth_simulation_at
+    FROM entity_development ed
+    JOIN entities e
+      ON e.id = ed.entity_id
+    LEFT JOIN persons p
+      ON p.entity_id = ed.entity_id
+    WHERE ed.entity_id = UUID_TO_BIN(?)
+    LIMIT 1
+  `, [entityId]);
+
+  if (!rows.length) return null;
+
+  const d = rows[0];
+
+  const birthAt = d.birth_simulation_at || d.created_simulation_at;
+
+  const ageDays = Math.max(
+    0,
+    (new Date(simulationTime) - new Date(birthAt)) / 86400000
+  );
+
+  const [stages] = await pool.query(`
+    SELECT
+      BIN_TO_UUID(id) AS id,
+      code,
+      name,
+      min_age_days AS minAge,
+      max_age_days AS maxAge,
+      configuration
+    FROM development_stages
+    WHERE active = 1
+      AND min_age_days <= ?
+      AND (max_age_days IS NULL OR max_age_days > ?)
+    ORDER BY min_age_days DESC
+    LIMIT 1
+  `, [ageDays, ageDays]);
+
+  const newStage = stages[0] || null;
+
+  const cognitive = Math.min(
+    1,
+    Number(d.cognitive_score) + 0.002
+  );
+
+  const social = Math.min(
+    1,
+    Number(d.social_score) + 0.001
+  );
+
+  const education = Math.min(
+    1,
+    Number(d.education_score) + 0.002
+  );
+
+  const emotional = Math.min(
+    1,
+    Number(d.emotional_score) + 0.001
+  );
+
+  const [updated] = await pool.query(`
+    UPDATE entity_development
+    SET
+      physical_score = ?,
+      cognitive_score = ?,
+      social_score = ?,
+      emotional_score = ?,
+      education_score = ?,
+      development_stage_id = UUID_TO_BIN(?),
+      updated_simulation_at = ?,
+      version = version + 1
+    WHERE entity_id = UUID_TO_BIN(?)
+      AND version = ?
+  `, [
+    Number(d.physical_score),
+    cognitive,
+    social,
+    emotional,
+    education,
+    newStage?.id || null,
+    simulationTime,
+    entityId,
+    d.version
+  ]);
+
+  if (!updated.affectedRows) {
+    throw Object.assign(
+      new Error("Optimistic lock conflict on development"),
+      { code: "OPTIMISTIC_LOCK" }
+    );
   }
-  return {ageDays,stage:newStage,score,cognitive,social,education,emotional};
+
+  return {
+    ageDays,
+    stage: newStage,
+    cognitive,
+    social,
+    education,
+    emotional
+  };
 }
 
 async function getDevelopment(simulationId,entityId){
