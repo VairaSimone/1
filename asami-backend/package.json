@@ -7,7 +7,7 @@
   "scripts": {
     "start": "node src/server.js",
     "worker": "node src/worker.js",
-    "test": "node --test test/**/*.test.js",
+    "test": "node --test",
     "check": "node --check src/server.js"
   },
   "engines": {
