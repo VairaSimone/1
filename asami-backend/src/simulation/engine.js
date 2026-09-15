@@ -31,69 +31,28 @@ class SimulationEngine {
       phase="tick.create";tickId=await simRepo.createTick(sim.id,nextTime,"AUTONOMOUS",env.ENGINE_VERSION);
       try{
         const elapsedMinutes=Math.min(360,Math.max(0,(nextTime-previousTime)/60000));
-        const lastMaintenance=this.worldMaintenanceAt.get(sim.id);
-        const maintenanceDue=lastMaintenance===undefined||nextTime.getTime()-lastMaintenance>=3600000;
-        if(maintenanceDue){
-          phase="world.initialize";await ensureWorld(sim.id,nextTime);
-          phase="world.relationships";await evolveRelationships(sim.id,nextTime);
-          this.worldMaintenanceAt.set(sim.id,nextTime.getTime());
-        }
+        const lastMaintenance=this.worldMaintenanceAt.get(sim.id);const maintenanceDue=lastMaintenance===undefined||nextTime.getTime()-lastMaintenance>=3600000;
+        if(maintenanceDue){phase="world.initialize";await ensureWorld(sim.id,nextTime);phase="world.relationships";await evolveRelationships(sim.id,nextTime);this.worldMaintenanceAt.set(sim.id,nextTime.getTime());}
         phase="world.events";await generateWorldEvents(sim.id,nextTime,tickId,elapsedMinutes);
         const actors=await findAutonomousActors(sim.id,env.MAX_ENTITIES_PER_TICK);
         for(const id of actors){
-          entityId=id;actionType=null;phase="entity.state";await ensureEntityState(entityId,nextTime);
-          const elapsedHours=Math.min(6,Math.max(0,(nextTime-previousTime)/3600000));
-          const active=await getActiveAction(entityId,sim.id);
-
+          entityId=id;actionType=null;phase="entity.state";await ensureEntityState(entityId,nextTime);const elapsedHours=Math.min(6,Math.max(0,(nextTime-previousTime)/3600000));const active=await getActiveAction(entityId,sim.id);
           if(active){
-            actionType=active.actionType;
-            const actionStart=new Date(active.startedSimulationAt);
-            const durationMinutes=Number(active.metadata?.durationMinutes||30);
-            const completionAt=new Date(actionStart.getTime()+durationMinutes*60000);
-            const eventId=active.metadata?.eventId||null;
-            const targetEntityId=active.metadata?.targetEntityId||null;
-            const targetLocationId=active.metadata?.targetLocationId||null;
-            const wasCompleted=nextTime>=completionAt;
-            const updateTime=wasCompleted?completionAt:nextTime;
-            const updateHours=Math.min(6,Math.max(0,(updateTime-previousTime)/3600000));
-            phase="entity.perception";const perception=await perceive(sim.id,entityId,nextTime);
-            phase="entity.needs";const needChanges=await updateNeeds(entityId,updateTime,updateHours,null,active.id,active.actionType);
-            phase="entity.emotions";await applyEmotions(entityId,updateTime,needChanges,null,active.id,active.actionType,updateHours);
-            if(wasCompleted){
-              phase="entity.action.complete";await completeAction({simulationId:sim.id,entityId,actionId:active.id,decisionId:active.decisionId,eventId,intentionId:active.intentionId,actionType:active.actionType,simulationTime:completionAt,targetEntityId,targetLocationId});
-              phase="entity.learning";await learnFromAction(entityId,active.actionType,completionAt);
-              phase="entity.development";await updateDevelopment(sim.id,entityId,completionAt);
-              phase="entity.traits";await developTraits(entityId,completionAt,signalForDecision(active.actionType),null,active.id);
-              phase="entity.goal";await completeGoalForAction(active.metadata?.goalId||null,active.actionType,completionAt);
-              phase="entity.habit";await recordHabitEvidence({entityId,simulationTime:completionAt,actionType:active.actionType});
-              phase="entity.memory";await createMemory({simulationId:sim.id,entityId,eventId,content:`Completed ${active.actionType.toLowerCase().replaceAll("_"," ")}`,importance:0.45,strength:0.9,confidence:0.8,emotionalIntensity:0.25,simulationAt:completionAt,metadata:{perceptionSummary:perception.location||null,durationMinutes}});
-            }
-            phase="entity.mental_state";
-            if(["TALKING","STUDYING","WORKING","EXPLORING"].includes(active.actionType))await updateMentalState(sim.id,entityId,nextTime,{currentFocus:active.actionType.toLowerCase().replaceAll("_"," "),mentalLoad:["WORKING","STUDYING"].includes(active.actionType)?0.55:0.35,certainty:0.7});
-            phase="entity.publish";this.hub.publish(sim.id,"entity.state",{entityId,action:{...active,status:wasCompleted?"COMPLETED":"ACTIVE",startedSimulationAt:active.startedSimulationAt,expectedCompletionSimulationAt:completionAt},needChanges});
-            continue;
+            actionType=active.actionType;const actionStart=new Date(active.startedSimulationAt);const durationMinutes=Number(active.metadata?.durationMinutes||30);const completionAt=new Date(actionStart.getTime()+durationMinutes*60000);const eventId=active.metadata?.eventId||null;const targetEntityId=active.metadata?.targetEntityId||null;const targetLocationId=active.metadata?.targetLocationId||null;const relationshipIntent=active.metadata?.relationshipIntent||"NONE";const wasCompleted=nextTime>=completionAt;const updateTime=wasCompleted?completionAt:nextTime;const updateHours=Math.min(6,Math.max(0,(updateTime-previousTime)/3600000));
+            phase="entity.perception";const perception=await perceive(sim.id,entityId,nextTime);phase="entity.needs";const needChanges=await updateNeeds(entityId,updateTime,updateHours,null,active.id,active.actionType);phase="entity.emotions";await applyEmotions(entityId,updateTime,needChanges,null,active.id,active.actionType,updateHours);
+            if(wasCompleted){phase="entity.action.complete";await completeAction({simulationId:sim.id,entityId,actionId:active.id,decisionId:active.decisionId,eventId,intentionId:active.intentionId,actionType:active.actionType,simulationTime:completionAt,targetEntityId,targetLocationId,relationshipIntent});phase="entity.learning";await learnFromAction(entityId,active.actionType,completionAt);phase="entity.development";await updateDevelopment(sim.id,entityId,completionAt);phase="entity.traits";await developTraits(entityId,completionAt,signalForDecision(active.actionType),null,active.id);phase="entity.goal";await completeGoalForAction(active.metadata?.goalId||null,active.actionType,completionAt);phase="entity.habit";await recordHabitEvidence({entityId,simulationTime:completionAt,actionType:active.actionType});phase="entity.memory";await createMemory({simulationId:sim.id,entityId,eventId,content:`Completed ${active.actionType.toLowerCase().replaceAll("_"," ")}`,importance:0.45,strength:0.9,confidence:0.8,emotionalIntensity:0.25,simulationAt:completionAt,metadata:{perceptionSummary:perception.location||null,durationMinutes,relationshipIntent}});}
+            phase="entity.mental_state";if(["TALKING","STUDYING","WORKING","EXPLORING"].includes(active.actionType))await updateMentalState(sim.id,entityId,nextTime,{currentFocus:active.actionType.toLowerCase().replaceAll("_"," "),mentalLoad:["WORKING","STUDYING"].includes(active.actionType)?0.55:0.35,certainty:0.7});
+            phase="entity.publish";this.hub.publish(sim.id,"entity.state",{entityId,action:{...active,status:wasCompleted?"COMPLETED":"ACTIVE",startedSimulationAt:active.startedSimulationAt,expectedCompletionSimulationAt:completionAt,relationshipIntent},needChanges});continue;
           }
-
-          phase="entity.perception";const perception=await perceive(sim.id,entityId,nextTime);
-          phase="entity.needs";const needChanges=await updateNeeds(entityId,nextTime,elapsedHours);
-          phase="entity.emotions";await applyEmotions(entityId,nextTime,needChanges,null,null,null,elapsedHours);
-          phase="entity.decision";const decision=await actForEntity({simulationId:sim.id,entityId,simulationTime:nextTime,gemini:this.gemini});if(!decision){
-            phase="entity.publish";this.hub.publish(sim.id,"entity.state",{entityId,decision:null,action:null,status:"IDLE",needChanges});continue;
-          }
-          actionType=decision.actionType;
-          phase="entity.action.start";const action=await startAction({simulationId:sim.id,entityId,decisionId:decision.decisionId,intentionId:decision.intentionId,actionType:decision.actionType,simulationTime:nextTime,targetEntityId:decision.targetEntityId||null,targetLocationId:decision.targetLocationId||null});
-          await pool.query(`UPDATE actions SET result=? WHERE id=UUID_TO_BIN(?)`,[JSON.stringify({eventId:action.eventId,actionType:action.actionType,durationMinutes:action.durationMinutes,targetEntityId:decision.targetEntityId||null,targetLocationId:decision.targetLocationId||null,goalId:decision.goalId||null}),action.actionId]);
-          phase="entity.publish";this.hub.publish(sim.id,"entity.state",{entityId,decision,action,status:"ACTIVE",needChanges});
+          phase="entity.perception";const perception=await perceive(sim.id,entityId,nextTime);phase="entity.needs";const needChanges=await updateNeeds(entityId,nextTime,elapsedHours);phase="entity.emotions";await applyEmotions(entityId,nextTime,needChanges,null,null,null,elapsedHours);phase="entity.decision";const decision=await actForEntity({simulationId:sim.id,entityId,simulationTime:nextTime,gemini:this.gemini});if(!decision){phase="entity.publish";this.hub.publish(sim.id,"entity.state",{entityId,decision:null,action:null,status:"IDLE",needChanges});continue;}
+          actionType=decision.actionType;phase="entity.action.start";const action=await startAction({simulationId:sim.id,entityId,decisionId:decision.decisionId,intentionId:decision.intentionId,actionType:decision.actionType,simulationTime:nextTime,targetEntityId:decision.targetEntityId||null,targetLocationId:decision.targetLocationId||null,relationshipIntent:decision.relationshipIntent||"NONE"});
+          await pool.query(`UPDATE actions SET result=? WHERE id=UUID_TO_BIN(?)`,[JSON.stringify({eventId:action.eventId,actionType:action.actionType,durationMinutes:action.durationMinutes,targetEntityId:decision.targetEntityId||null,targetLocationId:decision.targetLocationId||null,goalId:decision.goalId||null,relationshipIntent:decision.relationshipIntent||"NONE"}),action.actionId]);phase="entity.publish";this.hub.publish(sim.id,"entity.state",{entityId,decision,action,status:"ACTIVE",needChanges});
         }
-        phase="memory.decay";await decayMemories(sim.id,nextTime);const count=(this.tickCounter.get(sim.id)||0)+1;this.tickCounter.set(sim.id,count);
-        if(count%600===0){phase="asami.proactive_conversation";const asami=await entityRepo.getAsamiCandidate(sim.id);if(asami)await initiateConversation({simulationId:sim.id,asamiEntityId:asami.id,simulationTime:nextTime,gemini:this.gemini,hub:this.hub});}
-        if(count%env.SNAPSHOT_EVERY_TICKS===0){phase="snapshot";const snapshot=await buildSnapshot(sim.id,nextTime);await simRepo.createSnapshot(sim.id,nextTime,snapshot,1);}
-        phase="tick.finish";await simRepo.finishTick(tickId,"COMPLETED");this.hub.publish(sim.id,"simulation.tick",{tickId,simulationTime:nextTime});
+        phase="memory.decay";await decayMemories(sim.id,nextTime);const count=(this.tickCounter.get(sim.id)||0)+1;this.tickCounter.set(sim.id,count);if(count%600===0){phase="asami.proactive_conversation";const asami=await entityRepo.getAsamiCandidate(sim.id);if(asami)await initiateConversation({simulationId:sim.id,asamiEntityId:asami.id,simulationTime:nextTime,gemini:this.gemini,hub:this.hub});}if(count%env.SNAPSHOT_EVERY_TICKS===0){phase="snapshot";const snapshot=await buildSnapshot(sim.id,nextTime);await simRepo.createSnapshot(sim.id,nextTime,snapshot,1);}phase="tick.finish";await simRepo.finishTick(tickId,"COMPLETED");this.hub.publish(sim.id,"simulation.tick",{tickId,simulationTime:nextTime});
       }catch(err){const errorContext={...context,tickId,phase,entityId,actionType};try{await simRepo.finishTick(tickId,"FAILED");}catch(finishErr){logger.error(logger.contextError({...errorContext,secondaryFailure:"finishTick"},finishErr,"failed to mark simulation tick failed"));}throw Object.assign(err,{simulationContext:errorContext});}
     }catch(err){const mergedContext={...context,...(err.simulationContext||{}),phase,entityId,actionType};logger.error(logger.contextError(mergedContext,err,"simulation failed"));throw err;}
   }
 }
-
 function signalForDecision(action){return {TALKING:{EXTRAVERSION:1,SOCIABILITY:1,EMPATHY:0.2},EXPLORING:{OPENNESS:1,CURIOSITY:1,CONFIDENCE:0.2},STUDYING:{CONSCIENTIOUSNESS:1,DISCIPLINE:1,PATIENCE:0.4},WORKING:{CONSCIENTIOUSNESS:1,DISCIPLINE:1},PLAYING:{OPENNESS:0.4,IMPULSIVITY:0.3},WALKING:{OPENNESS:0.3},READING:{OPENNESS:0.4,CURIOSITY:0.6},SLEEPING:{PATIENCE:0.2},RESTING:{PATIENCE:0.2},EATING:{SELF_CARE:0.2},DRINKING:{SELF_CARE:0.2},WATCHING:{OPENNESS:0.1}}[action]||{};}
 async function buildSnapshot(simulationId,simulationTime){const actors=await entityRepo.listActors(simulationId,env.MAX_ENTITIES_PER_TICK),entities=[];for(const a of actors){const d=await entityRepo.getDashboard(simulationId,a.id);entities.push({entity:d.entity,needs:d.needs,emotions:d.emotions,traits:d.traits,location:d.location,currentAction:d.currentAction});}return {simulationId,simulationTime,entities};}
 module.exports={SimulationEngine,signalForDecision,buildSnapshot};
