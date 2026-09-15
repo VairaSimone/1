@@ -276,7 +276,7 @@ async function recordHabitEvidence({ entityId, simulationTime, actionType }) {
     await pool.query(`
       INSERT INTO habits
         (id,entity_id,name,description,strength,frequency,trigger_definition,action_definition,status,created_simulation_at,updated_simulation_at,version)
-      VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,?,?,'ACTIVE',?,?,1)
+      VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,?,?,?,'ACTIVE',?,?,1)
     `, [id, entityId, name, `A behavior that repeatedly appears around ${Math.round(meanHour)}:00.`, Math.min(0.75, 0.25 + rows.length * 0.04), frequency, JSON.stringify(triggerDefinition), JSON.stringify(actionDefinition), simulationTime, simulationTime]);
     return id;
   }
@@ -292,14 +292,22 @@ async function createPlanFromProposal({ simulationId, entityId, simulationTime, 
   const steps = Array.isArray(proposal.steps) ? proposal.steps.filter(s => safeText(s?.title, 255)).slice(0, 8) : [];
   if (!title || !steps.length) return null;
 
-  const [existing] = await pool.query(`SELECT BIN_TO_UUID(id) AS id,version FROM plans WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND goal_id=UUID_TO_BIN(?) AND status IN ('DRAFT','ACTIVE','PAUSED') ORDER BY created_simulation_at DESC LIMIT 1`, [simulationId, entityId, goalId || null]);
+  const normalizedGoalId = goalId || null;
+  const [existing] = await pool.query(`
+    SELECT BIN_TO_UUID(id) AS id,version
+    FROM plans
+    WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?)
+      AND ((goal_id=UUID_TO_BIN(?)) OR (goal_id IS NULL AND ? IS NULL))
+      AND status IN ('DRAFT','ACTIVE','PAUSED')
+    ORDER BY created_simulation_at DESC LIMIT 1
+  `, [simulationId, entityId, normalizedGoalId, normalizedGoalId]);
   if (existing.length) return existing[0].id;
 
   const planId = uuid();
   await pool.query(`
     INSERT INTO plans(id,simulation_id,entity_id,goal_id,title,status,strategy,created_simulation_at,version)
     VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,'ACTIVE',?,?,1)
-  `, [planId, simulationId, entityId, goalId || null, title, JSON.stringify({ ...(proposal.strategy || {}), source: 'conversation' }), simulationTime]);
+  `, [planId, simulationId, entityId, normalizedGoalId, title, JSON.stringify({ ...(proposal.strategy || {}), source: 'conversation' }), simulationTime]);
 
   for (let i = 0; i < steps.length; i += 1) {
     const step = steps[i];
@@ -311,8 +319,8 @@ async function createPlanFromProposal({ simulationId, entityId, simulationTime, 
     }
     await pool.query(`
       INSERT INTO plan_steps(id,plan_id,sequence,title,description,status,activity_type_id,intended_start_simulation_at,deadline_simulation_at,result,version)
-      VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,'PENDING',UUID_TO_BIN(?),NULL,NULL,NULL,1)
-    `, [uuid(), planId, i + 1, safeText(step.title, 255), safeText(step.description, 500) || null, activityTypeId]);
+      VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,'PENDING',UUID_TO_BIN(?),NULL,NULL,?,1)
+    `, [uuid(), planId, i + 1, safeText(step.title, 255), safeText(step.description, 500) || null, activityTypeId, JSON.stringify({ actionType: actionType || null })]);
   }
   return planId;
 }
@@ -336,76 +344,45 @@ async function applyDialogueCognition({ simulationId, entityId, simulationTime, 
     const id = await upsertKnowledge({ simulationId, entityId, simulationTime, item });
     if (id) knowledgeIds.push(id);
   }
-  const reflection = effects.reflection && typeof effects.reflection === 'object' ? effects.reflection : null;
-  const mentalState = reflection
-    ? await updateMentalState(simulationId, entityId, simulationTime, {
-        currentFocus: reflection.currentFocus,
-        currentConcern: reflection.currentConcern,
-        recentThought: reflection.thought,
-        mentalLoad: reflection.mentalLoad,
-        rumination: reflection.rumination,
-        certainty: reflection.certainty
-      })
-    : null;
-  const habitCandidate = effects.habitCandidate && typeof effects.habitCandidate === 'object' ? effects.habitCandidate : null;
   let habitId = null;
-  if (habitCandidate && clamp01(habitCandidate.confidence, 0) >= 0.8) {
-    habitId = await maybeCreateHabitFromCandidate({ entityId, simulationTime, proposal: habitCandidate });
+  if (effects.habitCandidate?.actionType && clamp01(effects.habitCandidate.confidence, 0) >= 0.8) {
+    habitId = await recordHabitEvidence({ entityId, simulationTime, actionType: effects.habitCandidate.actionType });
   }
+  const reflection = effects.reflection && typeof effects.reflection === 'object' ? effects.reflection : {};
+  const mentalState = await updateMentalState(simulationId, entityId, simulationTime, reflection);
   const planId = await createPlanFromProposal({ simulationId, entityId, simulationTime, goalId, proposal: effects.planProposal });
   return { preferenceIds, beliefIds, knowledgeIds, habitId, mentalState, planId };
 }
 
-async function maybeCreateHabitFromCandidate({ entityId, simulationTime, proposal }) {
-  const name = safeText(proposal.name, 150);
-  const description = safeText(proposal.description, 500) || null;
-  if (!name) return null;
-  const [existing] = await pool.query(`SELECT BIN_TO_UUID(id) AS id,version,strength FROM habits WHERE entity_id=UUID_TO_BIN(?) AND LOWER(name)=LOWER(?) AND status IN ('ACTIVE','WEAKENING') LIMIT 1`, [entityId, name]);
-  const confidence = clamp01(proposal.confidence, 0.5);
-  const strength = Math.max(0.2, Math.min(0.8, confidence));
-  const frequency = safeText(proposal.frequency, 100) || null;
-  const triggerDefinition = proposal.triggerDefinition && typeof proposal.triggerDefinition === 'object' ? proposal.triggerDefinition : { type: 'CONVERSATION' };
-  const actionDefinition = proposal.actionDefinition && typeof proposal.actionDefinition === 'object' ? proposal.actionDefinition : {};
-  if (!existing.length) {
-    const id = uuid();
-    await pool.query(`
-      INSERT INTO habits(id,entity_id,name,description,strength,frequency,trigger_definition,action_definition,status,created_simulation_at,updated_simulation_at,version)
-      VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,?,?,?, 'ACTIVE',?,?,1)
-    `, [id, entityId, name, description, strength, frequency, JSON.stringify(triggerDefinition), JSON.stringify(actionDefinition), simulationTime, simulationTime]);
-    return id;
+function cognitiveDecisionModifier(profile, actionType) {
+  if (!profile || !actionType) return 0;
+  const key = `ACTION:${normalizeKey(actionType, 50)}`;
+  let modifier = 0;
+  for (const p of profile.preferences || []) {
+    if (normalizeKey(p.targetType, 50) === key) {
+      modifier += Number(p.preferenceValue || 0) * Number(p.strength || 0) * Number(p.confidence || 0) * 0.8;
+    }
   }
-  const h = existing[0];
-  const nextStrength = Math.min(1, Number(h.strength) + 0.02);
-  const [updated] = await pool.query(`UPDATE habits SET strength=?,description=?,frequency=?,trigger_definition=?,action_definition=?,updated_simulation_at=?,version=version+1 WHERE id=UUID_TO_BIN(?) AND version=?`, [nextStrength, description, frequency, JSON.stringify(triggerDefinition), JSON.stringify(actionDefinition), simulationTime, h.id, h.version]);
-  return updated.affectedRows ? h.id : null;
-}
-
-async function cognitiveDecisionModifier(context, candidates) {
-  const profile = context?.cognitiveProfile;
-  if (!profile || !Array.isArray(candidates)) return candidates;
-  const prefMap = new Map();
-  for (const p of profile.preferences || []) prefMap.set(p.targetType, Number(p.preferenceValue) * Number(p.strength) * Number(p.confidence));
-  const habitByAction = new Map();
-  for (const h of profile.habits || []) {
-    const action = normalizeKey(h.actionDefinition?.actionType, 100);
-    if (action) habitByAction.set(action, Math.max(habitByAction.get(action) || 0, Number(h.strength)));
+  for (const habit of profile.habits || []) {
+    const habitAction = normalizeKey(habit.actionDefinition?.actionType, 50);
+    if (habitAction === normalizeKey(actionType, 50)) modifier += Number(habit.strength || 0) * 0.25;
   }
-  return candidates.map(c => {
-    const action = normalizeKey(c.action, 100);
-    let score = Number(c.score) || 0;
-    score += (prefMap.get(`ACTION:${action}`) || 0) * 0.35;
-    score += (habitByAction.get(action) || 0) * 0.15;
-    return { ...c, score };
-  }).sort((a,b) => b.score - a.score);
+  return Math.max(-1.5, Math.min(1.5, modifier));
 }
 
 module.exports = {
+  clamp01,
+  clampSigned,
+  safeText,
+  parseJson,
+  normalizeKey,
   getCognitiveProfile,
   updateMentalState,
-  applyDialogueCognition,
+  upsertPreference,
+  upsertBelief,
+  upsertKnowledge,
   recordHabitEvidence,
   createPlanFromProposal,
-  cognitiveDecisionModifier,
-  clamp01,
-  safeText
+  applyDialogueCognition,
+  cognitiveDecisionModifier
 };
