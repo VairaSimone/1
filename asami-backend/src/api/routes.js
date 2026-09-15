@@ -7,7 +7,7 @@ const { getRelationships } = require("../services/relationship-service");
 const { getDevelopment,getDevelopmentHistory } = require("../services/development-service");
 const { sendMessage } = require("../services/chat-service");
 const { getUsage } = require("../services/gemini-budget-service");
-const { simulationCreate,speed,message,uuid } = require("./validation");
+const { simulationCreate, speed, message, uuid, queryLimit } = require("./validation");
 const { runIdempotent } = require("../services/idempotency-service");
 const { env } = require("../config/env");
 
@@ -28,6 +28,7 @@ function buildRouter({hub,gemini}){
   router.get("/simulations/:simulationId/clock",async(req,res)=>{
     const simulationId=uuid.parse(req.params.simulationId);
     const sim=await simRepo.getSimulation(simulationId);
+    if(!sim)return res.status(404).json({error:"Simulation not found"});
     const clock=await simRepo.getActiveClock(simulationId);
     res.json({simulation:sim,clock});
   });
@@ -101,18 +102,19 @@ function buildRouter({hub,gemini}){
       ? uuid.parse(req.query.entityId)
       : (await entityRepo.getAsamiCandidate(simulationId))?.id;
     if(!entityId)return res.status(404).json({error:"No entity available for timeline"});
-    res.json(await listTimeline(simulationId,entityId,Number(req.query.limit||200)));
+    const limit=queryLimit(200).parse(req.query.limit);
+    res.json(await listTimeline(simulationId,entityId,limit));
   });
   router.get("/simulations/:simulationId/events",async(req,res)=>{
     res.json(await listEvents(uuid.parse(req.params.simulationId),{
-      from:req.query.from,to:req.query.to,limit:Number(req.query.limit||100)
+      from:req.query.from,to:req.query.to,limit:queryLimit(100).parse(req.query.limit)
     }));
   });
   router.get("/simulations/:simulationId/actions",async(req,res)=>{
     const simulationId=uuid.parse(req.params.simulationId);
     const params=[simulationId]; let where="simulation_id=UUID_TO_BIN(?)";
     if(req.query.entityId){where+=" AND entity_id=UUID_TO_BIN(?)";params.push(uuid.parse(req.query.entityId));}
-    params.push(Math.min(Number(req.query.limit||100),500));
+    params.push(queryLimit(100).parse(req.query.limit));
     const [rows]=await require("../db/pool").pool.query(`
       SELECT BIN_TO_UUID(id) AS id,BIN_TO_UUID(entity_id) AS entityId,action_type AS actionType,
              source_type AS sourceType,status,started_simulation_at AS startedAt,
@@ -121,7 +123,7 @@ function buildRouter({hub,gemini}){
     res.json(rows);
   });
   router.get("/simulations/:simulationId/memories/:entityId",async(req,res)=>{
-    res.json(await listMemories(uuid.parse(req.params.simulationId),uuid.parse(req.params.entityId),Number(req.query.limit||100)));
+    res.json(await listMemories(uuid.parse(req.params.simulationId),uuid.parse(req.params.entityId),queryLimit(100).parse(req.query.limit)));
   });
   router.get("/simulations/:simulationId/relationships/:entityId",async(req,res)=>{
     res.json(await getRelationships(uuid.parse(req.params.simulationId),uuid.parse(req.params.entityId)));
