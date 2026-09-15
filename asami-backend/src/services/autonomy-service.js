@@ -28,12 +28,21 @@ async function createGoalIfNeeded(simulationId,entityId,simulationTime,needs){
       AND status IN ('DRAFT','ACTIVE','PAUSED') LIMIT 1
   `,[simulationId,entityId]);
   if(active.length)return active[0].id;
-  const top=needs.slice().sort((a,b)=>(Number(b.value)*Number(b.priorityWeight))-(Number(a.value)*Number(a.priorityWeight)))[0];
+
+  // Goals are driven by unmet pressures, not by positive resources such as
+  // Safety or Comfort. A resource at 100% must never create an endless goal.
+  const goalPressureCodes=new Set([
+    "HUNGER","THIRST","SLEEPINESS","SOCIAL_NEED","FUN",
+    "CURIOSITY","ACHIEVEMENT","BELONGING"
+  ]);
+  const candidates=needs.filter(n => goalPressureCodes.has(n.code) && Number(n.value)>0.18);
+  const top=candidates.slice().sort((a,b)=>(Number(b.value)*Number(b.priorityWeight))-(Number(a.value)*Number(a.priorityWeight)))[0];
   if(!top)return null;
+
   const goalId=require("../lib/ids").uuid();
-  const labels={HUNGER:"Find food",THIRST:"Find water",SLEEPINESS:"Get enough sleep",ENERGY:"Recover energy",
-    SOCIAL_NEED:"Connect with someone",FUN:"Have fun",CURIOSITY:"Learn something new",ACHIEVEMENT:"Accomplish something",
-    BELONGING:"Strengthen belonging",COMFORT:"Seek comfort",SAFETY:"Stay safe"};
+  const labels={HUNGER:"Find food",THIRST:"Find water",SLEEPINESS:"Get enough sleep",
+    SOCIAL_NEED:"Connect with someone",FUN:"Have fun",CURIOSITY:"Learn something new",
+    ACHIEVEMENT:"Accomplish something",BELONGING:"Strengthen belonging"};
   await pool.query(`
     INSERT INTO goals
       (id,simulation_id,entity_id,title,description,goal_type,priority,status,progress,created_simulation_at,motivation,version)
@@ -59,8 +68,6 @@ function shouldAskGemini(entity, context) {
   const second = Number(candidates[1]?.score || 0);
   const gap = top - second;
 
-  // Gemini is reserved for genuinely ambiguous or weakly motivated decisions.
-  // Clear routine choices stay entirely deterministic without reducing autonomy.
   if (top < 0.70) return true;
   if (gap < 0.12) return true;
 
