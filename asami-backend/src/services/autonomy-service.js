@@ -84,7 +84,7 @@ function canUseGeminiDecision(entityId,simulationTime){
   const previous=lastAutonomyDecisionAt.get(entityId);
   if(previous===undefined){lastAutonomyDecisionAt.set(entityId,now);return true;}
   const configured=Number(env.GEMINI_AUTONOMY_MIN_INTERVAL_MINUTES);
-  const interval=Math.max(0,Number.isFinite(configured)?configured:10)*60000;
+  const interval=Math.max(30,Number.isFinite(configured)?configured:30)*60000;
   if(now-previous<interval)return false;
   lastAutonomyDecisionAt.set(entityId,now);
   return true;
@@ -127,20 +127,44 @@ async function actForEntity({simulationId,entityId,simulationTime,gemini}){
   return decision;
 }
 
+const GOAL_ACTIONS = {
+  HUNGER: new Set(["EATING"]),
+  THIRST: new Set(["DRINKING"]),
+  SLEEPINESS: new Set(["SLEEPING"]),
+  ENERGY: new Set(["SLEEPING","RESTING"]),
+  SOCIAL_NEED: new Set(["TALKING"]),
+  BELONGING: new Set(["TALKING"]),
+  FUN: new Set(["PLAYING","WATCHING"]),
+  CURIOSITY: new Set(["STUDYING","READING","EXPLORING"]),
+  ACHIEVEMENT: new Set(["STUDYING","READING","WORKING"])
+};
+
+function goalActionSatisfiesNeed(needCode, actionType){
+  return GOAL_ACTIONS[needCode]?.has(String(actionType || "").toUpperCase()) || false;
+}
+
 async function completeGoalForAction(goalId,actionType,simulationTime){
-  if(!goalId)return;
-  const goalAction={
-    EATING:["HUNGER"],DRINKING:["THIRST"],SLEEPING:["SLEEPINESS","ENERGY"],
-    RESTING:["ENERGY","COMFORT"],TALKING:["SOCIAL_NEED","BELONGING"],
-    PLAYING:["FUN"],STUDYING:["ACHIEVEMENT","CURIOSITY"],READING:["CURIOSITY","ACHIEVEMENT"],
-    EXPLORING:["CURIOSITY"],WORKING:["ACHIEVEMENT"],WALKING:["FUN","CURIOSITY"],WATCHING:["FUN"]
-  };
-  if(!(goalAction[actionType]||[]).length)return;
-  await pool.query(`
+  if(!goalId)return false;
+  const [rows]=await pool.query(`
+    SELECT motivation FROM goals
+    WHERE id=UUID_TO_BIN(?) AND status IN ('ACTIVE','DRAFT','PAUSED')
+    LIMIT 1
+  `,[goalId]);
+  if(!rows.length)return false;
+  let motivation=rows[0].motivation;
+  if(Buffer.isBuffer(motivation))motivation=motivation.toString();
+  if(typeof motivation === "string"){
+    try{motivation=JSON.parse(motivation);}catch{motivation=null;}
+  }
+  const needCode=String(motivation?.need||"").toUpperCase();
+  if(!goalActionSatisfiesNeed(needCode,actionType))return false;
+
+  const [updated]=await pool.query(`
     UPDATE goals SET progress=1,status='COMPLETED',completed_simulation_at=?,
       result=?,version=version+1
     WHERE id=UUID_TO_BIN(?) AND status IN ('ACTIVE','DRAFT','PAUSED')
-  `,[simulationTime,JSON.stringify({completedByAction:actionType}),goalId]);
+  `,[simulationTime,JSON.stringify({completedByAction:actionType,need:needCode}),goalId]);
+  return Boolean(updated.affectedRows);
 }
 
 async function selectTalkTarget(simulationId,entityId,actionType){
@@ -153,4 +177,4 @@ async function selectTalkTarget(simulationId,entityId,actionType){
   return rows[0]?.id||null;
 }
 
-module.exports={findAutonomousActors,actForEntity,completeGoalForAction,shouldAskGemini,canUseGeminiDecision};
+module.exports={findAutonomousActors,actForEntity,completeGoalForAction,shouldAskGemini,canUseGeminiDecision,goalActionSatisfiesNeed};
