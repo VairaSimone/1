@@ -2,7 +2,9 @@ const { pool } = require("../db/pool");
 const { uuid } = require("../lib/ids");
 const { clamp } = require("./state-rules");
 
-
+function round5(value) {
+  return Math.round((Number(value) + Number.EPSILON) * 100000) / 100000;
+}
 
 async function ensureEntityState(entityId, simulationTime) {
   const [[needDefs],[emotionDefs],[traitDefs],[skillDefs]] = await Promise.all([
@@ -16,7 +18,7 @@ async function ensureEntityState(entityId, simulationTime) {
       INSERT IGNORE INTO entity_needs_current(entity_id,need_id,value,updated_simulation_at,version)
       VALUES(UUID_TO_BIN(?),?,?,?,1)
     `,[entityId, d.id, d.default_value, simulationTime]);
-    }
+  }
   for (const d of emotionDefs) {
     await pool.query(`
       INSERT IGNORE INTO entity_emotions_current(entity_id,emotion_id,intensity,updated_simulation_at,version)
@@ -29,12 +31,12 @@ async function ensureEntityState(entityId, simulationTime) {
       VALUES(UUID_TO_BIN(?),?,?,?,1)
     `,[entityId, d.id, d.default_value, simulationTime]);
   }
-for (const d of skillDefs) {
-  await pool.query(`
-    INSERT IGNORE INTO entity_skills(entity_id,skill_id,updated_simulation_at,version)
-    VALUES(UUID_TO_BIN(?),?, ?,1)
-  `, [entityId, d.id, simulationTime]);
-}
+  for (const d of skillDefs) {
+    await pool.query(`
+      INSERT IGNORE INTO entity_skills(entity_id,skill_id,updated_simulation_at,version)
+      VALUES(UUID_TO_BIN(?),?, ?,1)
+    `, [entityId, d.id, simulationTime]);
+  }
 }
 
 async function readNeeds(entityId) {
@@ -72,9 +74,10 @@ async function updateNeeds(entityId, simulationTime, deltaHours, causeEventId=nu
       const gain = (gains[activeActionType] || {})[r.code] || 0;
       delta += gain * deltaHours;
     }
-    const oldValue = Number(r.value);
-    const next = clamp(oldValue + delta);
-    if (Math.abs(next - oldValue) < 0.000001) continue;
+    const oldValue = round5(r.value);
+    const next = round5(clamp(oldValue + delta));
+    const historyDelta = round5(next - oldValue);
+    if (Math.abs(historyDelta) < 0.000001) continue;
     const [current] = await pool.query(`
       SELECT version FROM entity_needs_current
       WHERE entity_id=UUID_TO_BIN(?) AND need_id=UUID_TO_BIN(?) LIMIT 1
@@ -87,8 +90,6 @@ async function updateNeeds(entityId, simulationTime, deltaHours, causeEventId=nu
       WHERE entity_id=UUID_TO_BIN(?) AND need_id=UUID_TO_BIN(?) AND version=?
     `,[next,simulationTime,entityId,r.needId,expectedVersion]);
     if (!updated.affectedRows) throw Object.assign(new Error("Optimistic lock conflict on need"),{code:"OPTIMISTIC_LOCK"});
-
-    const historyDelta = Number((next - oldValue).toFixed(5));
     await pool.query(`
       INSERT INTO entity_need_history
         (id,entity_id,need_id,old_value,new_value,delta,simulation_time,cause_event_id,cause_action_id)
@@ -114,8 +115,10 @@ async function applyEmotions(entityId, simulationTime, changes, causeEventId=nul
     if (map.has("SOCIAL_NEED")) delta += map.get("SOCIAL_NEED") * 0.4;
     if (map.has("SAFETY")) delta += map.get("SAFETY") * -0.5;
     if (row.code === "CALM" && map.get("ENERGY") > 0) delta += 0.01;
-    const next=clamp(Number(row.intensity)+delta);
-    if (Math.abs(next-Number(row.intensity))<0.000001) continue;
+    const oldIntensity = round5(row.intensity);
+    const next = round5(clamp(oldIntensity + delta));
+    const historyDelta = round5(next - oldIntensity);
+    if (Math.abs(historyDelta)<0.000001) continue;
     await pool.query(`
       UPDATE entity_emotions_current SET intensity=?,updated_simulation_at=?,version=version+1
       WHERE entity_id=UUID_TO_BIN(?) AND emotion_id=UUID_TO_BIN(?) AND version=?
@@ -124,8 +127,8 @@ async function applyEmotions(entityId, simulationTime, changes, causeEventId=nul
       INSERT INTO entity_emotion_history
         (id,entity_id,emotion_id,old_intensity,new_intensity,delta,simulation_time,cause_event_id,cause_action_id)
       VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,?,UUID_TO_BIN(?),UUID_TO_BIN(?))
-    `,[uuid(),entityId,row.emotionId,row.intensity,next,next-Number(row.intensity),simulationTime,causeEventId,causeActionId]);
-    result.push({code:row.code,old:Number(row.intensity),new:next,delta:next-Number(row.intensity)});
+    `,[uuid(),entityId,row.emotionId,oldIntensity,next,historyDelta,simulationTime,causeEventId,causeActionId]);
+    result.push({code:row.code,old:oldIntensity,new:next,delta:historyDelta});
   }
   return result;
 }
@@ -155,7 +158,7 @@ async function developTraits(entityId, simulationTime, signals, causeEventId=nul
     const signal=Number(signals[t.code] || 0);
     const delta=Math.max(-0.01,Math.min(0.01,signal * Number(t.developmentWeight) * 0.001));
     if (Math.abs(delta)<0.000001) continue;
-    const old=Number(t.value), next=clamp(old+delta);
+    const old=round5(t.value), next=round5(clamp(old+delta)), historyDelta=round5(next-old);
     const [r]=await pool.query(`
       UPDATE entity_traits_current SET value=?,updated_simulation_at=?,version=version+1
       WHERE entity_id=UUID_TO_BIN(?) AND trait_id=UUID_TO_BIN(?) AND version=?
@@ -165,8 +168,8 @@ async function developTraits(entityId, simulationTime, signals, causeEventId=nul
       INSERT INTO entity_trait_history
         (id,entity_id,trait_id,old_value,new_value,delta,changed_simulation_at,cause_event_id,cause_action_id,change_reason)
       VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,?,UUID_TO_BIN(?),UUID_TO_BIN(?),?)
-    `,[uuid(),entityId,t.traitId,old,next,delta,simulationTime,causeEventId,causeActionId,"behavioral reinforcement"]);
-    out.push({code:t.code,old,next,delta});
+    `,[uuid(),entityId,t.traitId,old,next,historyDelta,simulationTime,causeEventId,causeActionId,"behavioral reinforcement"]);
+    out.push({code:t.code,old,next,delta:historyDelta});
   }
   return out;
 }
