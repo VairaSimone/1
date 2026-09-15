@@ -10,6 +10,7 @@ const { createMemory, decayMemories } = require("../services/memory-service");
 const { generateWorldEvents } = require("../services/world-service");
 const { updateDevelopment } = require("../services/development-service");
 const { initiateConversation } = require("../services/chat-service");
+const { recordHabitEvidence, updateMentalState } = require("../services/personality-service");
 
 class SimulationEngine {
   constructor({gemini,hub}) {
@@ -56,8 +57,8 @@ class SimulationEngine {
       for(const entityId of actors){
         await ensureEntityState(entityId,nextTime);
         const perception=await perceive(sim.id,entityId,nextTime);
-        const needs=await readNeeds(entityId);
         const decision=await actForEntity({simulationId:sim.id,entityId,simulationTime:nextTime,gemini:this.gemini});
+        if(!decision) continue;
         const action=await executeAction({
           simulationId:sim.id,entityId,decisionId:decision.decisionId,intentionId:decision.intentionId,
           actionType:decision.actionType,simulationTime:nextTime,
@@ -69,7 +70,15 @@ class SimulationEngine {
         await learnFromAction(entityId,decision.actionType,nextTime);
         await completeGoalForAction(decision.goalId,decision.actionType,nextTime);
         await developTraits(entityId,nextTime,signalForDecision(decision.actionType),action.eventId,action.actionId);
+        await recordHabitEvidence({ entityId, simulationTime: nextTime, actionType: decision.actionType });
         await updateDevelopment(sim.id,entityId,nextTime);
+        if (decision.actionType === "TALKING" || decision.actionType === "STUDYING" || decision.actionType === "WORKING" || decision.actionType === "EXPLORING") {
+          await updateMentalState(sim.id, entityId, nextTime, {
+            currentFocus: decision.actionType.toLowerCase().replaceAll("_", " "),
+            mentalLoad: decision.actionType === "WORKING" || decision.actionType === "STUDYING" ? 0.55 : 0.35,
+            certainty: decision.confidence
+          });
+        }
         await createMemory({
           simulationId:sim.id,entityId,eventId:action.eventId,
           content:`Experienced ${decision.actionType.toLowerCase().replaceAll("_"," ")} at ${nextTime.toISOString()}`,
@@ -82,9 +91,8 @@ class SimulationEngine {
       const count=(this.tickCounter.get(sim.id)||0)+1;
       this.tickCounter.set(sim.id,count);
 
-      // Every ~30 simulation minutes give Asami an opportunity to initiate
-      // communication. The service itself applies need/relationship/cooldown
-      // rules, so this is only a cheap scheduling opportunity, not a Gemini call.
+      // Every ~30 simulation ticks give Asami an opportunity to initiate
+      // communication. The service itself applies need/cooldown rules.
       if(count % 30 === 0){
         const asami = await entityRepo.getAsamiCandidate(sim.id);
         if(asami){
