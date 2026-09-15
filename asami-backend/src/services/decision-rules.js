@@ -16,6 +16,17 @@ const actionNeeds = {
   WATCHING:{FUN:0.9}
 };
 
+const actionNeedGates = {
+  EATING: ["HUNGER", 0.15],
+  DRINKING: ["THIRST", 0.15],
+  TALKING: ["SOCIAL_NEED", 0.12],
+  PLAYING: ["FUN", 0.18],
+  STUDYING: ["ACHIEVEMENT", 0.18],
+  READING: ["CURIOSITY", 0.18],
+  EXPLORING: ["CURIOSITY", 0.18],
+  WORKING: ["ACHIEVEMENT", 0.20]
+};
+
 function needValue(needs, code) {
   const need = needs.find(x => x.code === code);
   return need ? Number(need.value) : 0;
@@ -27,6 +38,10 @@ function needWeight(needs, code) {
 }
 
 function scoreAction(action,needs,traits){
+  const gate = actionNeedGates[action];
+  const gatedNeed = gate ? needValue(needs, gate[0]) : null;
+  if (gate && gatedNeed < gate[1]) return 0;
+
   let score=0;
 
   if(action === "SLEEPING"){
@@ -34,18 +49,15 @@ function scoreAction(action,needs,traits){
     const energy = needValue(needs, "ENERGY");
     score += sleepiness * 2.0 * needWeight(needs, "SLEEPINESS");
     score += (1 - energy) * 1.4 * needWeight(needs, "ENERGY");
-
     if(sleepiness < 0.18 && energy > 0.72) score *= 0.15;
   } else if(action === "RESTING"){
     const energy = needValue(needs, "ENERGY");
     const comfort = needValue(needs, "COMFORT");
-
     if(energy >= 0.72 && comfort < 0.65){
       score = 0;
     } else {
       score += Math.max(0, 1 - energy) * 1.0 * needWeight(needs, "ENERGY");
       score += comfort * 0.7 * needWeight(needs, "COMFORT");
-
       if(energy >= 0.82) score *= 0.25;
       else if(energy >= 0.72) score *= 0.5;
     }
@@ -54,21 +66,6 @@ function scoreAction(action,needs,traits){
       score += needValue(needs, code) * w * needWeight(needs, code);
     }
   }
-
-  // Hard need gates prevent repetitive autonomous loops once the underlying
-  // need has already been adequately satisfied.
-  const gates = {
-    EATING: ["HUNGER", 0.15],
-    DRINKING: ["THIRST", 0.15],
-    TALKING: ["SOCIAL_NEED", 0.12],
-    PLAYING: ["FUN", 0.18],
-    STUDYING: ["ACHIEVEMENT", 0.18],
-    READING: ["CURIOSITY", 0.18],
-    EXPLORING: ["CURIOSITY", 0.18],
-    WORKING: ["ACHIEVEMENT", 0.2]
-  };
-  const gate = gates[action];
-  if (gate && needValue(needs, gate[0]) < gate[1]) score = 0;
 
   const t=new Map(traits.map(x=>[x.code,Number(x.value)]));
   if(action==="TALKING") score+=((t.get("EXTRAVERSION")||0.5)+(t.get("SOCIABILITY")||0.5))*0.2;
