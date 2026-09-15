@@ -28,8 +28,15 @@ class SimulationEngine {
     await this.pulse();
   }
 
-  async stop() {
+  async stop({drainTimeoutMs=5000}={}) {
     if(this.interval){clearInterval(this.interval);this.interval=null;}
+    const deadline=Date.now()+Math.max(0,Number(drainTimeoutMs)||5000);
+    while(this.running.size && Date.now()<deadline){
+      await new Promise(resolve=>setTimeout(resolve,50));
+    }
+    if(this.running.size){
+      logger.warn({activeSimulations:this.running.size},"engine shutdown timeout reached; stopping with active simulations");
+    }
   }
 
   async pulse() {
