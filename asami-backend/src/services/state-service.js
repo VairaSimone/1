@@ -72,8 +72,9 @@ async function updateNeeds(entityId, simulationTime, deltaHours, causeEventId=nu
       const gain = (gains[activeActionType] || {})[r.code] || 0;
       delta += gain * deltaHours;
     }
-    const next = clamp(Number(r.value) + delta);
-    if (Math.abs(next - Number(r.value)) < 0.000001) continue;
+    const oldValue = Number(r.value);
+    const next = clamp(oldValue + delta);
+    if (Math.abs(next - oldValue) < 0.000001) continue;
     const [current] = await pool.query(`
       SELECT version FROM entity_needs_current
       WHERE entity_id=UUID_TO_BIN(?) AND need_id=UUID_TO_BIN(?) LIMIT 1
@@ -86,12 +87,14 @@ async function updateNeeds(entityId, simulationTime, deltaHours, causeEventId=nu
       WHERE entity_id=UUID_TO_BIN(?) AND need_id=UUID_TO_BIN(?) AND version=?
     `,[next,simulationTime,entityId,r.needId,expectedVersion]);
     if (!updated.affectedRows) throw Object.assign(new Error("Optimistic lock conflict on need"),{code:"OPTIMISTIC_LOCK"});
+
+    const historyDelta = Number((next - oldValue).toFixed(5));
     await pool.query(`
       INSERT INTO entity_need_history
         (id,entity_id,need_id,old_value,new_value,delta,simulation_time,cause_event_id,cause_action_id)
       VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,?,UUID_TO_BIN(?),UUID_TO_BIN(?))
-    `,[uuid(),entityId,r.needId,r.value,next,next-Number(r.value),simulationTime,causeEventId,causeActionId]);
-    changes.push({ code:r.code, old:Number(r.value), new:next, delta:next-Number(r.value) });
+    `,[uuid(),entityId,r.needId,oldValue,next,historyDelta,simulationTime,causeEventId,causeActionId]);
+    changes.push({ code:r.code, old:oldValue, new:next, delta:historyDelta });
   }
   return changes;
 }
