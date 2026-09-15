@@ -160,17 +160,19 @@ async function updateCommunicationStyle(entityId, proposed, simulationTime) {
   const previous = attributes.communicationStyle && typeof attributes.communicationStyle === "object"
     ? attributes.communicationStyle
     : {};
-  const next = {
-    formality: clamp01(proposed.formality ?? previous.formality ?? 0.45),
-    warmth: clamp01(proposed.warmth ?? previous.warmth ?? 0.6),
-    directness: clamp01(proposed.directness ?? previous.directness ?? 0.55),
-    verbosity: clamp01(proposed.verbosity ?? previous.verbosity ?? 0.45),
-    humor: clamp01(proposed.humor ?? previous.humor ?? 0.25),
-    emojiUse: clamp01(proposed.emojiUse ?? previous.emojiUse ?? 0.08),
-    emotionalOpenness: clamp01(proposed.emotionalOpenness ?? previous.emotionalOpenness ?? 0.55),
-    argumentativeDepth: clamp01(proposed.argumentativeDepth ?? previous.argumentativeDepth ?? 0.6),
-    updatedSimulationAt: simulationTime
+  const defaults = {
+    formality: 0.45, warmth: 0.6, directness: 0.55, verbosity: 0.45,
+    humor: 0.25, emojiUse: 0.08, emotionalOpenness: 0.55, argumentativeDepth: 0.6
   };
+  const next = { updatedSimulationAt: simulationTime };
+
+  for (const key of Object.keys(defaults)) {
+    const base = clamp01(previous[key] ?? defaults[key]);
+    const requested = proposed[key];
+    // Keep personality/style evolution gradual even if the model emits a large jump.
+    const evolution = Number.isFinite(Number(requested)) ? clampDelta(Number(requested) - base, 0.05) : 0;
+    next[key] = clamp01(base + evolution);
+  }
 
   attributes.communicationStyle = next;
   await pool.query(`UPDATE entities SET attributes=?,version=version+1 WHERE id=UUID_TO_BIN(?)`, [JSON.stringify(attributes), entityId]);
