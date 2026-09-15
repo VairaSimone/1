@@ -15,20 +15,15 @@ export function Chat({ messages, asami, senderId, onSenderId, onSend }: { messag
   }, [messages.length])
 
   const canSend = Boolean(senderId && draft.trim() && !sending)
-  const hints = useMemo(() => ['Come stai?', 'Cosa stai facendo adesso?', 'Cosa ricordi di recente?'], [])
+  const hints = useMemo(() => ['Come stai?', 'Cosa stai facendo adesso?', 'Cosa ricordi di recente?', 'Perché la pensi così?'], [])
 
   const submit = async () => {
     if (!canSend) return
     setSending(true)
     setError(null)
-    try {
-      await onSend(draft.trim())
-      setDraft('')
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Invio fallito.')
-    } finally {
-      setSending(false)
-    }
+    try { await onSend(draft.trim()); setDraft('') }
+    catch (e) { setError(e instanceof Error ? e.message : 'Invio fallito.') }
+    finally { setSending(false) }
   }
 
   return <Panel className="chat-panel">
@@ -37,18 +32,23 @@ export function Chat({ messages, asami, senderId, onSenderId, onSend }: { messag
       <div>
         <div className="eyebrow">DIRECT COMMUNICATION</div>
         <h2>Parla con {asami.displayName}</h2>
-        <span>Asami risponde usando il suo stato, i suoi ricordi, i tratti, gli obiettivi e la relazione con te.</span>
+        <span>Stai parlando con Asami: la sua memoria, il suo stato, i suoi obiettivi, le sue relazioni e il suo modo di comunicare possono cambiare nel tempo.</span>
       </div>
     </div>
 
     <div className="chat-body" ref={scrollRef}>
-      {messages.length ? messages.map((m) => <div className={`message ${m.messageType === 'ASSISTANT' ? 'assistant' : 'user'}`} key={m.id}>
-        <div className="message-icon">{m.messageType === 'ASSISTANT' ? <Bot size={15} /> : <UserRound size={15} />}</div>
-        <div className="message-bubble">
-          <p>{m.content}</p>
-          <span>{formatSimTime(m.simulationAt)}</span>
+      {messages.length ? messages.map((m) => {
+        const metadata = (m.metadata && typeof m.metadata === 'object' ? m.metadata : {}) as Record<string, unknown>
+        const proactive = Boolean(metadata.proactive)
+        return <div className={`message ${m.messageType === 'ASSISTANT' ? 'assistant' : 'user'}`} key={m.id}>
+          <div className="message-icon">{m.messageType === 'ASSISTANT' ? <Bot size={15} /> : <UserRound size={15} />}</div>
+          <div className="message-bubble">
+            {proactive && <small className="message-origin">ASAMI TI HA SCRITTO PER PRIMA</small>}
+            <p>{m.content}</p>
+            <span>{formatSimTime(m.simulationAt)}</span>
+          </div>
         </div>
-      </div>) : <EmptyState icon={<Bot size={21} />} title="Conversazione vuota" text="Scrivi a Asami quando hai configurato un sender entity valido." />}
+      }) : <EmptyState icon={<Bot size={21} />} title="Conversazione vuota" text="Scrivi a Asami quando hai configurato un sender entity valido." />}
     </div>
 
     <div className="chat-composer">
