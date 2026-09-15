@@ -129,11 +129,19 @@ async function applyEmotions(entityId, simulationTime, changes, causeEventId=nul
 
 async function getTraits(entityId) {
   const [rows] = await pool.query(`
-    SELECT BIN_TO_UUID(etc.trait_id) AS traitId, td.code, etc.value,
-           td.volatility, td.development_weight AS developmentWeight
-    FROM entity_traits_current etc JOIN trait_definitions td ON td.id=etc.trait_id
-    WHERE etc.entity_id=UUID_TO_BIN(?) AND td.active=1
-  `,[entityId]);
+    SELECT
+      BIN_TO_UUID(etc.trait_id) AS traitId,
+      td.code,
+      etc.value,
+      etc.version,
+      td.volatility,
+      td.development_weight AS developmentWeight
+    FROM entity_traits_current etc
+    JOIN trait_definitions td ON td.id = etc.trait_id
+    WHERE etc.entity_id = UUID_TO_BIN(?)
+      AND td.active = 1
+  `, [entityId]);
+
   return rows;
 }
 

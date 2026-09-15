@@ -52,12 +52,49 @@ async function executeAction({simulationId,entityId,decisionId,intentionId=null,
   let actionId;
   await withTransaction(async conn=>{
     actionId=uuid();
-    await conn.query(`
-      INSERT INTO actions
-        (id,simulation_id,entity_id,decision_id,action_type,source_type,source_intention_id,started_simulation_at,status,target,parameters,version)
-      VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,'AUTONOMOUS',UUID_TO_BIN(?),?,'ACTIVE',?, ?,1)
-    `,[actionId,simulationId,entityId,decisionId,actionType,simulationTime,intentionId,
-       targetLocationId?JSON.stringify({locationId:targetLocationId}):null,JSON.stringify({targetEntityId})]);
+await conn.query(`
+  INSERT INTO actions
+    (
+      id,
+      simulation_id,
+      entity_id,
+      decision_id,
+      action_type,
+      source_type,
+      source_intention_id,
+      started_simulation_at,
+      status,
+      target,
+      parameters,
+      version
+    )
+  VALUES (
+    UUID_TO_BIN(?),
+    UUID_TO_BIN(?),
+    UUID_TO_BIN(?),
+    UUID_TO_BIN(?),
+    ?,
+    'AUTONOMOUS',
+    UUID_TO_BIN(?),
+    ?,
+    'ACTIVE',
+    ?,
+    ?,
+    1
+  )
+`, [
+  actionId,
+  simulationId,
+  entityId,
+  decisionId,
+  actionType,
+  intentionId,      
+  simulationTime,   
+  targetLocationId
+    ? JSON.stringify({ locationId: targetLocationId })
+    : null,
+  JSON.stringify({ targetEntityId })
+]);
   });
 
   const eventCode = ["TALKING"].includes(actionType) ? "SOCIAL" : "PERSONAL";
