@@ -7,9 +7,9 @@ const { findAutonomousActors, actForEntity, completeGoalForAction } = require(".
 const { perceive } = require("../services/perception-service");
 const { executeAction, learnFromAction } = require("../services/action-service");
 const { createMemory, decayMemories } = require("../services/memory-service");
-const { createEvent } = require("../services/event-service");
 const { generateWorldEvents } = require("../services/world-service");
 const { updateDevelopment } = require("../services/development-service");
+const { initiateConversation } = require("../services/chat-service");
 
 class SimulationEngine {
   constructor({gemini,hub}) {
@@ -81,6 +81,23 @@ class SimulationEngine {
       await decayMemories(sim.id,nextTime);
       const count=(this.tickCounter.get(sim.id)||0)+1;
       this.tickCounter.set(sim.id,count);
+
+      // Every ~30 simulation minutes give Asami an opportunity to initiate
+      // communication. The service itself applies need/relationship/cooldown
+      // rules, so this is only a cheap scheduling opportunity, not a Gemini call.
+      if(count % 30 === 0){
+        const asami = await entityRepo.getAsamiCandidate(sim.id);
+        if(asami){
+          await initiateConversation({
+            simulationId:sim.id,
+            asamiEntityId:asami.id,
+            simulationTime:nextTime,
+            gemini:this.gemini,
+            hub:this.hub
+          });
+        }
+      }
+
       if(count % env.SNAPSHOT_EVERY_TICKS===0){
         const snapshot=await buildSnapshot(sim.id,nextTime);
         await simRepo.createSnapshot(sim.id,nextTime,snapshot,1);
