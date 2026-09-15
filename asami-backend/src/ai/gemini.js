@@ -1,6 +1,7 @@
 const { z } = require("zod");
 const { env } = require("../config/env");
 const logger = require("../lib/logger");
+const budget = require("../services/gemini-budget-service");
 
 const DecisionSchema = z.object({
   selectedActionType: z.string().min(1).max(100),
@@ -23,17 +24,30 @@ class GeminiService {
   }
 
   async init() {
+    await budget.ensureGeminiUsageTable();
     if (!env.GEMINI_ENABLED || !env.GEMINI_API_KEY) {
       logger.info("Gemini disabled or API key missing; deterministic fallback enabled");
       return false;
     }
     const { GoogleGenAI } = await import("@google/genai");
     this.client = new GoogleGenAI({ apiKey: env.GEMINI_API_KEY });
+    logger.info({
+      model: this.model,
+      dailyBudgetUsd: env.GEMINI_DAILY_BUDGET_USD,
+      monthlyBudgetUsd: env.GEMINI_MONTHLY_BUDGET_USD
+    }, "Gemini cognitive budget enabled");
     return true;
   }
 
-  async generateJson(prompt, schema) {
+  async generateJson(prompt, schema, { kind = "autonomy", thinkingLevel = "low" } = {}) {
     if (!this.client) return null;
+
+    const outputTokenCeiling = kind === "dialogue" ? 900 : 500;
+    const reservation = await budget.reserve({ prompt, outputTokenCeiling, kind });
+    if (!reservation.allowed) {
+      logger.info({ kind, reason: reservation.reason }, "Gemini budget reached; deterministic fallback used");
+      return null;
+    }
 
     const timeoutPromise = new Promise((_, reject) =>
       setTimeout(() => reject(Object.assign(new Error("Gemini timeout"), { code: "AI_TIMEOUT" })), env.GEMINI_TIMEOUT_MS)
@@ -45,10 +59,7 @@ class GeminiService {
           properties: {
             reply: { type: "string" },
             emotionalTone: { type: "string" },
-            rememberedReferences: {
-              type: "array",
-              items: { type: "string" }
-            }
+            rememberedReferences: { type: "array", items: { type: "string" } }
           },
           required: ["reply", "emotionalTone", "rememberedReferences"]
         }
@@ -66,22 +77,29 @@ class GeminiService {
           }
         : undefined;
 
+    let responseReceived = false;
     try {
       const responsePromise = this.client.models.generateContent({
         model: this.model,
         contents: prompt,
         config: {
           responseMimeType: "application/json",
-          responseSchema
+          responseSchema,
+          thinkingConfig: { thinkingLevel }
         }
       });
 
-      const response = await Promise.race([responsePromise, timeoutPromise]);
+      const response = await Promise.race([
+        responsePromise.then(value => { responseReceived = true; return value; }),
+        timeoutPromise
+      ]);
       const raw = typeof response.text === "string" ? response.text : "";
       const parsed = JSON.parse(raw);
+      await budget.finalize(reservation, response.usageMetadata);
       return schema.parse(parsed);
     } catch (err) {
-      logger.warn({ err }, "Gemini request failed; deterministic fallback will be used");
+      if (!responseReceived) await budget.release(reservation);
+      logger.warn({ err, kind }, "Gemini request failed; deterministic fallback will be used");
       return null;
     } finally {
       clearTimeout(timeoutPromise);
@@ -93,21 +111,25 @@ class GeminiService {
       [
         "You are the cognitive layer of an autonomous life simulation.",
         "Return JSON only. Never invent IDs. Select only one action type from allowedActionTypes.",
+        "Only influence the decision; do not replace the simulation's deterministic rules.",
         JSON.stringify(context)
       ].join("\n"),
-      DecisionSchema
+      DecisionSchema,
+      { kind: "autonomy", thinkingLevel: "low" }
     );
   }
 
   async dialogue(context) {
     return this.generateJson(
       [
-        "You are generating a dialogue response for an autonomous life simulation.",
-        "Use only the provided facts, memories and personality traits.",
-        "Do not claim actions that were not performed.",
+        "You are generating a dialogue response for the autonomous entity Asami.",
+        "Speak in Asami's first person.",
+        "Use only provided state, memories, personality traits, goals, relationship and conversation history.",
+        "Do not invent actions, facts or memories.",
         JSON.stringify(context)
       ].join("\n"),
-      DialogueSchema
+      DialogueSchema,
+      { kind: "dialogue", thinkingLevel: "medium" }
     );
   }
 }
