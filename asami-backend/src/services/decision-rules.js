@@ -40,9 +40,6 @@ function scoreAction(action,needs,traits){
     const energy = needValue(needs, "ENERGY");
     const comfort = needValue(needs, "COMFORT");
 
-    // Rest is useful when energy is genuinely low or comfort pressure is
-    // significant. Once energy is recovered, resting must quickly lose
-    // priority so the actor can return to normal activities.
     if(energy >= 0.72 && comfort < 0.65){
       score = 0;
     } else {
@@ -57,6 +54,21 @@ function scoreAction(action,needs,traits){
       score += needValue(needs, code) * w * needWeight(needs, code);
     }
   }
+
+  // Hard need gates prevent repetitive autonomous loops once the underlying
+  // need has already been adequately satisfied.
+  const gates = {
+    EATING: ["HUNGER", 0.15],
+    DRINKING: ["THIRST", 0.15],
+    TALKING: ["SOCIAL_NEED", 0.12],
+    PLAYING: ["FUN", 0.18],
+    STUDYING: ["ACHIEVEMENT", 0.18],
+    READING: ["CURIOSITY", 0.18],
+    EXPLORING: ["CURIOSITY", 0.18],
+    WORKING: ["ACHIEVEMENT", 0.2]
+  };
+  const gate = gates[action];
+  if (gate && needValue(needs, gate[0]) < gate[1]) score = 0;
 
   const t=new Map(traits.map(x=>[x.code,Number(x.value)]));
   if(action==="TALKING") score+=((t.get("EXTRAVERSION")||0.5)+(t.get("SOCIABILITY")||0.5))*0.2;
