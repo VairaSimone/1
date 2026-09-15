@@ -90,7 +90,7 @@ export interface Goal {
   status: string
   progress: number
   deadline?: string | null
-  motivation?: string | null
+  motivation?: unknown
   result?: unknown
   version: number
 }
@@ -168,6 +168,11 @@ export interface Development {
 
 export interface DevelopmentHistoryItem extends Development {
   simulationAt?: string
+  reason?: string | null
+  oldStage?: string | null
+  newStage?: string | null
+  oldStageId?: string | null
+  newStageId?: string | null
 }
 
 export interface ChatMessage {
