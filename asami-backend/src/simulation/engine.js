@@ -97,7 +97,7 @@ class SimulationEngine {
           phase="entity.needs";
           const needChanges=await updateNeeds(entityId,nextTime,deltaHours,action.eventId,action.actionId,decision.actionType);
           phase="entity.emotions";
-          await applyEmotions(entityId,nextTime,needChanges,action.eventId,action.actionId);
+          await applyEmotions(entityId,nextTime,needChanges,action.eventId,action.actionId,decision.actionType);
           phase="entity.learning";
           await learnFromAction(entityId,decision.actionType,nextTime);
           await completeGoalForAction(decision.goalId,decision.actionType,nextTime);
