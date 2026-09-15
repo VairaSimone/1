@@ -17,10 +17,10 @@ const WORLD_LOCATIONS = [
   { code:"LIBRARY", name:"City Library", type:"LIBRARY", lat:45.0688, lon:7.6882, description:"A quiet library for reading and studying.", connections:["HOME","CAFE","SQUARE","SCHOOL"] },
   { code:"SQUARE", name:"Central Square", type:"SQUARE", lat:45.0685, lon:7.6847, description:"The main public square, busy during the day and evening.", connections:["PARK","CAFE","GROCERY","LIBRARY","COMMUNITY"] },
   { code:"SCHOOL", name:"Community School", type:"SCHOOL", lat:45.0665, lon:7.6902, description:"A school and learning center.", connections:["LIBRARY","COMMUNITY","GYM"] },
-  { code:"COMMUNITY", name:"Community Center", type:"COMMUNITY", lat:45.0658, lon:7.6868, description:"A place for clubs, classes and local gatherings.", connections:["SQUARE","SCHOOL","GYM"] },
+  { code:"COMMUNITY", name:"Community Center", type:"COMMUNITY", lat:45.0658, lon:7.6868, description:"A place for clubs, classes and local gatherings.", connections:["SQUARE","SCHOOL","GYM","WORKSHOP"] },
   { code:"GYM", name:"Pulse Gym", type:"GYM", lat:45.0644, lon:7.6910, description:"A small neighborhood gym and sports space.", connections:["SCHOOL","COMMUNITY","CLINIC","TRAIL"] },
-  { code:"CLINIC", name:"Neighborhood Clinic", type:"CLINIC", lat:45.0660, lon:7.6808, description:"A small clinic and health service.", connections:["GROCERY","GYM","SQUARE"] },
-  { code:"TRAIL", name:"Woodland Trail", type:"NATURE", lat:45.0618, lon:7.6880, description:"A wooded trail at the edge of the neighborhood.", connections:["PARK","GYM"] },
+  { code:"CLINIC", name:"Neighborhood Clinic", type:"CLINIC", lat:45.0660, lon:7.6808, description:"A small clinic and health service.", connections:["GROCERY","GYM","SQUARE","WORKSHOP"] },
+  { code:"TRAIL", name:"Woodland Trail", type:"NATURE", lat:45.0618, lon:7.6880, description:"A wooded trail at the edge of the neighborhood.", connections:["PARK","GYM","WORKSHOP"] },
   { code:"WORKSHOP", name:"Makers Workshop", type:"WORKSHOP", lat:45.0630, lon:7.6825, description:"A practical workshop used for crafts and projects.", connections:["COMMUNITY","CLINIC","TRAIL"] }
 ];
 
@@ -175,7 +175,7 @@ async function evolveRelationships(simulationId,simulationTime){
   for(const person of people){
     const [partnerRows]=await pool.query(`SELECT r.id FROM relationships r JOIN relationship_types rt ON rt.id=r.relationship_type_id WHERE r.simulation_id=UUID_TO_BIN(?) AND rt.code='PARTNER' AND r.status='ACTIVE' AND (r.source_entity_id=UUID_TO_BIN(?) OR r.target_entity_id=UUID_TO_BIN(?)) LIMIT 1`,[simulationId,person.id,person.id]);
     if(partnerRows.length)continue;
-    const [candidates]=await pool.query(`SELECT BIN_TO_UUID(CASE WHEN r.source_entity_id=UUID_TO_BIN(?) THEN r.target_entity_id ELSE r.source_entity_id END) AS candidateId,r.familiarity,r.closeness,r.affection,r.trust FROM relationships r JOIN relationship_types rt ON rt.id=r.relationship_type_id WHERE r.simulation_id=UUID_TO_BIN(?) AND r.status='ACTIVE' AND rt.code IN ('FRIEND','ACQUAINTANCE') AND (r.source_entity_id=UUID_TO_BIN(?) OR r.target_entity_id=UUID_TO_BIN(?)) ORDER BY (r.closeness+r.affection+r.familiarity+r.trust) DESC LIMIT 5`,[person.id,simulationId,person.id,person.id]);
+    const [candidates]=await pool.query(`SELECT BIN_TO_UUID(CASE WHEN r.source_entity_id=UUID_TO_BIN(?) THEN r.target_entity_id ELSE r.source_entity_id END) AS candidateId,r.familiarity_score familiarity,r.closeness_score closeness,r.affection_score affection,r.trust_score trust FROM relationships r JOIN relationship_types rt ON rt.id=r.relationship_type_id WHERE r.simulation_id=UUID_TO_BIN(?) AND r.status='ACTIVE' AND rt.code IN ('FRIEND','ACQUAINTANCE') AND (r.source_entity_id=UUID_TO_BIN(?) OR r.target_entity_id=UUID_TO_BIN(?)) ORDER BY (r.closeness_score+r.affection_score+r.familiarity_score+r.trust_score) DESC LIMIT 5`,[person.id,simulationId,person.id,person.id]);
     for(const candidate of candidates){
       const score=Number(candidate.closeness)*1.2+Number(candidate.affection)*1.3+Number(candidate.familiarity)+Number(candidate.trust);
       if(score<0.42 || Math.random()>0.06)continue;
