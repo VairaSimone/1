@@ -50,6 +50,26 @@ function serializeReason(reason) {
   return JSON.stringify(reason);
 }
 
+function shouldAskGemini(entity, context) {
+  if (!entity || entity.entityType !== "PERSON") return false;
+  const candidates = context.candidates || [];
+  if (!candidates.length) return true;
+
+  const top = Number(candidates[0].score || 0);
+  const second = Number(candidates[1]?.score || 0);
+  const gap = top - second;
+
+  // Gemini is reserved for genuinely ambiguous or weakly motivated decisions.
+  // Clear routine choices stay entirely deterministic without reducing autonomy.
+  if (top < 0.70) return true;
+  if (gap < 0.12) return true;
+
+  const activeGoal = (context.goals || []).find(g => Number(g.priority || 0) >= 0.8 && Number(g.progress || 0) < 1);
+  if (activeGoal && second > 0 && top < 1.05) return true;
+
+  return false;
+}
+
 async function actForEntity({simulationId,entityId,simulationTime,gemini}){
   const entity=await getEntity(simulationId,entityId);
   if(!entity)return null;
@@ -57,13 +77,20 @@ async function actForEntity({simulationId,entityId,simulationTime,gemini}){
   const goalId=await createGoalIfNeeded(simulationId,entityId,simulationTime,context.needs);
   const memories=await recallContext(simulationId,entityId,6);
   let aiChoice=null;
-  if(gemini && gemini.client && context.candidates[0]?.score < 0.8){
+
+  if(
+    gemini &&
+    gemini.client &&
+    shouldAskGemini(entity,context) &&
+    gemini.canUseAutonomyDecision(entity.id,simulationTime)
+  ){
     aiChoice=await gemini.chooseDecision({
       entity:{id:entity.id,name:entity.displayName},
       needs:context.needs,traits:context.traits,goals:context.goals,
       memories,allowedActionTypes:context.allowedActionTypes,candidates:context.candidates
     });
   }
+
   const decision=await makeDecision({simulationId,entityId,simulationTime,context,aiChoice});
   const target=await selectTalkTarget(simulationId,entityId,decision.actionType);
   if(target) decision.targetEntityId=target;
@@ -74,7 +101,8 @@ async function actForEntity({simulationId,entityId,simulationTime,gemini}){
     VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,UUID_TO_BIN(?),?,?,'ACTIVE',?,?,1)
   `,[intentionId,simulationId,entityId,goalId,decision.actionType,decision.targetEntityId||null,
      simulationTime,Number(context.candidates.find(x=>x.action===decision.actionType)?.score||0),
-serializeReason(decision.reason),simulationTime]);  decision.intentionId=intentionId;
+     serializeReason(decision.reason),simulationTime]);
+  decision.intentionId=intentionId;
   decision.goalId=goalId;
   return decision;
 }
@@ -105,4 +133,4 @@ async function selectTalkTarget(simulationId,entityId,actionType){
   return rows[0]?.id||null;
 }
 
-module.exports={findAutonomousActors,actForEntity,completeGoalForAction};
+module.exports={findAutonomousActors,actForEntity,completeGoalForAction,shouldAskGemini};
