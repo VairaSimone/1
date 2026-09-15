@@ -1,0 +1,159 @@
+const { pool } = require("../db/pool");
+
+const LOCATION_ENTITY_TYPE_ID = "00000000-0000-4000-8000-000000000003";
+
+const LOCATION_RESOURCES = {
+  HOME: { water: 24, food: 14, beds: 1, books: 4 },
+  PARK: { water: 30, food: 0, beds: 0, books: 0 },
+  CAFE: { water: 80, food: 120, beds: 0, books: 8 },
+  GROCERY: { water: 160, food: 240, beds: 0, books: 0 },
+  LIBRARY: { water: 24, food: 0, beds: 0, books: 180 },
+  SQUARE: { water: 20, food: 8, beds: 0, books: 0 },
+  SCHOOL: { water: 40, food: 20, beds: 0, books: 80 },
+  COMMUNITY: { water: 35, food: 30, beds: 0, books: 30 },
+  GYM: { water: 70, food: 10, beds: 0, books: 0 },
+  CLINIC: { water: 80, food: 10, beds: 1, books: 15 },
+  NATURE: { water: 18, food: 0, beds: 0, books: 0 },
+  WORKSHOP: { water: 24, food: 8, beds: 0, books: 12 }
+};
+
+const LOCATION_OBJECTS = {
+  HOME: ["bed", "refrigerator", "table", "bookshelf"],
+  PARK: ["bench", "fountain", "pond"],
+  CAFE: ["counter", "tables", "chairs", "bookshelf", "coffee_machine"],
+  GROCERY: ["shelves", "checkout", "refrigerated_case", "produce_section"],
+  LIBRARY: ["bookshelves", "reading_tables", "chairs", "water_fountain"],
+  SQUARE: ["benches", "fountain", "street_lamps"],
+  SCHOOL: ["classrooms", "desks", "library_shelves", "water_fountain"],
+  COMMUNITY: ["meeting_room", "chairs", "kitchen", "storage"],
+  GYM: ["treadmills", "weights", "lockers", "water_fountain"],
+  CLINIC: ["reception", "exam_room", "beds", "water_station"],
+  NATURE: ["trail", "pond", "benches", "signposts"],
+  WORKSHOP: ["workbenches", "tools", "storage", "safety_sink"]
+};
+
+function parseJson(value, fallback = {}) {
+  if (value === null || value === undefined) return fallback;
+  if (typeof value === "object") return value;
+  try { return JSON.parse(value); } catch { return fallback; }
+}
+
+function clamp(value, min = 0, max = Number.POSITIVE_INFINITY) {
+  return Math.max(min, Math.min(max, Number(value) || 0));
+}
+
+async function locationRow(simulationId, locationId) {
+  const [rows] = await pool.query(`
+    SELECT BIN_TO_UUID(e.id) AS locationId, e.attributes, l.location_type AS locationType
+    FROM entities e
+    JOIN locations l ON l.entity_id=e.id AND l.simulation_id=e.simulation_id
+    WHERE e.simulation_id=UUID_TO_BIN(?) AND e.id=UUID_TO_BIN(?)
+      AND e.entity_type_id=UUID_TO_BIN(?) AND e.status='ACTIVE'
+    LIMIT 1
+  `, [simulationId, locationId, LOCATION_ENTITY_TYPE_ID]);
+  return rows[0] || null;
+}
+
+async function updateLocationAttributes(simulationId, locationId, updater) {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const row = await locationRow(simulationId, locationId);
+    if (!row) return null;
+    const attributes = parseJson(row.attributes, {});
+    const next = updater({ ...attributes });
+    const [updated] = await pool.query(`
+      UPDATE entities SET attributes=?, version=version+1
+      WHERE id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?) AND version=?
+    `, [JSON.stringify(next), locationId, simulationId, Number(row.version || 1)]);
+    if (updated.affectedRows) return next;
+  }
+  return null;
+}
+
+async function seedPhysicalWorld(simulationId, simulationTime) {
+  const [rows] = await pool.query(`
+    SELECT BIN_TO_UUID(e.id) AS locationId, e.attributes, l.location_type AS locationType
+    FROM entities e JOIN locations l ON l.entity_id=e.id AND l.simulation_id=e.simulation_id
+    WHERE e.simulation_id=UUID_TO_BIN(?) AND e.entity_type_id=UUID_TO_BIN(?) AND e.status='ACTIVE'
+  `, [simulationId, LOCATION_ENTITY_TYPE_ID]);
+
+  for (const row of rows) {
+    const attributes = parseJson(row.attributes, {});
+    const code = attributes.worldCode || row.locationType;
+    if (!LOCATION_RESOURCES[code]) continue;
+    const resources = attributes.resources || {};
+    const objects = Array.isArray(attributes.objects) ? attributes.objects : [];
+    const defaults = LOCATION_RESOURCES[code];
+    const desiredResources = Object.fromEntries(Object.entries(defaults).map(([k, v]) => [k, Number.isFinite(Number(resources[k])) ? Number(resources[k]) : v]));
+    const desiredObjects = objects.length ? objects : LOCATION_OBJECTS[code] || [];
+    if (JSON.stringify(resources) === JSON.stringify(desiredResources) && JSON.stringify(objects) === JSON.stringify(desiredObjects)) continue;
+    await pool.query(`
+      UPDATE entities SET attributes=?, version=version+1
+      WHERE id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?)
+    `, [JSON.stringify({ ...attributes, resources: desiredResources, objects: desiredObjects, physicalUpdatedAt: simulationTime }), row.locationId, simulationId]);
+  }
+}
+
+async function getLocationPhysicalState(simulationId, locationId) {
+  const row = await locationRow(simulationId, locationId);
+  if (!row) return null;
+  const attributes = parseJson(row.attributes, {});
+  return {
+    locationId,
+    locationType: row.locationType,
+    resources: attributes.resources || {},
+    objects: Array.isArray(attributes.objects) ? attributes.objects : []
+  };
+}
+
+async function consumeResource({ simulationId, locationId, resource, amount, simulationTime }) {
+  const quantity = Math.max(0, Number(amount) || 0);
+  if (!locationId || !resource || !quantity) return { ok: true, consumed: 0, remaining: null };
+  let result = null;
+  const next = await updateLocationAttributes(simulationId, locationId, current => {
+    const resources = { ...(current.resources || {}) };
+    const available = clamp(resources[resource], 0);
+    const consumed = Math.min(available, quantity);
+    resources[resource] = Math.max(0, available - consumed);
+    result = { ok: consumed >= quantity, consumed, remaining: resources[resource] };
+    return { ...current, resources, physicalUpdatedAt: simulationTime };
+  });
+  if (!next || !result) return { ok: false, consumed: 0, remaining: null };
+  return result;
+}
+
+async function replenishResource({ simulationId, locationId, resource, amount, simulationTime }) {
+  const quantity = Math.max(0, Number(amount) || 0);
+  if (!locationId || !resource || !quantity) return null;
+  let remaining = null;
+  await updateLocationAttributes(simulationId, locationId, current => {
+    const resources = { ...(current.resources || {}) };
+    remaining = clamp(resources[resource], 0) + quantity;
+    resources[resource] = remaining;
+    return { ...current, resources, physicalUpdatedAt: simulationTime };
+  });
+  return remaining;
+}
+
+const ACTION_RESOURCE_USAGE = {
+  DRINKING: { resource: "water", amount: 1 },
+  EATING: { resource: "food", amount: 1 },
+  SLEEPING: { resource: "beds", amount: 0 },
+  READING: { resource: "books", amount: 0 },
+  STUDYING: { resource: "books", amount: 0 }
+};
+
+async function resolveActionResource({ simulationId, locationId, actionType, simulationTime }) {
+  const usage = ACTION_RESOURCE_USAGE[actionType];
+  if (!usage || usage.amount <= 0) return { ok: true, consumed: 0, remaining: null };
+  return consumeResource({ simulationId, locationId, resource: usage.resource, amount: usage.amount, simulationTime });
+}
+
+module.exports = {
+  seedPhysicalWorld,
+  getLocationPhysicalState,
+  consumeResource,
+  replenishResource,
+  resolveActionResource,
+  LOCATION_RESOURCES,
+  LOCATION_OBJECTS
+};
