@@ -51,7 +51,7 @@ class SimulationEngine {
             phase="entity.needs";const needChanges=await updateNeeds(entityId,updateTime,updateHours,null,active.id,active.actionType);
             phase="entity.emotions";await applyEmotions(entityId,updateTime,needChanges,null,active.id,active.actionType,updateHours);
             if(wasCompleted){
-              phase="entity.action.complete";await completeAction({simulationId:sim.id,entityId,actionId:active.id,eventId,intentionId:active.intentionId,actionType:active.actionType,simulationTime:completionAt,targetEntityId,targetLocationId});
+              phase="entity.action.complete";await completeAction({simulationId:sim.id,entityId,actionId:active.id,decisionId:active.decisionId,eventId,intentionId:active.intentionId,actionType:active.actionType,simulationTime:completionAt,targetEntityId,targetLocationId});
               phase="entity.learning";await learnFromAction(entityId,active.actionType,completionAt);
               phase="entity.development";await updateDevelopment(sim.id,entityId,completionAt);
               phase="entity.traits";await developTraits(entityId,completionAt,signalForDecision(active.actionType),null,active.id);
