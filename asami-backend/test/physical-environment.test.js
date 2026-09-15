@@ -26,6 +26,6 @@ test("physical locations expose concrete resources and objects",()=>{
 test("environment model contains localized weather and activity events",()=>{
   assert.ok(WEATHER.STORM.visibility<WEATHER.CLEAR.visibility);
   assert.ok(EVENTS.PARK.some(event=>event[0]==="RAIN"));
-  assert.ok(EVENTS.GROCERY.some(event=>event[0]==="RESTOCK"));
+  assert.ok(EVENTS.SHOP.some(event=>event[0]==="RESTOCK"));
   assert.ok(EVENTS.LIBRARY.some(event=>event[0]==="BOOK_RETURN"));
 });
