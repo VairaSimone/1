@@ -102,10 +102,15 @@ async function decayMemories(simulationId, simulationTime) {
 
 async function listMemories(simulationId,entityId,limit=100){
   const [rows]=await pool.query(`
-    SELECT BIN_TO_UUID(id) AS id,memory_type AS type,content,importance,strength,confidence,
-           emotional_intensity AS emotionalIntensity,created_simulation_at AS createdAt,
-           last_recalled_simulation_at AS lastRecalledAt,status,metadata
-    FROM memories WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?)
+    SELECT BIN_TO_UUID(id) AS id,
+           memory_type AS memoryType,
+           content,importance,strength,confidence,
+           emotional_intensity AS emotionalIntensity,
+           created_simulation_at AS simulationAt,
+           last_recalled_simulation_at AS lastRecalledAt,
+           status,metadata
+    FROM memories
+    WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?)
     ORDER BY importance DESC,strength DESC,created_simulation_at DESC LIMIT ?
   `,[simulationId,entityId,Math.min(limit,500)]);
   return rows;
