@@ -60,8 +60,19 @@ function serializeReason(reason) {
   return JSON.stringify(reason);
 }
 
+function parseJson(value, fallback = {}) {
+  if (value && typeof value === "object") return value;
+  if (typeof value !== "string") return fallback;
+  try { return JSON.parse(value); } catch { return fallback; }
+}
+
+function isAsami(entity) {
+  return String(entity?.displayName || "").trim().toLowerCase() === "asami" ||
+    parseJson(entity?.attributes, {}).npc !== true;
+}
+
 function shouldAskGemini(entity, context) {
-  if (!entity || entity.entityType !== "PERSON") return false;
+  if (!entity || entity.entityType !== "PERSON" || !isAsami(entity)) return false;
   const candidates = context.candidates || [];
   if (!candidates.length) return true;
 
@@ -85,8 +96,6 @@ function canUseGeminiDecision(entityId,simulationTime){
   if(previous===undefined){lastAutonomyDecisionAt.set(entityId,now);return true;}
   const configured=Number(env.GEMINI_AUTONOMY_MIN_INTERVAL_MINUTES);
   const requested=Number.isFinite(configured) ? configured : 30;
-  // Existing .env files may still contain the old 360-minute value. Keep a
-  // predictable upper bound so Gemini is genuinely available to the simulation.
   const intervalMinutes=Math.min(60,Math.max(30,requested));
   const interval=intervalMinutes*60000;
   if(now-previous<interval)return false;
@@ -102,16 +111,12 @@ async function actForEntity({simulationId,entityId,simulationTime,gemini}){
   const memories=await recallContext(simulationId,entityId,6);
   let aiChoice=null;
 
-  if(
-    gemini &&
-    gemini.client &&
-    shouldAskGemini(entity,context) &&
-    canUseGeminiDecision(entity.id,simulationTime)
-  ){
+  if(gemini && gemini.client && shouldAskGemini(entity,context) && canUseGeminiDecision(entity.id,simulationTime)){
     aiChoice=await gemini.chooseDecision({
       entity:{id:entity.id,name:entity.displayName},
       needs:context.needs,traits:context.traits,goals:context.goals,
-      memories,allowedActionTypes:context.allowedActionTypes,candidates:context.candidates
+      memories,allowedActionTypes:context.allowedActionTypes,candidates:context.candidates,
+      nearbyEntities:context.nearbyEntities||[],relationships:context.relationships||[]
     });
   }
 
@@ -173,9 +178,20 @@ async function completeGoalForAction(goalId,actionType,simulationTime){
 
 async function selectTalkTarget(simulationId,entityId,actionType){
   if(actionType!=="TALKING")return null;
+  const [nearby]=await pool.query(`
+    SELECT BIN_TO_UUID(e.id) AS id
+    FROM entities e
+    JOIN entity_types et ON et.id=e.entity_type_id
+    JOIN entity_locations_current elc ON elc.entity_id=e.id AND elc.simulation_id=e.simulation_id
+    WHERE e.simulation_id=UUID_TO_BIN(?) AND et.code='PERSON' AND e.id<>UUID_TO_BIN(?) AND e.status='ACTIVE'
+      AND elc.location_id=(SELECT location_id FROM entity_locations_current WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) LIMIT 1)
+    ORDER BY RAND() LIMIT 1
+  `,[simulationId,entityId,simulationId,entityId]);
+  if(nearby.length)return nearby[0].id;
   const [rows]=await pool.query(`
-    SELECT BIN_TO_UUID(id) AS id FROM entities
-    WHERE simulation_id=UUID_TO_BIN(?) AND id<>UUID_TO_BIN(?) AND status NOT IN ('INACTIVE','DEAD')
+    SELECT BIN_TO_UUID(e.id) AS id FROM entities e
+    JOIN entity_types et ON et.id=e.entity_type_id
+    WHERE e.simulation_id=UUID_TO_BIN(?) AND et.code='PERSON' AND e.id<>UUID_TO_BIN(?) AND e.status='ACTIVE'
     ORDER BY RAND() LIMIT 1
   `,[simulationId,entityId]);
   return rows[0]?.id||null;
