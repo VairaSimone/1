@@ -95,12 +95,8 @@ const RELATIONSHIPS = [
 ];
 
 const DEVELOPMENT_STAGES = [
-  ["INFANT", "Infant", 0, 7],
-  ["CHILD", "Child", 7, 13],
-  ["ADOLESCENT", "Adolescent", 13, 18],
-  ["YOUNG_ADULT", "Young Adult", 18, 30],
-  ["ADULT", "Adult", 30, 65],
-  ["ELDER", "Elder", 65, null]
+  ["INFANT", "Infant", 0, 7], ["CHILD", "Child", 7, 13], ["ADOLESCENT", "Adolescent", 13, 18],
+  ["YOUNG_ADULT", "Young Adult", 18, 30], ["ADULT", "Adult", 30, 65], ["ELDER", "Elder", 65, null]
 ];
 
 async function ensureEntityTypes() {
@@ -118,18 +114,19 @@ async function ensureNeeds() {
     await pool.query(`
       INSERT INTO need_definitions(id,code,name,min_value,max_value,default_value,decay_rate,recovery_rate,priority_weight,parameters,active)
       VALUES(UUID_TO_BIN(?),?,?,?,?,?,?,?,?,NULL,1)
-      ON DUPLICATE KEY UPDATE name=VALUES(name),min_value=VALUES(min_value),max_value=VALUES(max_value),default_value=VALUES(default_value),decay_rate=VALUES(decay_rate),recovery_rate=VALUES(recovery_rate),priority_weight=VALUES(priority_weight),active=1
+      ON DUPLICATE KEY UPDATE name=VALUES(name),min_value=VALUES(min_value),max_value=VALUES(max_value),default_value=VALUES(default_value),decay_rate=VALUES(decay),recovery_rate=VALUES(recovery),priority_weight=VALUES(priority),active=1
     `, [id, code, name, min, max, def, decay, recovery, priority]);
   }
 }
 
 async function ensureEmotions() {
-  for (const [id, code, name, decay] of EMOTIONS) {
+  for (const [id, code, name, defaultValue] of EMOTIONS) {
+    const decayRate = defaultValue * 0.5;
     await pool.query(`
       INSERT INTO emotion_definitions(id,code,name,min_value,max_value,default_value,decay_rate,parameters,active)
-      VALUES(UUID_TO_BIN(?),?,?,0,1,0,?,NULL,1)
-      ON DUPLICATE KEY UPDATE name=VALUES(name),min_value=0,max_value=1,default_value=0,decay_rate=VALUES(decay_rate),active=1
-    `, [id, code, name, decay]);
+      VALUES(UUID_TO_BIN(?),?,?,0,1,?,?,NULL,1)
+      ON DUPLICATE KEY UPDATE name=VALUES(name),min_value=0,max_value=1,default_value=VALUES(default_value),decay_rate=VALUES(decay_rate),active=1
+    `, [id, code, name, defaultValue, decayRate]);
   }
 }
 
@@ -138,17 +135,8 @@ async function ensureTraits() {
     await pool.query(`
       INSERT INTO trait_definitions(id,code,name,min_value,max_value,default_value,volatility,decay_rate,development_weight,parameters,active)
       VALUES(UUID_TO_BIN(?),?,?,0,1,0.5,?,0,?,NULL,1)
-      ON DUPLICATE KEY UPDATE name=VALUES(name),min_value=0,max_value=1,default_value=0.5,volatility=VALUES(volatility),decay_rate=0,development_weight=VALUES(development_weight),active=1
+      ON DUPLICATE KEY UPDATE name=VALUES(name),min_value=0,max_value=1,default_value=0.5,volatility=VALUES(volatility),decay_rate=0,development_weight=VALUES(developmentWeight),active=1
     `, [id, code, name, volatility, developmentWeight]);
-  }
-}
-
-async function ensureSkills() {
-  for (const [id, code, name, category] of SKILLS) {
-    await pool.query(`
-      INSERT INTO skill_definitions(id,code,name,category,parameters,active)
-      VALUES(UUID_TO_BIN(?,?,?,?,NULL,1)
-    `, []);
   }
 }
 
@@ -158,6 +146,7 @@ async function bootstrapCoreDefinitions() {
   await ensureNeeds();
   await ensureEmotions();
   await ensureTraits();
+
   for (const [id, code, name, category] of SKILLS) {
     await pool.query(`
       INSERT INTO skill_definitions(id,code,name,category,parameters,active)
