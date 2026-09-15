@@ -44,6 +44,12 @@ async function createGoalIfNeeded(simulationId,entityId,simulationTime,needs){
   return goalId;
 }
 
+function serializeReason(reason) {
+  if (reason === null || reason === undefined) return null;
+  if (typeof reason === "string") return JSON.stringify({ text: reason });
+  return JSON.stringify(reason);
+}
+
 async function actForEntity({simulationId,entityId,simulationTime,gemini}){
   const entity=await getEntity(simulationId,entityId);
   if(!entity)return null;
@@ -68,8 +74,7 @@ async function actForEntity({simulationId,entityId,simulationTime,gemini}){
     VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,UUID_TO_BIN(?),?,?,'ACTIVE',?,?,1)
   `,[intentionId,simulationId,entityId,goalId,decision.actionType,decision.targetEntityId||null,
      simulationTime,Number(context.candidates.find(x=>x.action===decision.actionType)?.score||0),
-     decision.reason,simulationTime]);
-  decision.intentionId=intentionId;
+serializeReason(decision.reason),simulationTime]);  decision.intentionId=intentionId;
   decision.goalId=goalId;
   return decision;
 }
