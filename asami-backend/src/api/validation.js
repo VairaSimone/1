@@ -1,6 +1,9 @@
 const { z } = require("zod");
 
 const uuid = z.string().uuid();
+const queryLimit = (fallback = 100, max = 500) =>
+  z.coerce.number().int().min(1).max(max).catch(fallback);
+
 const simulationCreate = z.object({
   name: z.string().trim().min(1).max(100),
   startedSimulationAt: z.coerce.date().optional(),
@@ -24,4 +27,4 @@ const message = z.object({
   conversationId: uuid.optional(),
   content: z.string().trim().min(1).max(10000)
 });
-module.exports={uuid,simulationCreate,speed,message};
+module.exports={uuid,queryLimit,simulationCreate,speed,message};
