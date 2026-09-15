@@ -68,13 +68,14 @@ export function useSimulation() {
         const existing = prev.some((x) => x.id === sim.id)
         return existing ? prev.map((x) => x.id === sim.id ? sim : x) : [sim, ...prev]
       })
-      const observer = await api.observer(simulationId)
 
-setChatSenderIdState(observer.id)
-localStorage.setItem(CHAT_SENDER_KEY, observer.id)
+      const observer = await api.observer(simulationId)
+      setChatSenderIdState(observer.id)
+      localStorage.setItem(CHAT_SENDER_KEY, observer.id)
       setAsamiIdState(entity.id)
       localStorage.setItem(ASAMI_ENTITY_KEY, entity.id)
       setDashboard(nextDashboard)
+
       const [nextTimeline, nextEvents, nextMemories, nextDevelopment] = await Promise.all([
         api.timeline(simulationId, entity.id, 200),
         api.events(simulationId, 100),
@@ -152,15 +153,15 @@ localStorage.setItem(CHAT_SENDER_KEY, observer.id)
       setWsConnected(false)
     }
   }, [simulationId, refresh])
-useEffect(() => {
-  if (!simulationId) return
 
-  const timer = window.setInterval(() => {
-    refresh(true).catch(() => undefined)
-  }, 1500)
+  useEffect(() => {
+    if (!simulationId) return
+    const timer = window.setInterval(() => {
+      refresh(true).catch(() => undefined)
+    }, 1500)
+    return () => window.clearInterval(timer)
+  }, [simulationId, refresh])
 
-  return () => window.clearInterval(timer)
-}, [simulationId, refresh])
   const createSimulation = useCallback(async (payload: Record<string, unknown>) => {
     const created = await api.createSimulation(payload)
     setSimulationIdState(created.simulation.id)
@@ -187,13 +188,19 @@ useEffect(() => {
 
   const sendMessage = useCallback(async (content: string) => {
     if (!simulationId || !chatSenderId || !asamiId) throw new Error('Serve un interlocutore valido oltre ad Asami per inviare messaggi.')
-    const result = await api.sendMessage(simulationId, { senderEntityId: chatSenderId, asamiEntityId: asamiId, conversationId: conversationId || undefined, content })
+    const result = await api.sendMessage(simulationId, {
+      senderEntityId: chatSenderId,
+      asamiEntityId: asamiId,
+      conversationId: conversationId || undefined,
+      content,
+    })
     setConversationId(result.conversationId)
     localStorage.setItem('asami.conversationId', result.conversationId)
     const history = await api.conversationMessages(simulationId, result.conversationId)
     setMessages(history)
+    await refresh(true)
     return result
-  }, [simulationId, chatSenderId, asamiId, conversationId])
+  }, [simulationId, chatSenderId, asamiId, conversationId, refresh])
 
   useEffect(() => {
     if (!simulationId || !conversationId) return
