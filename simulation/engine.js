@@ -2,7 +2,7 @@ const logger = require("../lib/logger");
 const { env } = require("../config/env");
 const simRepo = require("../repositories/simulation-repo");
 const entityRepo = require("../repositories/entity-repo");
-const { ensureEntityState, readNeeds, updateNeeds, applyEmotions, developTraits } = require("../services/state-service");
+const { ensureEntityState, updateNeeds, applyEmotions, developTraits } = require("../services/state-service");
 const { findAutonomousActors, actForEntity, completeGoalForAction } = require("../services/autonomy-service");
 const { perceive } = require("../services/perception-service");
 const { executeAction, learnFromAction } = require("../services/action-service");
@@ -107,9 +107,10 @@ class SimulationEngine {
       const count=(this.tickCounter.get(sim.id)||0)+1;
       this.tickCounter.set(sim.id,count);
 
-      // Proactive conversation is deliberately sparse because the simulation clock
-      // can run much faster than real time (default speed: 60x).
-      if(count % env.GEMINI_PROACTIVE_EVERY_TICKS === 0){
+      // Keep proactive conversation periodic in simulation time. Legacy env files
+      // may contain very large values, so bound the cadence to a maximum of 90 ticks.
+      const proactiveEveryTicks=Math.min(90,Math.max(1,Number(env.GEMINI_PROACTIVE_EVERY_TICKS)||90));
+      if(count % proactiveEveryTicks === 0){
         const asami = await entityRepo.getAsamiCandidate(sim.id);
         if(asami){
           await initiateConversation({
