@@ -40,6 +40,15 @@ function estimateCostUsd(inputTokens, outputTokens) {
     (Number(outputTokens) / 1_000_000) * env.GEMINI_OUTPUT_PRICE_USD_PER_1M;
 }
 
+function dailyPacedLimitUsd(now = new Date()) {
+  const dailyLimit = Number(env.GEMINI_DAILY_BUDGET_USD);
+  if (!Number.isFinite(dailyLimit) || dailyLimit <= 0) return 0;
+  const graceMinutes = Math.max(0, Number(env.GEMINI_DAILY_PACING_GRACE_MINUTES) || 0);
+  const elapsedMinutes = now.getUTCHours() * 60 + now.getUTCMinutes() + now.getUTCSeconds() / 60;
+  const fraction = Math.min(1, (elapsedMinutes + graceMinutes) / 1440);
+  return dailyLimit * fraction;
+}
+
 function rowKey(type, key) {
   return `${type}:${key}`;
 }
@@ -80,7 +89,8 @@ async function reserve({ prompt, outputTokenCeiling, kind }) {
   if (blockedMs > 0) {
     return { allowed: false, reason: "PROVIDER_RATE_LIMIT", retryAfterMs: blockedMs };
   }
-  const { day, month } = periodKeys();
+  const now = new Date();
+  const { day, month } = periodKeys(now);
   const inputTokens = estimateInputTokens(prompt);
   const estimatedUsd = estimateCostUsd(inputTokens, outputTokenCeiling);
   const conn = await pool.getConnection();
@@ -117,17 +127,18 @@ async function reserve({ prompt, outputTokenCeiling, kind }) {
 
     const dailyLimit = Number(env.GEMINI_DAILY_BUDGET_USD);
     const monthlyLimit = Number(env.GEMINI_MONTHLY_BUDGET_USD);
+    const pacedDailyLimit = Math.min(dailyLimit, dailyPacedLimitUsd(now));
     const dailyRequests = Math.min(Number(env.GEMINI_DAILY_MAX_REQUESTS), 18);
     const monthlyRequests = Math.min(Number(env.GEMINI_MONTHLY_MAX_REQUESTS), 500);
     const dailyCommitted = Number(dayRow.estimated_usd) + Number(dayRow.reserved_usd);
     const monthlyCommitted = Number(monthRow.estimated_usd) + Number(monthRow.reserved_usd);
-    const canSpend = dailyCommitted + estimatedUsd <= dailyLimit + 1e-9 &&
+    const canSpend = dailyCommitted + estimatedUsd <= pacedDailyLimit + 1e-9 &&
       monthlyCommitted + estimatedUsd <= monthlyLimit + 1e-9 &&
       Number(dayRow.requests) < dailyRequests && Number(monthRow.requests) < monthlyRequests;
     if (!canSpend) {
       await conn.rollback();
-      const dailyBlocked = dailyCommitted + estimatedUsd > dailyLimit + 1e-9 || Number(dayRow.requests) >= dailyRequests;
-      return { allowed: false, reason: dailyBlocked ? "DAILY_BUDGET" : "MONTHLY_BUDGET", estimatedUsd };
+      const dailyBlocked = dailyCommitted + estimatedUsd > pacedDailyLimit + 1e-9 || Number(dayRow.requests) >= dailyRequests;
+      return { allowed: false, reason: dailyBlocked ? "DAILY_BUDGET" : "MONTHLY_BUDGET", estimatedUsd, pacedDailyLimit };
     }
     await conn.query(`UPDATE gemini_usage SET reserved_usd=reserved_usd+?,requests=requests+1 WHERE period_type='DAY' AND period_key=?`, [estimatedUsd, day]);
     await conn.query(`UPDATE gemini_usage SET reserved_usd=reserved_usd+? WHERE period_type='MONTH' AND period_key=?`, [estimatedUsd, month]);
@@ -169,4 +180,7 @@ async function release(reservation) {
   await pool.query(`UPDATE gemini_usage SET reserved_usd=GREATEST(0,reserved_usd-?) WHERE period_type='MONTH' AND period_key=?`, [estimatedUsd, month]);
 }
 
-module.exports = { ensureGeminiUsageTable, reserve, finalize, release, getUsage, blockProvider, providerBlockRemainingMs, estimateInputTokens, estimateCostUsd };
+module.exports = {
+  ensureGeminiUsageTable, reserve, finalize, release, getUsage,
+  blockProvider, providerBlockRemainingMs, estimateInputTokens, estimateCostUsd, dailyPacedLimitUsd
+};
