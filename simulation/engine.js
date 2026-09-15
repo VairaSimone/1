@@ -68,7 +68,7 @@ class SimulationEngine {
           targetEntityId:decision.targetEntityId||null,targetLocationId:decision.targetLocationId||null
         });
         const needChanges=await updateNeeds(entityId,nextTime,deltaHours,action.eventId,action.actionId,decision.actionType);
-        await applyEmotions(entityId,nextTime,needChanges,action.eventId,action.actionId);
+        await applyEmotions(entityId,nextTime,needChanges,action.eventId,action.actionId,decision.actionType,deltaHours);
         await learnFromAction(entityId,decision.actionType,nextTime);
         await completeGoalForAction(decision.goalId,decision.actionType,nextTime);
         await developTraits(entityId,nextTime,signalForDecision(decision.actionType),action.eventId,action.actionId);
