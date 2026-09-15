@@ -5,6 +5,7 @@ const { WebSocketServer } = require("ws");
 const { env } = require("./config/env");
 const logger = require("./lib/logger");
 const { ping, close } = require("./db/pool");
+const { bootstrapCoreDefinitions } = require("./services/bootstrap-service");
 const { RealtimeHub } = require("./realtime/hub");
 const { GeminiService } = require("./ai/gemini");
 const { SimulationEngine } = require("./simulation/engine");
@@ -13,6 +14,7 @@ const { errorHandler } = require("./api/error-handler");
 
 async function main(){
   await ping();
+  await bootstrapCoreDefinitions();
   const gemini=new GeminiService();
   await gemini.init();
   const hub=new RealtimeHub();
