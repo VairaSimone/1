@@ -80,7 +80,11 @@ class GeminiService {
       return null;
     }
 
-    const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(Object.assign(new Error("Gemini timeout"), { code: "AI_TIMEOUT" })), env.GEMINI_TIMEOUT_MS));
+    let timeoutId = null;
+    let finalized = false;
+    const timeoutPromise = new Promise((_, reject) => {
+      timeoutId = setTimeout(() => reject(Object.assign(new Error("Gemini timeout"), { code: "AI_TIMEOUT" })), env.GEMINI_TIMEOUT_MS);
+    });
     const responseSchema = schema === DialogueSchema
       ? {
           type: "object",
@@ -122,24 +126,28 @@ class GeminiService {
           }
         : undefined;
 
-    let responseReceived = false;
     try {
       const responsePromise = this.client.models.generateContent({
         model: this.model,
         contents: prompt,
         config: { responseMimeType: "application/json", responseSchema, thinkingConfig: { thinkingLevel } }
       });
-      const response = await Promise.race([responsePromise.then(value => { responseReceived = true; return value; }), timeoutPromise]);
+      const response = await Promise.race([responsePromise, timeoutPromise]);
       const raw = typeof response.text === "string" ? response.text : "";
-      const parsed = JSON.parse(raw);
+      const parsed = schema.parse(JSON.parse(raw));
       await budget.finalize(reservation, response.usageMetadata);
-      return schema.parse(parsed);
+      finalized = true;
+      return parsed;
     } catch (err) {
-      if (!responseReceived) await budget.release(reservation);
+      if (!finalized) {
+        try { await budget.release(reservation); } catch (releaseErr) {
+          logger.error({ err: releaseErr, kind }, "Failed to release Gemini budget reservation");
+        }
+      }
       logger.warn({ err, kind }, "Gemini request failed; deterministic fallback will be used");
       return null;
     } finally {
-      clearTimeout(timeoutPromise);
+      if (timeoutId) clearTimeout(timeoutId);
     }
   }
 
