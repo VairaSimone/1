@@ -10,7 +10,8 @@ const { createMemory, decayMemories } = require("../services/memory-service");
 const { generateWorldEvents } = require("../services/world-service");
 const { updateDevelopment } = require("../services/development-service");
 const { initiateConversation } = require("../services/chat-service");
-const { recordHabitEvidence, updateMentalState } = require("../services/personality-service");
+const { recordHabitEvidence } = require("../services/habit-service");
+const { updateMentalState } = require("../services/personality-service");
 
 class SimulationEngine {
   constructor({gemini,hub}) {
@@ -91,9 +92,7 @@ class SimulationEngine {
       const count=(this.tickCounter.get(sim.id)||0)+1;
       this.tickCounter.set(sim.id,count);
 
-      // Every ~30 simulation ticks give Asami an opportunity to initiate
-      // communication. The service itself applies need/cooldown rules.
-      if(count % 30 === 0){
+      if(count % 600 === 0){
         const asami = await entityRepo.getAsamiCandidate(sim.id);
         if(asami){
           await initiateConversation({
@@ -113,7 +112,7 @@ class SimulationEngine {
       await simRepo.finishTick(tickId,"COMPLETED");
       this.hub.publish(sim.id,"simulation.tick",{tickId,simulationTime:nextTime});
     }catch(err){
-      await simRepo.finishTick(tickId,"FAILED");
+      try { await simRepo.finishTick(tickId,"FAILED"); } catch (finishErr) { logger.error({finishErr,simulationId:sim.id,tickId},"failed to mark simulation tick failed"); }
       throw err;
     }
   }
