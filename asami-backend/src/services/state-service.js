@@ -35,7 +35,7 @@ async function ensureEntityState(entityId, simulationTime) {
     await pool.query(`
       INSERT IGNORE INTO entity_skills(entity_id,skill_id,updated_simulation_at,version)
       VALUES(UUID_TO_BIN(?),?, ?,1)
-    `, [entityId, d.id, simulationTime]);
+    `,[entityId, d.id, simulationTime]);
   }
 }
 
@@ -58,18 +58,18 @@ async function updateNeeds(entityId, simulationTime, deltaHours, causeEventId=nu
     if (activeActionType) {
       const gains = {
         SLEEPING: { SLEEPINESS: -1.8, ENERGY: 0.9, COMFORT: 0.1 },
-        EATING: { HUNGER: 2.4, ENERGY: 0.1, COMFORT: 0.05 },
-        DRINKING: { THIRST: 3.0, ENERGY: 0.1 },
-        TALKING: { SOCIAL_NEED: 2.0, BELONGING: 1.2 },
-        PLAYING: { FUN: 2.0, SOCIAL_NEED: 0.4 },
+        EATING: { HUNGER: -2.4, ENERGY: 0.1, COMFORT: 0.05 },
+        DRINKING: { THIRST: -3.0, ENERGY: 0.1 },
+        TALKING: { SOCIAL_NEED: -2.0, BELONGING: -1.2 },
+        PLAYING: { FUN: -2.0, SOCIAL_NEED: -0.4 },
         RESTING: { ENERGY: 0.6, COMFORT: 0.4, SLEEPINESS: -0.2 },
-        STUDYING: { ACHIEVEMENT: 0.8, CURIOSITY: 0.5, ENERGY: -0.15, FUN: -0.1 },
-        READING: { CURIOSITY: 0.4, ACHIEVEMENT: 0.3, FUN: 0.1 },
-        EXPLORING: { CURIOSITY: 1.2, FUN: 0.5, ENERGY: -0.15 },
-        WALKING: { FUN: 0.25, ENERGY: -0.08 },
-        WORKING: { ACHIEVEMENT: 0.7, ENERGY: -0.2, FUN: -0.1 },
-        WATCHING: { FUN: 1.1, ENERGY: 0.05 },
-        SCHOOL: { ACHIEVEMENT: 0.6, CURIOSITY: 0.4, ENERGY: -0.12, FUN: -0.05 }
+        STUDYING: { ACHIEVEMENT: -0.8, CURIOSITY: -0.5, ENERGY: -0.15, FUN: -0.1 },
+        READING: { CURIOSITY: -0.4, ACHIEVEMENT: -0.3, FUN: 0.1 },
+        EXPLORING: { CURIOSITY: -1.2, FUN: -0.5, ENERGY: -0.15 },
+        WALKING: { FUN: -0.25, ENERGY: -0.08 },
+        WORKING: { ACHIEVEMENT: -0.7, ENERGY: -0.2, FUN: -0.1 },
+        WATCHING: { FUN: -1.1, ENERGY: 0.05 },
+        SCHOOL: { ACHIEVEMENT: -0.6, CURIOSITY: -0.4, ENERGY: -0.12, FUN: -0.05 }
       };
       const gain = (gains[activeActionType] || {})[r.code] || 0;
       delta += gain * deltaHours;
@@ -135,19 +135,12 @@ async function applyEmotions(entityId, simulationTime, changes, causeEventId=nul
 
 async function getTraits(entityId) {
   const [rows] = await pool.query(`
-    SELECT
-      BIN_TO_UUID(etc.trait_id) AS traitId,
-      td.code,
-      etc.value,
-      etc.version,
-      td.volatility,
-      td.development_weight AS developmentWeight
+    SELECT BIN_TO_UUID(etc.trait_id) AS traitId, td.code, etc.value, etc.version,
+           td.volatility, td.development_weight AS developmentWeight
     FROM entity_traits_current etc
     JOIN trait_definitions td ON td.id = etc.trait_id
-    WHERE etc.entity_id = UUID_TO_BIN(?)
-      AND td.active = 1
-  `, [entityId]);
-
+    WHERE etc.entity_id = UUID_TO_BIN(?) AND td.active = 1
+  `,[entityId]);
   return rows;
 }
 
