@@ -6,6 +6,7 @@ const { listMemories } = require("../services/memory-service");
 const { getRelationships } = require("../services/relationship-service");
 const { getDevelopment,getDevelopmentHistory } = require("../services/development-service");
 const { sendMessage } = require("../services/chat-service");
+const { getUsage } = require("../services/gemini-budget-service");
 const { simulationCreate,speed,message,uuid } = require("./validation");
 const { runIdempotent } = require("../services/idempotency-service");
 const { env } = require("../config/env");
@@ -15,6 +16,7 @@ function buildRouter({hub,gemini}){
 
   router.get("/health",async(req,res)=>res.json({ok:true,service:"asami-backend",engineVersion:env.ENGINE_VERSION}));
   router.get("/simulations",async(req,res)=>res.json(await simRepo.listSimulations()));
+  router.get("/gemini/usage",async(req,res)=>res.json(await getUsage()));
 
   router.post("/simulations",async(req,res)=>{
     const body=simulationCreate.parse(req.body);
@@ -66,15 +68,10 @@ function buildRouter({hub,gemini}){
     const op=req.header("Idempotency-Key")||`speed:${body.speed}:${Date.now()}`;
     const result=await runIdempotent(id,op,"CHANGE_SPEED",async()=>{
       const clock=await simRepo.getActiveClock(id);
-     let at = computeCurrentSimulationTime(clock);
-
-const anchor = new Date(clock.simulationAnchorAt);
-
-if (at < anchor) {
-  at = anchor;
-}
-
-return simRepo.changeSpeed(id, body.speed, at);
+      let at = computeCurrentSimulationTime(clock);
+      const anchor = new Date(clock.simulationAnchorAt);
+      if (at < anchor) at = anchor;
+      return simRepo.changeSpeed(id, body.speed, at);
     });
     hub.publish(id,"simulation.speed",{speed:body.speed});
     res.json(result);
@@ -160,16 +157,13 @@ return simRepo.changeSpeed(id, body.speed, at);
   });
 
   router.post("/simulations/:simulationId/observer", async (req, res) => {
-  const simulationId = uuid.parse(req.params.simulationId)
-
-  const observer = await entityRepo.ensureObserver(simulationId)
-
-  res.json(observer)
-})
+    const simulationId = uuid.parse(req.params.simulationId);
+    const observer = await entityRepo.ensureObserver(simulationId);
+    res.json(observer);
+  });
 
   return router;
 }
-
 
 function computeCurrentSimulationTime(clock){
   if(!clock)return new Date();
