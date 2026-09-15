@@ -32,6 +32,8 @@ const Env = z.object({
   GEMINI_DAILY_MAX_REQUESTS: z.coerce.number().int().positive().default(100),
   GEMINI_MONTHLY_MAX_REQUESTS: z.coerce.number().int().positive().default(2500),
   GEMINI_AUTONOMY_MIN_INTERVAL_MINUTES: z.coerce.number().nonnegative().default(30),
+  GEMINI_DAILY_PACING_GRACE_MINUTES: z.coerce.number().nonnegative().default(10),
+  GEMINI_PROACTIVE_EVERY_TICKS: z.coerce.number().int().positive().default(90),
   WORLD_EVENT_RATE_PER_SIM_HOUR: z.coerce.number().nonnegative().default(0.25),
   ENGINE_VERSION: z.string().default("1.0.0"),
   ENGINE_INTERVAL_MS: z.coerce.number().int().positive().default(1000),
