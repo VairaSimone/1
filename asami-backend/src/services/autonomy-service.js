@@ -37,10 +37,10 @@ async function createGoalIfNeeded(simulationId,entityId,simulationTime,needs){
   await pool.query(`
     INSERT INTO goals
       (id,simulation_id,entity_id,title,description,goal_type,priority,status,progress,created_simulation_at,motivation,version)
-    VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,?,'ACTIVE',0,?,?,1)
+    VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,?,'ACTIVE',0,?,CAST(? AS JSON),1)
   `,[goalId,simulationId,entityId,labels[top.code]||`Address ${top.code}`,
      `Autonomously generated from need ${top.code}`,"NEED",Number(top.priorityWeight),simulationTime,
-     `Need pressure: ${top.code}`]);
+     JSON.stringify({need:top.code,pressure:Number(top.value),priorityWeight:Number(top.priorityWeight)})]);
   return goalId;
 }
 
@@ -48,7 +48,7 @@ async function actForEntity({simulationId,entityId,simulationTime,gemini}){
   const entity=await getEntity(simulationId,entityId);
   if(!entity)return null;
   const context=await buildDecisionContext(simulationId,entityId);
-  await createGoalIfNeeded(simulationId,entityId,simulationTime,context.needs);
+  const goalId=await createGoalIfNeeded(simulationId,entityId,simulationTime,context.needs);
   const memories=await recallContext(simulationId,entityId,6);
   let aiChoice=null;
   if(gemini && gemini.client && context.candidates[0]?.score < 0.8){
@@ -61,7 +61,6 @@ async function actForEntity({simulationId,entityId,simulationTime,gemini}){
   const decision=await makeDecision({simulationId,entityId,simulationTime,context,aiChoice});
   const target=await selectTalkTarget(simulationId,entityId,decision.actionType);
   if(target) decision.targetEntityId=target;
-  const goalId=context.goals[0]?.id || null;
   const intentionId=require("../lib/ids").uuid();
   await pool.query(`
     INSERT INTO intentions
