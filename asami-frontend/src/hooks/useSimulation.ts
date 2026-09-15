@@ -31,14 +31,12 @@ export function useSimulation() {
   const setSimulationId = useCallback((id: string) => {
     setSimulationIdState(id)
     localStorage.setItem(ACTIVE_SIM_KEY, id)
-    setDashboard(null); setTimeline([]); setEvents([]); setMemories([])
-    setDevelopment({ current: null, history: [] }); setMessages([]); setConversationId('')
+    setDashboard(null); setTimeline([]); setEvents([]); setMemories([]); setDevelopment({ current: null, history: [] }); setMessages([]); setConversationId('')
     localStorage.removeItem('asami.conversationId')
   }, [])
 
   const loadSimulations = useCallback(async () => {
-    const list = await api.simulations()
-    setSimulations(list)
+    const list = await api.simulations(); setSimulations(list)
     if (!simulationId && list[0]) setSimulationId(list[0].id)
     if (simulationId && !list.some((s) => s.id === simulationId) && list[0]) setSimulationId(list[0].id)
     return list
@@ -49,29 +47,22 @@ export function useSimulation() {
     if (soft) setRefreshing(true); else setLoading(true)
     setError(null)
     try {
-      const simPromise = api.simulation(simulationId)
-      const clockPromise = api.clock(simulationId)
-      const asamiPromise = api.asami(simulationId)
+      const simPromise = api.simulation(simulationId); const clockPromise = api.clock(simulationId); const asamiPromise = api.asami(simulationId)
       const [sim, clockData, entity, nextDashboard] = await Promise.all([simPromise, clockPromise, asamiPromise, asamiPromise.then((e) => api.dashboard(simulationId, e.id))])
       if (clockData.clock) setClockSpeed(Number(clockData.clock.speed))
       setSimulations((prev) => prev.some((x) => x.id === sim.id) ? prev.map((x) => x.id === sim.id ? sim : x) : [sim, ...prev])
       const observer = await api.observer(simulationId)
       setChatSenderIdState(observer.id); localStorage.setItem(CHAT_SENDER_KEY, observer.id)
-      setAsamiIdState(entity.id); localStorage.setItem(ASAMI_ENTITY_KEY, entity.id)
-      setDashboard(nextDashboard)
+      setAsamiIdState(entity.id); localStorage.setItem(ASAMI_ENTITY_KEY, entity.id); setDashboard(nextDashboard)
       const [nextTimeline, nextEvents, nextMemories, nextDevelopment] = await Promise.all([
-        api.timeline(simulationId, entity.id, 200), api.events(simulationId, 100),
-        api.memories(simulationId, entity.id, 100), api.development(simulationId, entity.id),
+        api.timeline(simulationId, entity.id, 200), api.events(simulationId, 100), api.memories(simulationId, entity.id, 100), api.development(simulationId, entity.id),
       ])
       setTimeline(nextTimeline); setEvents(nextEvents); setMemories(nextMemories); setDevelopment(nextDevelopment)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Errore durante il caricamento della simulazione.')
-    } finally { setLoading(false); setRefreshing(false) }
+    } catch (e) { setError(e instanceof Error ? e.message : 'Errore durante il caricamento della simulazione.') }
+    finally { setLoading(false); setRefreshing(false) }
   }, [simulationId])
 
-  useEffect(() => {
-    loadSimulations().catch((e) => setError(e instanceof Error ? e.message : 'Backend non raggiungibile.')).finally(() => setLoading(false))
-  }, [loadSimulations])
+  useEffect(() => { loadSimulations().catch((e) => setError(e instanceof Error ? e.message : 'Backend non raggiungibile.')).finally(() => setLoading(false)) }, [loadSimulations])
   useEffect(() => { if (simulationId) refresh().catch(() => undefined) }, [simulationId, refresh])
 
   useEffect(() => {
@@ -92,65 +83,38 @@ export function useSimulation() {
           }
           if (msg.type === 'message.created') {
             const p = msg.payload
-            const incoming: ChatMessage = {
-              id: String(p.id), senderEntityId: String(p.senderEntityId), messageType: String(p.type), content: String(p.content),
-              simulationAt: msg.occurredAt, status: 'DELIVERED', metadata: p.metadata || {},
+            const metadata = (p.metadata && typeof p.metadata === 'object' ? p.metadata : {}) as Record<string, unknown>
+            const incoming: ChatMessage = { id: String(p.id), senderEntityId: String(p.senderEntityId), messageType: String(p.type), content: String(p.content), simulationAt: msg.occurredAt, status: 'DELIVERED', metadata }
+            if (p.conversationId && (metadata.proactive || String(p.senderEntityId) === asamiId)) {
+              const cid = String(p.conversationId); setConversationId(cid); localStorage.setItem('asami.conversationId', cid)
             }
             setMessages((prev) => prev.some((m) => m.id === incoming.id) ? prev : [...prev, incoming])
           }
         } catch { /* malformed realtime messages are ignored */ }
       }
-      ws.onclose = () => {
-        setWsConnected(false); if (disposed) return; retry += 1
-        const delay = Math.min(5000, 500 * 2 ** Math.min(retry, 4)); retryTimer = window.setTimeout(connect, delay)
-      }
+      ws.onclose = () => { setWsConnected(false); if (disposed) return; retry += 1; const delay = Math.min(5000, 500 * 2 ** Math.min(retry, 4)); retryTimer = window.setTimeout(connect, delay) }
       ws.onerror = () => setWsConnected(false)
     }
     connect()
-    return () => {
-      disposed = true; if (retryTimer) window.clearTimeout(retryTimer); if (refreshTimer.current) window.clearTimeout(refreshTimer.current)
-      wsRef.current?.close(); wsRef.current = null; setWsConnected(false)
-    }
-  }, [simulationId, refresh])
+    return () => { disposed = true; if (retryTimer) window.clearTimeout(retryTimer); if (refreshTimer.current) window.clearTimeout(refreshTimer.current); wsRef.current?.close(); wsRef.current = null; setWsConnected(false) }
+  }, [simulationId, refresh, asamiId])
 
-  useEffect(() => {
-    if (!simulationId) return
-    const timer = window.setInterval(() => refresh(true).catch(() => undefined), 1500)
-    return () => window.clearInterval(timer)
-  }, [simulationId, refresh])
+  useEffect(() => { if (!simulationId) return; const timer = window.setInterval(() => refresh(true).catch(() => undefined), 1500); return () => window.clearInterval(timer) }, [simulationId, refresh])
 
   const createSimulation = useCallback(async (payload: Record<string, unknown>) => {
-    const created = await api.createSimulation(payload)
-    setSimulationIdState(created.simulation.id); localStorage.setItem(ACTIVE_SIM_KEY, created.simulation.id)
-    setAsamiIdState(created.asamiEntityId); localStorage.setItem(ASAMI_ENTITY_KEY, created.asamiEntityId)
-    await loadSimulations(); return created
+    const created = await api.createSimulation(payload); setSimulationIdState(created.simulation.id); localStorage.setItem(ACTIVE_SIM_KEY, created.simulation.id); setAsamiIdState(created.asamiEntityId); localStorage.setItem(ASAMI_ENTITY_KEY, created.asamiEntityId); await loadSimulations(); return created
   }, [loadSimulations])
 
-  const control = useCallback(async (action: 'pause' | 'resume' | 'stop') => {
-    if (!simulationId) return
-    const result = await api[action](simulationId)
-    setSimulations((prev) => prev.map((s) => s.id === result.id ? result : s)); await refresh(true)
-  }, [simulationId, refresh])
-
-  const changeSpeed = useCallback(async (speed: number) => {
-    if (!simulationId) return
-    const result = await api.speed(simulationId, speed)
-    setSimulations((prev) => prev.map((s) => s.id === result.id ? result : s)); await refresh(true)
-  }, [simulationId, refresh])
-
+  const control = useCallback(async (action: 'pause' | 'resume' | 'stop') => { if (!simulationId) return; const result = await api[action](simulationId); setSimulations((prev) => prev.map((s) => s.id === result.id ? result : s)); await refresh(true) }, [simulationId, refresh])
+  const changeSpeed = useCallback(async (speed: number) => { if (!simulationId) return; const result = await api.speed(simulationId, speed); setSimulations((prev) => prev.map((s) => s.id === result.id ? result : s)); await refresh(true) }, [simulationId, refresh])
   const sendMessage = useCallback(async (content: string) => {
     if (!simulationId || !chatSenderId || !asamiId) throw new Error('Serve un interlocutore valido oltre ad Asami per inviare messaggi.')
     const result = await api.sendMessage(simulationId, { senderEntityId: chatSenderId, asamiEntityId: asamiId, conversationId: conversationId || undefined, content })
     setConversationId(result.conversationId); localStorage.setItem('asami.conversationId', result.conversationId)
-    const history = await api.conversationMessages(simulationId, result.conversationId); setMessages(history); await refresh(true)
-    return result
+    setMessages(await api.conversationMessages(simulationId, result.conversationId)); await refresh(true); return result
   }, [simulationId, chatSenderId, asamiId, conversationId, refresh])
 
-  useEffect(() => {
-    if (!simulationId || !conversationId) return
-    api.conversationMessages(simulationId, conversationId).then(setMessages).catch(() => undefined)
-  }, [simulationId, conversationId])
-
+  useEffect(() => { if (!simulationId || !conversationId) return; api.conversationMessages(simulationId, conversationId).then(setMessages).catch(() => undefined) }, [simulationId, conversationId])
   const setChatSenderId = useCallback((id: string) => { setChatSenderIdState(id); localStorage.setItem(CHAT_SENDER_KEY, id) }, [])
 
   return { simulations, simulation, simulationId, asamiId, dashboard, timeline, events, memories, development, messages, clockSpeed, chatSenderId, loading, refreshing, error, wsConnected, setSimulationId, setChatSenderId, createSimulation, refresh, control, changeSpeed, sendMessage }
