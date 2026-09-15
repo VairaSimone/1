@@ -6,6 +6,17 @@ function round5(value) {
   return Math.round((Number(value) + Number.EPSILON) * 100000) / 100000;
 }
 
+const PRESSURE_NEEDS = new Set([
+  "HUNGER",
+  "THIRST",
+  "SLEEPINESS",
+  "SOCIAL_NEED",
+  "FUN",
+  "CURIOSITY",
+  "ACHIEVEMENT",
+  "BELONGING"
+]);
+
 async function ensureEntityState(entityId, simulationTime) {
   const [[needDefs],[emotionDefs],[traitDefs],[skillDefs]] = await Promise.all([
     pool.query("SELECT id,default_value FROM need_definitions WHERE active=1"),
@@ -54,7 +65,10 @@ async function updateNeeds(entityId, simulationTime, deltaHours, causeEventId=nu
   const rows = await readNeeds(entityId);
   const changes=[];
   for (const r of rows) {
-    let delta = -Number(r.decayRate) * deltaHours;
+    // Pressure needs accumulate over time; resource/satisfaction needs deplete.
+    let delta = PRESSURE_NEEDS.has(r.code)
+      ? Number(r.decayRate) * deltaHours
+      : -Number(r.decayRate) * deltaHours;
     if (activeActionType) {
       const gains = {
         SLEEPING: { SLEEPINESS: -1.8, ENERGY: 0.9, COMFORT: 0.1 },
