@@ -64,30 +64,120 @@ async function readNeeds(entityId) {
 async function updateNeeds(entityId, simulationTime, deltaHours, causeEventId=null, causeActionId=null, activeActionType=null) {
   const rows = await readNeeds(entityId);
   const changes=[];
-  for (const r of rows) {
-    // Pressure needs accumulate over time; resource/satisfaction needs deplete.
-    let delta = PRESSURE_NEEDS.has(r.code)
-      ? Number(r.decayRate) * deltaHours
-      : -Number(r.decayRate) * deltaHours;
-    if (activeActionType) {
-      const gains = {
-        SLEEPING: { SLEEPINESS: -1.8, ENERGY: 0.9, COMFORT: 0.1 },
-        EATING: { HUNGER: -2.4, ENERGY: 0.1, COMFORT: 0.05 },
-        DRINKING: { THIRST: -3.0, ENERGY: 0.1 },
-        TALKING: { SOCIAL_NEED: -2.0, BELONGING: -1.2 },
-        PLAYING: { FUN: -2.0, SOCIAL_NEED: -0.4 },
-        RESTING: { ENERGY: 0.6, COMFORT: 0.4, SLEEPINESS: -0.2 },
-        STUDYING: { ACHIEVEMENT: -0.8, CURIOSITY: -0.5, ENERGY: -0.15, FUN: -0.1 },
-        READING: { CURIOSITY: -0.4, ACHIEVEMENT: -0.3, FUN: 0.1 },
-        EXPLORING: { CURIOSITY: -1.2, FUN: -0.5, ENERGY: -0.15 },
-        WALKING: { FUN: -0.25, ENERGY: -0.08 },
-        WORKING: { ACHIEVEMENT: -0.7, ENERGY: -0.2, FUN: -0.1 },
-        WATCHING: { FUN: -1.1, ENERGY: 0.05 },
-        SCHOOL: { ACHIEVEMENT: -0.6, CURIOSITY: -0.4, ENERGY: -0.12, FUN: -0.05 }
-      };
-      const gain = (gains[activeActionType] || {})[r.code] || 0;
-      delta += gain * deltaHours;
+
+  // An autonomous action is instantaneous in the current engine. Never apply a
+  // full multi-hour simulation jump as though the action lasted that entire time.
+  const actionHours = Math.min(Math.max(Number(deltaHours) || 0, 0), 0.25);
+
+  const gains = {
+    SLEEPING: {
+      SLEEPINESS: -1.8,
+      ENERGY: 0.9,
+      COMFORT: 0.35,
+      SAFETY: 0.08
+    },
+    EATING: {
+      HUNGER: -2.4,
+      ENERGY: 0.1,
+      COMFORT: 0.15,
+      SAFETY: 0.03
+    },
+    DRINKING: {
+      THIRST: -3.0,
+      ENERGY: 0.1,
+      SAFETY: 0.02
+    },
+    TALKING: {
+      SOCIAL_NEED: -0.45,
+      BELONGING: -0.18
+    },
+    PLAYING: {
+      FUN: -0.5,
+      SOCIAL_NEED: -0.12,
+      COMFORT: 0.04
+    },
+    RESTING: {
+      ENERGY: 0.6,
+      COMFORT: 0.5,
+      SLEEPINESS: -0.2,
+      SAFETY: 0.06
+    },
+    STUDYING: {
+      ACHIEVEMENT: -0.8,
+      CURIOSITY: -0.5,
+      ENERGY: -0.15,
+      FUN: -0.1,
+      COMFORT: -0.03
+    },
+    READING: {
+      CURIOSITY: -0.4,
+      ACHIEVEMENT: -0.3,
+      FUN: 0.1,
+      COMFORT: 0.03
+    },
+    EXPLORING: {
+      CURIOSITY: -1.2,
+      FUN: -0.5,
+      ENERGY: -0.15,
+      COMFORT: -0.05,
+      SAFETY: -0.02
+    },
+    WALKING: {
+      FUN: -0.25,
+      ENERGY: -0.08,
+      COMFORT: 0.02,
+      SAFETY: 0.01
+    },
+    WORKING: {
+      ACHIEVEMENT: -0.7,
+      ENERGY: -0.2,
+      FUN: -0.1,
+      COMFORT: -0.04,
+      SAFETY: 0.005
+    },
+    WATCHING: {
+      FUN: -1.1,
+      ENERGY: 0.05,
+      COMFORT: 0.06,
+      SAFETY: 0.02
+    },
+    SCHOOL: {
+      ACHIEVEMENT: -0.6,
+      CURIOSITY: -0.4,
+      ENERGY: -0.12,
+      FUN: -0.05,
+      COMFORT: -0.03,
+      SAFETY: 0.01
     }
+  };
+
+  for (const r of rows) {
+    const decayRate = Math.max(0, Number(r.decayRate) || 0);
+    const recoveryRate = Math.max(0, Number(r.recoveryRate) || 0);
+
+    let delta;
+    if (PRESSURE_NEEDS.has(r.code)) {
+      // Pressure rises with time until an action satisfies it.
+      delta = decayRate * Number(deltaHours || 0);
+    } else if (r.code === "SAFETY") {
+      // Safety represents a positive resource. It does not evaporate just because
+      // time passes; it is restored slowly in a normal/safe environment and can
+      // later be explicitly reduced by danger events.
+      delta = recoveryRate * 0.25 * Number(deltaHours || 0);
+    } else if (r.code === "COMFORT") {
+      // Comfort should remain reasonably stable instead of inevitably reaching 0.
+      // Give it a small passive recovery while keeping the actual action effects.
+      delta = (recoveryRate * 0.15 - decayRate * 0.05) * Number(deltaHours || 0);
+    } else {
+      // Energy and other resource-like needs deplete over time.
+      delta = -decayRate * Number(deltaHours || 0);
+    }
+
+    if (activeActionType) {
+      const gain = (gains[activeActionType] || {})[r.code] || 0;
+      delta += gain * actionHours;
+    }
+
     const oldValue = round5(r.value);
     const next = round5(clamp(oldValue + delta));
     const historyDelta = round5(next - oldValue);
