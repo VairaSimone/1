@@ -96,7 +96,7 @@ async function sendMessage({ simulationId, senderEntityId, asamiEntityId, conver
     simulationAt: simulationTime,
     metadata: { kind: "conversation", conversationId: cid, interlocutorEntityId: senderEntityId, eventId, actionId, rememberedReferences: generated?.rememberedReferences || [], stateEffects: cognition }
   });
-  hub.publish(simulationId, "message.created", { id: assistantId, conversationId: cid, senderEntityId: asamiEntityId, type: "ASSISTANT", content: reply });
+  hub.publish(simulationId, "message.created", { id: assistantId, conversationId: cid, senderEntityId: asamiEntityId, type: "ASSISTANT", content: reply, metadata: aiMeta });
   hub.publish(simulationId, "entity.state", { entityId: asamiEntityId, source: "conversation", needs: [...baseNeedChanges, ...cognition.needChanges], emotions: [...baseEmotionChanges, ...cognition.emotionChanges], relationshipId: cognition.relationshipId, actionId, eventId, memoryId, goalId: cognition.goalId, communicationStyle: cognition.communicationStyle, traitChanges: cognition.traitChanges });
 
   return { conversationId: cid, userMessageId, assistantMessageId: assistantId, reply, aiUsed: Boolean(generated), asamiEffects: { actionId, eventId, relationshipId: cognition.relationshipId, needs: [...baseNeedChanges, ...cognition.needChanges], emotions: [...baseEmotionChanges, ...cognition.emotionChanges], memoryId, memoryCreated: true, communicationSkillReinforced: true, goalId: cognition.goalId, communicationStyle: cognition.communicationStyle, traitChanges: cognition.traitChanges } };
@@ -172,11 +172,12 @@ async function initiateConversation({ simulationId, asamiEntityId, simulationTim
   await learnFromAction(asamiEntityId, "TALKING", simulationTime);
   const cognition = await applyCognitiveEffects({ simulationId, asamiEntityId, senderEntityId: observer.id, simulationTime, eventId, actionId, generated });
   const assistantId = uuid();
-  await pool.query(`INSERT INTO messages(id,simulation_id,conversation_id,sender_entity_id,message_type,content,simulation_created_at,status,metadata,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),'ASSISTANT',?,?,'DELIVERED',?,1)`, [assistantId, simulationId, cid, asamiEntityId, reply, simulationTime, JSON.stringify({ proactive: true, responseSource: generated ? "GEMINI" : "DETERMINISTIC", eventId, actionId, goalId: cognition.goalId, communicationStyle: cognition.communicationStyle })]);
+  const proactiveMeta = { proactive: true, responseSource: generated ? "GEMINI" : "DETERMINISTIC", eventId, actionId, goalId: cognition.goalId, communicationStyle: cognition.communicationStyle };
+  await pool.query(`INSERT INTO messages(id,simulation_id,conversation_id,sender_entity_id,message_type,content,simulation_created_at,status,metadata,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),'ASSISTANT',?,?,'DELIVERED',?,1)`, [assistantId, simulationId, cid, asamiEntityId, reply, simulationTime, JSON.stringify(proactiveMeta)]);
   await pool.query(`UPDATE communication_attempts SET status='DELIVERED',message_id=UUID_TO_BIN(?),result=? WHERE id=UUID_TO_BIN(?) AND status='STARTED'`, [assistantId, JSON.stringify({ messageId: assistantId }), attemptId]);
   await pool.query(`UPDATE communication_intents SET status='SENT',version=version+1 WHERE id=UUID_TO_BIN(?) AND status='ATTEMPTING'`, [intentId]);
   await createMemory({ simulationId, entityId: asamiEntityId, eventId, content: `I chose to contact ${context.interlocutor.displayName}: "${reply}"`, importance: 0.72, strength: 0.96, confidence: generated ? 0.9 : 0.62, emotionalIntensity: 0.3, simulationAt: simulationTime, metadata: { kind: "proactive_conversation", conversationId: cid, interlocutorEntityId: observer.id, actionId, reason: { socialNeed: social, belonging, curiosity } } });
-  hub.publish(simulationId, "message.created", { id: assistantId, conversationId: cid, senderEntityId: asamiEntityId, type: "ASSISTANT", content: reply });
+  hub.publish(simulationId, "message.created", { id: assistantId, conversationId: cid, senderEntityId: asamiEntityId, type: "ASSISTANT", content: reply, metadata: proactiveMeta });
   hub.publish(simulationId, "entity.state", { entityId: asamiEntityId, source: "proactive_conversation", actionId, eventId, relationshipId: cognition.relationshipId, goalId: cognition.goalId, needs: cognition.needChanges, emotions: cognition.emotionChanges, communicationStyle: cognition.communicationStyle });
   return { conversationId: cid, assistantMessageId: assistantId, reply, aiUsed: Boolean(generated), actionId, eventId, goalId: cognition.goalId };
 }
