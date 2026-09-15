@@ -24,7 +24,7 @@ async function ensureEntityState(entityId,simulationTime){
 }
 
 async function readNeeds(entityId){
-  const [rows]=await pool.query(`SELECT BIN_TO_UUID(enc.need_id) AS needId,nd.code,nd.name,enc.value,nd.decay_rate AS decayRate,nd.recovery_rate AS recoveryRate,nd.priority_weight AS priorityWeight,nd.parameters FROM entity_needs_current enc JOIN need_definitions nd ON nd.id=enc.need_id WHERE enc.entity_id=UUID_TO_BIN(?) AND nd.active=1`,[entityId]);
+  const [rows]=await pool.query(`SELECT BIN_TO_UUID(enc.need_id) AS needId,nd.code,nd.name,enc.value,enc.version,nd.decay_rate AS decayRate,nd.recovery_rate AS recoveryRate,nd.priority_weight AS priorityWeight,nd.parameters FROM entity_needs_current enc JOIN need_definitions nd ON nd.id=enc.need_id WHERE enc.entity_id=UUID_TO_BIN(?) AND nd.active=1`,[entityId]);
   return rows;
 }
 
