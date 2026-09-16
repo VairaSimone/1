@@ -4,10 +4,10 @@ const { DecisionSchema } = require("../src/ai/gemini");
 const { getGeminiTrigger, sanitizeGeminiChoice } = require("../src/services/autonomy-service");
 
 test("Gemini decision schema accepts strategy and multi-step plan proposals", () => {
-  const parsed = DecisionSchema.parse({
+  const input = {
     selectedActionType: "WALKING",
     targetEntityId: null,
-    targetLocationId: "11111111-1111-4111-8111-111111111111",
+    targetLocationId: "123e4567-e89b-42d3-a456-426614174000",
     reason: "Try a different route after the failed attempt.",
     confidence: 0.72,
     strategy: {
@@ -23,10 +23,12 @@ test("Gemini decision schema accepts strategy and multi-step plan proposals", ()
         { title: "Drink", actionType: "DRINKING" }
       ]
     }
-  });
+  };
 
-  assert.equal(parsed.strategy.objective, "Reach water");
-  assert.equal(parsed.planProposal.steps.length, 2);
+  const result = DecisionSchema.safeParse(input);
+  assert.equal(result.success, true, result.success ? "" : JSON.stringify(result.error.issues));
+  assert.equal(result.data.strategy.objective, "Reach water");
+  assert.equal(result.data.planProposal.steps.length, 2);
 });
 
 test("Gemini is triggered by failures and periodic strategic deliberation", () => {
