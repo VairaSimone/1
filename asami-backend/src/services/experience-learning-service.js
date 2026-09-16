@@ -24,7 +24,7 @@ function normalize(value) {
 function isSignificantExperience({ outcome, targetEntityId, relationshipIntent, resource, needChanges }) {
   const normalizedOutcome = normalize(outcome);
   if (normalizedOutcome === "FAILURE" || normalizedOutcome === "PARTIAL") return true;
-  if (targetEntityId || normalize(relationshipIntent) !== "NONE") return true;
+  if (targetEntityId || (relationshipIntent && normalize(relationshipIntent) !== "NONE")) return true;
   if (resource?.resource && (Number(resource.consumed) > 0 || Number(resource.remaining) <= 0)) return true;
   const meaningfulNeedChange = (needChanges || []).some(change => Math.abs(Number(change?.delta || 0)) >= 0.35);
   return meaningfulNeedChange;
