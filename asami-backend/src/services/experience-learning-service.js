@@ -30,6 +30,12 @@ function isSignificantExperience({ outcome, targetEntityId, relationshipIntent, 
   return meaningfulNeedChange;
 }
 
+function shouldCreateExperiencePreference({ outcome, needChanges = [] }) {
+  const normalizedOutcome = normalize(outcome);
+  if (normalizedOutcome === "FAILURE" || normalizedOutcome === "PARTIAL") return true;
+  return (needChanges || []).some(change => Math.abs(Number(change?.delta || 0)) >= 0.35);
+}
+
 async function upsertExperiencePreference({ simulationId, entityId, simulationTime, targetType, value, strength, confidence }) {
   const normalizedType = normalize(targetType);
   const [rows] = await pool.query(`
@@ -148,24 +154,27 @@ async function recordSignificantExperience({ simulationId, entityId, simulationT
   const confidence = normalizedOutcome === "FAILURE" ? 0.96 : normalizedOutcome === "PARTIAL" ? 0.8 : 0.72;
   const strength = normalizedOutcome === "FAILURE" ? 0.62 : 0.42;
   const preferenceIds = [];
-  const actionId = await upsertExperiencePreference({
-    simulationId, entityId, simulationTime,
-    targetType: `ACTION:${normalize(actionType).slice(0, 70)}`,
-    value: valence,
-    strength,
-    confidence
-  });
-  if (actionId) preferenceIds.push(actionId);
 
-  if (locationType) {
-    const locationActionId = await upsertExperiencePreference({
+  if (shouldCreateExperiencePreference({ outcome: normalizedOutcome, needChanges })) {
+    const actionId = await upsertExperiencePreference({
       simulationId, entityId, simulationTime,
-      targetType: `LOCATION_ACTION:${normalize(locationType).slice(0, 35)}:${normalize(actionType).slice(0, 35)}`,
+      targetType: `ACTION:${normalize(actionType).slice(0, 70)}`,
       value: valence,
-      strength: strength * 0.9,
-      confidence: confidence * 0.95
+      strength,
+      confidence
     });
-    if (locationActionId) preferenceIds.push(locationActionId);
+    if (actionId) preferenceIds.push(actionId);
+
+    if (locationType) {
+      const locationActionId = await upsertExperiencePreference({
+        simulationId, entityId, simulationTime,
+        targetType: `LOCATION_ACTION:${normalize(locationType).slice(0, 35)}:${normalize(actionType).slice(0, 35)}`,
+        value: valence,
+        strength: strength * 0.9,
+        confidence: confidence * 0.95
+      });
+      if (locationActionId) preferenceIds.push(locationActionId);
+    }
   }
 
   const beliefId = await upsertExperienceBelief({ simulationId, entityId, simulationTime, actionType, outcome, locationId, resource, consequence });
@@ -177,15 +186,16 @@ function cognitiveExperienceModifier(profile, actionType, { locationType = null,
   if (!profile || !actionType) return 0;
   const actionKey = `ACTION:${normalize(actionType)}`;
   const locationKey = locationType ? `LOCATION_ACTION:${normalize(locationType)}:${normalize(actionType)}` : null;
-  let modifier = 0;
+  let preferenceModifier = 0;
 
   for (const preference of profile.preferences || []) {
     const target = normalize(preference.targetType);
     if (target !== actionKey && target !== locationKey) continue;
     const weight = Number(preference.preferenceValue || 0) * Number(preference.strength || 0) * Number(preference.confidence || 0);
-    modifier += weight * (target === locationKey ? 0.9 : 1.1);
+    preferenceModifier += weight * (target === locationKey ? 0.6 : 0.8);
   }
 
+  let beliefModifier = 0;
   const actionPredicate = `ACTION_OUTCOME_${normalize(actionType).slice(0, 70)}`;
   for (const belief of profile.beliefs || []) {
     if (normalize(belief.predicate) !== actionPredicate) continue;
@@ -193,24 +203,17 @@ function cognitiveExperienceModifier(profile, actionType, { locationType = null,
     const sameLocation = !locationId || !value.locationId || value.locationId === locationId;
     if (!sameLocation) continue;
     const confidence = Number(belief.confidence || 0);
-    if (normalize(value.outcome) === "FAILURE") modifier -= 0.45 * confidence;
-    else if (normalize(value.outcome) === "SUCCESS") modifier += 0.16 * confidence;
+    if (normalize(value.outcome) === "FAILURE") beliefModifier -= 0.08 * confidence;
+    else if (normalize(value.outcome) === "SUCCESS") beliefModifier += 0.04 * confidence;
   }
 
-  for (const item of profile.knowledge || []) {
-    if (normalize(item.predicate) !== "ACTION_OUTCOME") continue;
-    const payload = parseJson(item.content, null);
-    if (!payload || normalize(payload.actionType) !== normalize(actionType)) continue;
-    if (locationId && payload.locationId && payload.locationId !== locationId) continue;
-    if (normalize(payload.outcome) === "FAILURE") modifier -= 0.25 * Number(item.confidence || 0);
-    else if (normalize(payload.outcome) === "SUCCESS") modifier += 0.08 * Number(item.confidence || 0);
-  }
-
-  return Math.max(-1.5, Math.min(1.5, modifier));
+  // Knowledge is retained as episodic/world memory, not converted directly into an action preference.
+  return Math.max(-0.35, Math.min(0.35, preferenceModifier + beliefModifier));
 }
 
 module.exports = {
   isSignificantExperience,
+  shouldCreateExperiencePreference,
   recordSignificantExperience,
   cognitiveExperienceModifier
 };
