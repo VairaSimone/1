@@ -7,16 +7,27 @@ function normalizeJson(value) {
   try { return JSON.parse(value); } catch { return value; }
 }
 
-function buildMemoryContext({ perception, decision, actionType, needChanges, simulationAt }) {
+function actionLabel(actionType) {
+  return String(actionType || "ACTION").toLowerCase().replaceAll("_", " ");
+}
+
+function normalizeOutcome(outcome) {
+  const value = String(outcome || "SUCCESS").toUpperCase();
+  return ["SUCCESS", "PARTIAL", "FAILURE"].includes(value) ? value : "SUCCESS";
+}
+
+function buildMemoryContext({ perception, decision, actionType, needChanges, simulationAt, outcome = null, completion = null }) {
   const p = perception || {};
   const location = p.location || null;
   const nearby = Array.isArray(p.nearby) ? p.nearby : [];
   const recentEvents = Array.isArray(p.recentEvents) ? p.recentEvents : [];
   const relationships = Array.isArray(p.relationships) ? p.relationships : [];
   const needs = Array.isArray(needChanges) ? needChanges : [];
+  const result = completion || {};
+  const normalizedOutcome = normalizeOutcome(outcome || result.outcome);
 
   const locationLabel = location?.addressData?.name || location?.addressData?.label || location?.locationType || location?.locationId || "unknown location";
-  const observedPeople = nearby.slice(0, 5).map(person => person.displayName || person.entityId);
+  const observedPeople = nearby.slice(0, 5).map(person => person.displayName || person.entityId).filter(Boolean);
   const eventTypes = recentEvents.slice(0, 5).map(event => event.type || event.title).filter(Boolean);
   const relationshipRefs = relationships.slice(0, 5).map(r => ({
     id: r.id,
@@ -27,6 +38,7 @@ function buildMemoryContext({ perception, decision, actionType, needChanges, sim
 
   return {
     actionType,
+    outcome: normalizedOutcome,
     simulationAt,
     location: {
       id: location?.locationId || null,
@@ -42,8 +54,151 @@ function buildMemoryContext({ perception, decision, actionType, needChanges, sim
       goalId: decision?.goalId || null,
       confidence: Number(decision?.confidence || 0),
       reason: decision?.reason || null
+    },
+    result: {
+      failureReason: result?.failureReason || null,
+      resource: result?.resource || null,
+      resourceLearning: result?.resourceLearning || null
     }
   };
+}
+
+function buildActionMemory({
+  actionType,
+  outcome = "SUCCESS",
+  perception = null,
+  decision = null,
+  needChanges = [],
+  completion = null,
+  simulationAt
+}) {
+  const normalizedOutcome = normalizeOutcome(outcome);
+  const context = buildMemoryContext({
+    perception,
+    decision,
+    actionType,
+    needChanges,
+    simulationAt,
+    outcome: normalizedOutcome,
+    completion
+  });
+  const location = context.location;
+  const result = completion || {};
+  const resource = result.resource;
+  const resourceName = resource?.resource ? String(resource.resource).toLowerCase() : null;
+
+  let cause;
+  let consequence;
+  let learning;
+  let alternative;
+
+  if (normalizedOutcome === "FAILURE") {
+    cause = result.failureReason || "the action could not be completed";
+    consequence = result.goalBlocked
+      ? `the current goal remains blocked (${result.goalBlocked})`
+      : "the intended result was not obtained";
+    learning = result.resourceLearning?.type === "RESOURCE_UNAVAILABLE"
+      ? `${resourceName || "the required resource"} is unavailable at this location`
+      : `this strategy did not work at ${location.label}`;
+    alternative = result.strategyAlternative
+      || (resourceName ? `try another location or a different way to obtain ${resourceName}` : "try another strategy or reassess the situation");
+  } else if (normalizedOutcome === "PARTIAL") {
+    cause = result.failureReason || "only part of the expected result was available";
+    consequence = "the need or goal was only partially satisfied";
+    learning = result.resourceLearning?.type === "RESOURCE_PARTIALLY_AVAILABLE"
+      ? `${resourceName || "the required resource"} was only partially available here`
+      : "a partial result may require a follow-up action";
+    alternative = result.strategyAlternative
+      || (resourceName ? `find a more reliable source of ${resourceName}` : "follow up with another action if the need remains");
+  } else {
+    cause = decision?.reason || "the action was selected to respond to the current state";
+    consequence = "the intended result was obtained";
+    learning = result.learning || `this action worked at ${location.label}`;
+    alternative = result.strategyAlternative || null;
+  }
+
+  const subject = `I tried to ${actionLabel(actionType)} at ${location.label}.`;
+  const outcomeText = normalizedOutcome === "SUCCESS"
+    ? "It succeeded."
+    : normalizedOutcome === "PARTIAL"
+      ? "It only partially succeeded."
+      : "It failed.";
+  const content = [
+    subject,
+    `Context: ${location.type ? `${location.type}, ` : ""}${location.label}.`,
+    `Cause: ${cause}.`,
+    `Outcome: ${outcomeText}`,
+    `Consequence: ${consequence}.`,
+    `Learning: ${learning}.`,
+    alternative ? `Alternative strategy: ${alternative}.` : null
+  ].filter(Boolean).join(" ");
+
+  return {
+    content,
+    context,
+    importance: normalizedOutcome === "FAILURE" ? 0.88 : normalizedOutcome === "PARTIAL" ? 0.68 : 0.5,
+    strength: normalizedOutcome === "FAILURE" ? 1 : normalizedOutcome === "PARTIAL" ? 0.92 : 0.86,
+    confidence: normalizedOutcome === "FAILURE" ? 0.98 : 0.85,
+    emotionalIntensity: normalizedOutcome === "FAILURE" ? 0.42 : normalizedOutcome === "PARTIAL" ? 0.32 : 0.24,
+    metadata: {
+      kind: "action_outcome",
+      schemaVersion: 2,
+      actionType,
+      outcome: normalizedOutcome,
+      cause,
+      consequence,
+      learning,
+      strategyAlternative: alternative,
+      location: location,
+      resource: resource || null,
+      failureReason: result.failureReason || null,
+      needChanges: Array.isArray(needChanges) ? needChanges.slice(0, 12) : [],
+      decision: decision ? {
+        actionType: decision.actionType || actionType,
+        goalId: decision.goalId || null,
+        confidence: Number(decision.confidence || 0),
+        reason: decision.reason || null
+      } : null
+    }
+  };
+}
+
+function buildFailureMemory({ simulationId, entityId, locationId, simulationTime, actionType, perception, decision, needChanges, physical, failureReason, resourceLearning, strategyAlternative = null }) {
+  const resource = physical?.resource ? String(physical.resource).toLowerCase() : null;
+  const resourceState = Number.isFinite(Number(physical?.remaining))
+    ? Number(physical.remaining)
+    : null;
+  const normalizedLearning = resourceLearning
+    ? { ...resourceLearning, type: resourceLearning.type || "RESOURCE_UNAVAILABLE" }
+    : null;
+
+  const memory = buildActionMemory({
+    actionType,
+    outcome: "FAILURE",
+    perception,
+    decision,
+    needChanges,
+    simulationAt: simulationTime,
+    completion: {
+      failureReason: failureReason || "ACTION_FAILED",
+      resource: physical || null,
+      resourceLearning: normalizedLearning,
+      strategyAlternative: strategyAlternative || (resource ? `go to another location with ${resource} available` : "choose another strategy")
+    }
+  });
+
+  memory.context.resource = {
+    ...(memory.context.resource || {}),
+    name: resource,
+    remaining: resourceState
+  };
+  memory.metadata.resource = physical || null;
+  memory.metadata.locationId = locationId || memory.metadata.location?.id || null;
+  memory.metadata.failureReason = failureReason || "ACTION_FAILED";
+  memory.metadata.resourceLearning = normalizedLearning;
+  memory.metadata.strategyAlternative = strategyAlternative || memory.metadata.strategyAlternative;
+  memory.metadata.source = "action_completion";
+  return memory;
 }
 
 async function createMemory({
@@ -140,4 +295,4 @@ async function recallContext(simulationId,entityId,limit=8){
   return listMemories(simulationId,entityId,limit);
 }
 
-module.exports={createMemory,decayMemories,listMemories,recallContext,buildMemoryContext};
+module.exports={createMemory,decayMemories,listMemories,recallContext,buildMemoryContext,buildActionMemory,buildFailureMemory};
