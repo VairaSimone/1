@@ -36,7 +36,7 @@ Il server HTTP e il worker della simulazione partono nello stesso processo.
 
 ## Gemini e controllo costi
 
-Il default è `gemini-3.6-flash` con un budget tecnico prudenziale:
+Il default tecnico del backend usa un intervallo di **360 minuti** tra deliberazioni autonome ordinarie, con trigger ad alta priorità che possono anticipare la consultazione. Il budget viene comunque controllato anche a livello di richieste e costo stimato.
 
 ```dotenv
 GEMINI_ENABLED=true
@@ -45,18 +45,12 @@ GEMINI_DAILY_BUDGET_USD=0.35
 GEMINI_MONTHLY_BUDGET_USD=10
 GEMINI_DAILY_MAX_REQUESTS=100
 GEMINI_MONTHLY_MAX_REQUESTS=2500
-GEMINI_AUTONOMY_MIN_INTERVAL_MINUTES=10
+GEMINI_AUTONOMY_MIN_INTERVAL_MINUTES=360
 ```
 
 Il backend crea automaticamente la tabella `gemini_usage` al primo avvio. Il consumo viene registrato con i token riportati dall'API Gemini, compresi i token di reasoning, e una richiesta viene bloccata prima dell'invio quando il budget giornaliero o mensile non è più disponibile.
 
-Le decisioni autonome usano Gemini solo quando la scelta deterministica è debole o realmente ambigua. Le scelte evidenti restano interamente locali. Il sistema non riduce il set di azioni di Asami e non sostituisce il motore deterministico: Gemini serve a risolvere i casi che beneficiano maggiormente del ragionamento generativo.
-
-Il consumo corrente è disponibile tramite:
-
-`GET /api/gemini/usage`
-
-Le risposte Gemini vengono richieste in JSON e validate con Zod. Il risultato dell'AI viene prima ridotto a una struttura interna sicura e solo dopo usato dalla logica deterministica.
+Le decisioni autonome usano Gemini solo quando la scelta deterministica è debole o realmente ambigua. Le scelte evidenti restano interamente locali. Le decisioni ricevono inoltre il contesto di memoria, esperienza, piani e interruzioni recenti.
 
 ## API principali
 

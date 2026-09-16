@@ -2,11 +2,10 @@ const logger = require("../lib/logger");
 const { env } = require("../config/env");
 const { pool } = require("../db/pool");
 const simRepo = require("../repositories/simulation-repo");
-const entityRepo = require("../repositories/entity-repo");
 const { ensureEntityState, updateNeeds, applyEmotions, developTraits, readNeeds } = require("../services/state-service");
 const { findAutonomousActors, actForEntity, completeGoalForAction } = require("../services/autonomy-service");
 const { perceive } = require("../services/perception-service");
-const { startAction, completeAction, getActiveAction, learnFromAction } = require("../services/action-service");
+const { startAction, completeAction, getActiveAction, learnFromAction, recordResourceFailureKnowledge } = require("../services/action-service");
 const { createMemory, decayMemories, buildActionMemory, buildFailureMemory } = require("../services/memory-service");
 const { generateWorldEvents } = require("../services/world-service");
 const { ensureWorld, evolveRelationships } = require("../services/world-population-service");
@@ -18,20 +17,40 @@ const { updateMentalState } = require("../services/personality-service");
 const { recordSignificantExperience } = require("../services/experience-learning-service");
 
 const INTERRUPTIBLE_ACTIONS = new Set(["SLEEPING", "WORKING", "STUDYING"]);
-const INTERRUPTION_NEED_THRESHOLDS = { THIRST: 0.8, HUNGER: 0.8, SLEEPINESS: 0.85, ENERGY: 0.15, SAFETY: 0.2 };
-const COMPATIBLE_INTERRUPTION_ACTIONS = { THIRST: new Set(["DRINKING"]), HUNGER: new Set(["EATING"]), SLEEPINESS: new Set(["SLEEPING"]), ENERGY: new Set(["SLEEPING", "RESTING"]), SAFETY: new Set([]) };
 const CRITICAL_EVENT_PATTERNS = /DANGER|EMERGENCY|ACCIDENT|THREAT|CRISIS|EVACUATION|ATTACK|FIRE/i;
+
+function getNeedDirection(code) {
+  const normalized = String(code || "").toUpperCase();
+  if (["HUNGER", "THIRST", "SLEEPINESS", "SOCIAL_NEED", "FUN", "CURIOSITY", "ACHIEVEMENT", "BELONGING"].includes(normalized)) return "HIGH";
+  if (["ENERGY", "SAFETY"].includes(normalized)) return "LOW";
+  return null;
+}
+
+function isCriticalNeed(code, value) {
+  const normalized = String(code || "").toUpperCase();
+  const thresholds = { THIRST: 0.8, HUNGER: 0.8, SLEEPINESS: 0.85, ENERGY: 0.15, SAFETY: 0.2 };
+  const threshold = thresholds[normalized];
+  if (threshold === undefined || !Number.isFinite(Number(value))) return false;
+  const direction = getNeedDirection(normalized);
+  return direction === "HIGH" ? Number(value) >= threshold : Number(value) <= threshold;
+}
 
 function getCriticalInterruptionNeed(activeActionType, needs = []) {
   if (!INTERRUPTIBLE_ACTIONS.has(String(activeActionType || "").toUpperCase())) return null;
   let selected = null;
   for (const need of needs) {
-    const code = String(need.code || "").toUpperCase(), value = Number(need.value), threshold = INTERRUPTION_NEED_THRESHOLDS[code];
-    if (!Number.isFinite(value) || threshold === undefined || value < threshold) continue;
-    if (COMPATIBLE_INTERRUPTION_ACTIONS[code]?.has(String(activeActionType).toUpperCase())) continue;
-    const urgency = code === "SAFETY" || code === "ENERGY" ? 1 + (threshold - value) : value;
-    const candidate = { code, value, threshold, urgency };
-    if (!selected || candidate.urgency > selected.urgency) selected = candidate;
+    const code = String(need.code || "").toUpperCase(), value = Number(need.value);
+    if (!isCriticalNeed(code, value)) continue;
+    const compatible = {
+      THIRST: new Set(["DRINKING"]),
+      HUNGER: new Set(["EATING"]),
+      SLEEPINESS: new Set(["SLEEPING"]),
+      ENERGY: new Set(["SLEEPING", "RESTING"]),
+      SAFETY: new Set([])
+    }[code];
+    if (compatible?.has(String(activeActionType).toUpperCase())) continue;
+    const distance = getNeedDirection(code) === "HIGH" ? value : 1 - value;
+    if (!selected || distance > selected.distance) selected = { code, value, threshold: ({ THIRST: 0.8, HUNGER: 0.8, SLEEPINESS: 0.85, ENERGY: 0.15, SAFETY: 0.2 })[code], distance };
   }
   return selected;
 }
@@ -53,7 +72,7 @@ function getInterruptionReason(activeActionType, needs, perception) {
   return null;
 }
 
-async function interruptActiveAction({ simulationId, entityId, active, simulationTime, interruption }) {
+async function interruptActiveAction({ simulationId, entityId, active, simulationTime, interruption, needChanges = [], perception = null }) {
   const actionId = active.id, actionType = String(active.actionType || "ACTION").toUpperCase(), eventId = active.metadata?.eventId || null;
   const result = { eventId, actionType, outcome: "PARTIAL", success: false, failureReason: "ACTION_INTERRUPTED", interrupted: true, interruption, targetEntityId: active.metadata?.targetEntityId || null, targetLocationId: active.metadata?.targetLocationId || null, relationshipIntent: active.metadata?.relationshipIntent || "NONE" };
   const [updated] = await pool.query(`UPDATE actions SET status='COMPLETED',completed_simulation_at=?,result=? WHERE id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?) AND status='ACTIVE'`, [simulationTime, JSON.stringify(result), actionId, entityId, simulationId]);
@@ -62,7 +81,39 @@ async function interruptActiveAction({ simulationId, entityId, active, simulatio
   if (movementId) await pool.query(`UPDATE movements SET status='COMPLETED',actual_arrival_simulation_at=?,reason='autonomous route interrupted by critical state',version=version+1 WHERE id=UUID_TO_BIN(?) AND status='ACTIVE'`, [simulationTime, movementId]);
   if (active.intentionId) await pool.query(`UPDATE intentions SET status='COMPLETED',version=version+1 WHERE id=UUID_TO_BIN(?) AND status='ACTIVE'`, [active.intentionId]);
   if (active.decisionId) await pool.query(`UPDATE decisions SET status='EXECUTED',actual_outcome=? WHERE id=UUID_TO_BIN(?) AND status IN ('EVALUATED','CREATED')`, [JSON.stringify({ actionId, eventId, outcome: "PARTIAL", success: false, failureReason: "ACTION_INTERRUPTED", interrupted: true, interruption }), active.decisionId]);
-  await createMemory({ simulationId, entityId, eventId, type: "EPISODIC", content: `I stopped ${actionType.toLowerCase().replaceAll("_", " ")} because ${interruption.message}. I need to reconsider what to do next.`, importance: interruption.type === "CRITICAL_EVENT" ? 0.72 : 0.58, strength: interruption.type === "CRITICAL_EVENT" ? 0.78 : 0.58, confidence: 0.9, emotionalIntensity: 0.34, simulationAt: simulationTime, metadata: { kind: "action_interruption", actionType, interrupted: true, interruption, actionId, eventId, goalId: active.metadata?.goalId || null, planId: active.metadata?.planId || null, planStepId: active.metadata?.planStepId || null } });
+
+  const cognitive = await recordSignificantExperience({
+    simulationId,
+    entityId,
+    simulationTime,
+    actionType,
+    outcome: "PARTIAL",
+    locationId: perception?.location?.locationId || active.metadata?.targetLocationId || null,
+    locationType: perception?.location?.locationType || null,
+    targetEntityId: active.metadata?.targetEntityId || null,
+    resource: null,
+    needChanges,
+    relationshipIntent: active.metadata?.relationshipIntent || "NONE",
+    consequence: "action interrupted by a critical internal or world state",
+    learning: interruption.code || interruption.type,
+    interrupted: true
+  });
+
+  await createMemory({
+    simulationId,
+    entityId,
+    eventId,
+    type: "EPISODIC",
+    content: `I stopped ${actionType.toLowerCase().replaceAll("_", " ")} because ${interruption.message}. I need to reconsider what to do next.`,
+    importance: interruption.type === "CRITICAL_EVENT" ? 0.78 : 0.66,
+    strength: interruption.type === "CRITICAL_EVENT" ? 0.82 : 0.68,
+    confidence: 0.95,
+    emotionalIntensity: 0.4,
+    simulationAt: simulationTime,
+    metadata: { kind: "action_interruption", actionType, interrupted: true, interruption, actionId, eventId, goalId: active.metadata?.goalId || null, planId: active.metadata?.planId || null, planStepId: active.metadata?.planStepId || null, cognitive }
+  });
+  await applyEmotions(entityId, simulationTime, needChanges, eventId, actionId, actionType, 0, { event: true, outcome: "PARTIAL", expectedOutcome: null, targetEntityId: active.metadata?.targetEntityId || null, targetLocationId: active.metadata?.targetLocationId || null, relationshipIntent: active.metadata?.relationshipIntent || "NONE", failureReason: "ACTION_INTERRUPTED" });
+  await completeGoalForAction(active.metadata?.goalId || null, actionType, simulationTime, "PARTIAL", result);
   return true;
 }
 
@@ -97,7 +148,7 @@ class SimulationEngine {
             phase = "entity.emotions"; await applyEmotions(entityId, updateTime, needChanges, null, active.id, active.actionType, updateHours);
             phase = "entity.interruption"; const interruption = !wasCompleted ? getInterruptionReason(active.actionType, await readNeeds(entityId), perception) : null;
             if (interruption) {
-              const interrupted = await interruptActiveAction({ simulationId: sim.id, entityId, active, simulationTime: updateTime, interruption });
+              const interrupted = await interruptActiveAction({ simulationId: sim.id, entityId, active, simulationTime: updateTime, interruption, needChanges, perception });
               if (interrupted) { phase = "entity.publish"; this.hub.publish(sim.id, "entity.state", { entityId, action: { ...active, status: "COMPLETED", interrupted: true }, status: "INTERRUPTED", interruption, needChanges }); continue; }
             }
             if (wasCompleted) {
@@ -111,7 +162,7 @@ class SimulationEngine {
               await applyEmotions(entityId, completionAt, needChanges, eventId, active.id, active.actionType, 0, { event: true, outcome, expectedOutcome, targetEntityId, targetLocationId, relationshipIntent, failureReason: completion.failureReason || null, meaning: active.metadata?.goalId ? (outcome === "SUCCESS" ? "GOAL_PROGRESS" : "GOAL_BLOCKED") : null, needRelief: Math.min(1, needRelief) });
               phase = "entity.goal"; await completeGoalForAction(active.metadata?.goalId || null, active.actionType, completionAt, outcome, { simulationId: sim.id, entityId, actionId: active.id, targetEntityId, targetLocationId, ...completion });
               phase = "entity.learning"; if (successful) await learnFromAction(entityId, active.actionType, completionAt);
-              phase = "entity.development"; if (successful) await updateDevelopment(sim.id, entityId, completionAt);
+              phase = "entity.development"; if (successful) await updateDevelopment(sim.id, entityId, completionAt, active.actionType);
               phase = "entity.traits"; await developTraits(entityId, completionAt, { actionType: active.actionType, outcome, targetEntityId, relationshipIntent, goalId: active.metadata?.goalId || null, planId: active.metadata?.planId || null, planStepId: active.metadata?.planStepId || null, intentionId: active.intentionId, decisionId: active.decisionId }, eventId, active.id);
               phase = "entity.habit"; if (successful) await recordHabitEvidence({ entityId, simulationTime: completionAt, actionType: active.actionType });
               phase = "entity.cognition"; const cognitive = await recordSignificantExperience({ simulationId: sim.id, entityId, simulationTime: completionAt, actionType: active.actionType, outcome, locationId: perception.location?.locationId || null, locationType: perception.location?.locationType || null, targetEntityId, resource: completion.resource || null, needChanges, relationshipIntent, consequence: outcome === "SUCCESS" ? "expected result obtained" : "intended result not fully obtained", learning: completion.resourceLearning?.type || completion.failureReason || null });
@@ -120,27 +171,27 @@ class SimulationEngine {
               await createMemory({ simulationId: sim.id, entityId, eventId, locationId: perception.location?.locationId || null, type: "EPISODIC", content: memoryPayload.content, importance: memoryPayload.importance, strength: memoryPayload.strength, confidence: memoryPayload.confidence, emotionalIntensity: memoryPayload.emotionalIntensity, simulationAt: completionAt, metadata: { ...memoryPayload.metadata, actionId: active.id, eventId, durationMinutes, relationshipIntent, goalId: active.metadata?.goalId || null, planId: active.metadata?.planId || null, planStepId: active.metadata?.planStepId || null, cognitive } });
             }
             phase = "entity.mental_state"; if (["TALKING", "STUDYING", "WORKING", "EXPLORING"].includes(active.actionType)) await updateMentalState(sim.id, entityId, nextTime, { currentFocus: active.actionType.toLowerCase().replaceAll("_", " "), mentalLoad: ["WORKING", "STUDYING"].includes(active.actionType) ? 0.55 : 0.35, certainty: 0.7 });
-            phase = "entity.publish"; this.hub.publish(sim.id, "entity.state", { entityId, action: { ...active, status: wasCompleted ? "COMPLETED" : "ACTIVE", startedSimulationAt: active.startedSimulationAt, expectedCompletionSimulationAt: completionAt, relationshipIntent }, needChanges }); continue;
+            phase = "entity.publish"; this.hub.publish(sim.id, "entity.state", { entityId, action: { ...active, status: wasCompleted ? "COMPLETED" : "ACTIVE" }, needChanges });
+          } else {
+            phase = "entity.autonomy"; const decision = await actForEntity({ simulationId: sim.id, entityId, simulationTime: nextTime.toISOString(), gemini: this.gemini }); if (!decision) continue;
+            actionType = decision.actionType; phase = "entity.action.start"; const started = await startAction({ simulationId: sim.id, entityId, decisionId: decision.decisionId, intentionId: decision.intentionId, actionType: decision.actionType, simulationTime: nextTime.toISOString(), targetEntityId: decision.targetEntityId || null, targetLocationId: decision.targetLocationId || null, relationshipIntent: decision.relationshipIntent || "NONE" });
+            this.hub.publish(sim.id, "action.created", { entityId, decision, action: started });
           }
-          phase = "entity.perception"; const perception = await perceive(sim.id, entityId, nextTime);
-          phase = "entity.needs"; const needChanges = await updateNeeds(entityId, nextTime, elapsedHours);
-          phase = "entity.emotions"; await applyEmotions(entityId, nextTime, needChanges, null, null, null, elapsedHours);
-          phase = "entity.decision"; const decision = await actForEntity({ simulationId: sim.id, entityId, simulationTime: nextTime, gemini: this.gemini });
-          if (!decision) { phase = "entity.publish"; this.hub.publish(sim.id, "entity.state", { entityId, decision: null, action: null, status: "IDLE", needChanges }); continue; }
-          actionType = decision.actionType; phase = "entity.action.start";
-          const action = await startAction({ simulationId: sim.id, entityId, decisionId: decision.decisionId, intentionId: decision.intentionId, actionType: decision.actionType, simulationTime: nextTime, targetEntityId: decision.targetEntityId || null, targetLocationId: decision.targetLocationId || null, relationshipIntent: decision.relationshipIntent || "NONE" });
-          await pool.query(`UPDATE actions SET result=? WHERE id=UUID_TO_BIN(?)`, [JSON.stringify({ eventId: action.eventId, actionType: action.actionType, durationMinutes: action.durationMinutes, targetEntityId: decision.targetEntityId || null, targetLocationId: decision.targetLocationId || null, goalId: decision.goalId || null, planId: decision.planId || null, planStepId: decision.planStepId || null, relationshipIntent: decision.relationshipIntent || "NONE", expectedCompletionSimulationAt: action.expectedCompletionSimulationAt, movement: action.movement || null }), action.actionId]);
-          phase = "entity.publish"; this.hub.publish(sim.id, "entity.state", { entityId, decision, action, status: "ACTIVE", needChanges });
         }
-        phase = "memory.decay"; await decayMemories(sim.id, nextTime); const count = (this.tickCounter.get(sim.id) || 0) + 1; this.tickCounter.set(sim.id, count);
-        if (count % 600 === 0) { phase = "asami.proactive_conversation"; const asami = await entityRepo.getAsamiCandidate(sim.id); if (asami) await initiateConversation({ simulationId: sim.id, asamiEntityId: asami.id, simulationTime: nextTime, gemini: this.gemini, hub: this.hub }); }
-        if (count % env.SNAPSHOT_EVERY_TICKS === 0) { phase = "snapshot"; const snapshot = await buildSnapshot(sim.id, nextTime); await simRepo.createSnapshot(sim.id, nextTime, snapshot, 1); }
-        phase = "tick.finish"; await simRepo.finishTick(tickId, "COMPLETED"); this.hub.publish(sim.id, "simulation.tick", { tickId, simulationTime: nextTime });
-      } catch (err) { const errorContext = { ...context, tickId, phase, entityId, actionType }; try { await simRepo.finishTick(tickId, "FAILED"); } catch (finishErr) { logger.error(logger.contextError({ ...errorContext, secondaryFailure: "finishTick" }, finishErr, "failed to mark simulation tick failed")); } throw Object.assign(err, { simulationContext: errorContext }); }
-    } catch (err) { const mergedContext = { ...context, ...(err.simulationContext || {}), phase, entityId, actionType }; logger.error(logger.contextError(mergedContext, err, "simulation failed")); throw err; }
+        phase = "world.decay"; await decayMemories(sim.id, nextTime, 6); this.tickCounter.set(sim.id, Number(this.tickCounter.get(sim.id) || 0) + 1);
+        const count = Number(this.tickCounter.get(sim.id) || 0); if (count % env.SNAPSHOT_EVERY_TICKS === 0) await simRepo.createSnapshot(sim.id, nextTime);
+        await simRepo.completeTick(tickId, { status: "COMPLETED", entityCount: actors.length });
+        this.hub.publish(sim.id, "simulation.tick", { simulationTime: nextTime.toISOString(), tickId });
+      } catch (err) {
+        await simRepo.completeTick(tickId, { status: "FAILED", error: { name: err.name, message: err.message, code: err.code, phase, entityId, actionType } });
+        throw err;
+      }
+    } catch (err) {
+      logger.error(logger.contextError({ ...context, phase, entityId, actionType }, err, "simulation run failed"));
+    }
   }
 }
 
-async function getDecisionExpectedOutcome(decisionId) { const [rows] = await pool.query(`SELECT expected_outcome AS expectedOutcome FROM decisions WHERE id=UUID_TO_BIN(?) LIMIT 1`, [decisionId]); if (!rows.length) return null; const value = rows[0].expectedOutcome; if (Buffer.isBuffer(value)) return JSON.parse(value.toString()); if (typeof value === "string") { try { return JSON.parse(value); } catch { return value; } } return value || null; }
-async function buildSnapshot(simulationId, simulationTime) { const actors = await entityRepo.listActors(simulationId, env.MAX_ENTITIES_PER_TICK); const entities = []; for (const actor of actors) { const dashboard = await entityRepo.getDashboard(simulationId, actor.id); entities.push({ entity: dashboard.entity, needs: dashboard.needs, emotions: dashboard.emotions, traits: dashboard.traits, location: dashboard.location, currentAction: dashboard.currentAction }); } return { simulationId, simulationTime, entities }; }
-module.exports = { SimulationEngine, buildSnapshot, getCriticalInterruptionNeed, getCriticalInterruptionEvent, getInterruptionReason, interruptActiveAction };
+async function getDecisionExpectedOutcome(decisionId) { const [rows] = await pool.query(`SELECT expected_outcome AS expectedOutcome FROM decision_options WHERE decision_id=UUID_TO_BIN(?) LIMIT 1`, [decisionId]); if (!rows.length) return null; const value = rows[0].expectedOutcome; if (value && typeof value === "object") return value; try { return JSON.parse(value); } catch { return null; } }
+
+module.exports = { SimulationEngine, getInterruptionReason, getCriticalInterruptionNeed, isCriticalNeed };
