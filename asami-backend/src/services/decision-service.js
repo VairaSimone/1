@@ -1,10 +1,163 @@
 const { pool } = require("../db/pool");
 const { uuid } = require("../lib/ids");
-const { ACTIONS, scoreAction } = require("./decision-rules");
+const { ACTIONS, scoreAction, RESOURCE_REQUIREMENTS } = require("./decision-rules");
 const { getCognitiveProfile, cognitiveDecisionModifier } = require("./personality-service");
+
+const RESOURCE_SEARCH_TTL_MINUTES = 180;
+const RESOURCE_TRAVEL_BONUS = 0.85;
+const WALKING_SPEED_KMH = 4.8;
+const ROAD_FACTOR = 1.18;
 
 function normalizeAction(value) {
   return String(value || "").trim().toUpperCase();
+}
+
+function parseJson(value, fallback = {}) {
+  if (value === null || value === undefined) return fallback;
+  if (typeof value === "object") return value;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return fallback;
+  }
+}
+
+function haversineMeters(a, b) {
+  const lat1 = Number(a?.latitude);
+  const lon1 = Number(a?.longitude);
+  const lat2 = Number(b?.latitude);
+  const lon2 = Number(b?.longitude);
+  if (![lat1, lon1, lat2, lon2].every(Number.isFinite)) return Infinity;
+
+  const rad = Math.PI / 180;
+  const radius = 6371000;
+  const dLat = (lat2 - lat1) * rad;
+  const dLon = (lon2 - lon1) * rad;
+  const h = Math.sin(dLat / 2) ** 2
+    + Math.cos(lat1 * rad) * Math.cos(lat2 * rad) * Math.sin(dLon / 2) ** 2;
+  return 2 * radius * Math.asin(Math.sqrt(h));
+}
+
+function shortestRoute(locations, originId, targetId) {
+  if (!originId || !targetId) return null;
+
+  const byId = new Map(locations.map(location => [location.locationId, location]));
+  const byCode = new Map(locations.map(location => [location.data?.worldCode, location]));
+  if (!byId.has(originId) || !byId.has(targetId)) return null;
+  if (originId === targetId) return { path: [originId], distanceMeters: 0 };
+
+  const distances = new Map();
+  const previous = new Map();
+  const unvisited = new Set(locations.map(location => location.locationId));
+  for (const id of unvisited) distances.set(id, Infinity);
+  distances.set(originId, 0);
+
+  while (unvisited.size) {
+    let currentId = null;
+    let currentDistance = Infinity;
+    for (const id of unvisited) {
+      const distance = distances.get(id);
+      if (distance < currentDistance) {
+        currentDistance = distance;
+        currentId = id;
+      }
+    }
+
+    if (currentId === null || currentDistance === Infinity) break;
+    unvisited.delete(currentId);
+    if (currentId === targetId) break;
+
+    const current = byId.get(currentId);
+    for (const code of Array.isArray(current?.data?.connections) ? current.data.connections : []) {
+      const next = byCode.get(code);
+      if (!next || !unvisited.has(next.locationId)) continue;
+
+      const edge = Math.max(5, haversineMeters(current, next) * ROAD_FACTOR);
+      const candidate = currentDistance + edge;
+      if (candidate < distances.get(next.locationId)) {
+        distances.set(next.locationId, candidate);
+        previous.set(next.locationId, currentId);
+      }
+    }
+  }
+
+  if (!Number.isFinite(distances.get(targetId))) return null;
+
+  const path = [];
+  let cursor = targetId;
+  while (cursor) {
+    path.unshift(cursor);
+    if (cursor === originId) break;
+    cursor = previous.get(cursor);
+  }
+
+  return path[0] === originId
+    ? { path, distanceMeters: distances.get(targetId) }
+    : null;
+}
+
+function travelMinutes(distanceMeters) {
+  if (!Number.isFinite(Number(distanceMeters))) return null;
+  return (Number(distanceMeters) / 1000 / WALKING_SPEED_KMH) * 60;
+}
+
+function findNearestResourceLocation(locations, originId, resource) {
+  let best = null;
+  for (const location of locations) {
+    const amount = Number(location.resources?.[resource] ?? 0);
+    if (amount < 1) continue;
+
+    const route = shortestRoute(locations, originId, location.locationId);
+    if (!route) continue;
+
+    const minutes = travelMinutes(route.distanceMeters);
+    if (minutes === null) continue;
+    if (!best || minutes < best.travelMinutes) {
+      best = {
+        locationId: location.locationId,
+        locationType: location.locationType,
+        distanceMeters: route.distanceMeters,
+        travelMinutes: minutes
+      };
+    }
+  }
+  return best;
+}
+
+function resourceTargetAction(resource) {
+  return resource === "water" || resource === "food" ? "WALKING" : null;
+}
+
+function applyResourceRoutingBias(candidates, resourceContext, needs) {
+  const next = candidates.map(candidate => ({ ...candidate }));
+  const indexByAction = new Map(next.map((candidate, index) => [normalizeAction(candidate.action), index]));
+
+  for (const [action, requirement] of Object.entries(RESOURCE_REQUIREMENTS)) {
+    const status = resourceContext.actions?.[action];
+    if (!status || status.localAvailable >= requirement.amount) continue;
+
+    const nearest = status.nearestLocation;
+    if (!nearest) continue;
+
+    const walkingIndex = indexByAction.get(resourceTargetAction(requirement.resource));
+    if (walkingIndex === undefined) continue;
+
+    const pressureCode = action === "DRINKING" ? "THIRST" : "HUNGER";
+    const pressure = Number(needs.find(item => item.code === pressureCode)?.value || 0);
+    const urgency = Math.min(1.4, RESOURCE_TRAVEL_BONUS + pressure * 0.6);
+    const travelPenalty = Math.min(0.45, Number(nearest.travelMinutes || 0) / 60 * 0.45);
+
+    next[walkingIndex].score = Number(next[walkingIndex].score || 0) + urgency - travelPenalty;
+    next[walkingIndex].targetLocationId = nearest.locationId;
+    next[walkingIndex].resourceIntent = {
+      resource: requirement.resource,
+      reason: "RESOURCE_UNAVAILABLE_LOCALLY",
+      expectedTravelMinutes: nearest.travelMinutes,
+      destinationLocationId: nearest.locationId
+    };
+  }
+
+  return next.sort((a, b) => Number(b.score || 0) - Number(a.score || 0));
 }
 
 function applyPlanBias(candidates, plans) {
@@ -21,7 +174,7 @@ function applyPlanBias(candidates, plans) {
     return activeStepActions.has(action)
       ? { ...candidate, score: Number(candidate.score || 0) + 0.4 }
       : candidate;
-  }).sort((a,b) => b.score - a.score);
+  }).sort((a, b) => b.score - a.score);
 }
 
 function applyRecentActionPenalty(candidates, recentActions) {
@@ -33,22 +186,22 @@ function applyRecentActionPenalty(candidates, recentActions) {
     if (lastIndex === 0) return { ...candidate, score: Number(candidate.score || 0) - 0.75 };
     if (lastIndex > 0 && lastIndex < 3) return { ...candidate, score: Number(candidate.score || 0) - 0.3 };
     return candidate;
-  }).sort((a,b) => b.score - a.score);
+  }).sort((a, b) => b.score - a.score);
 }
 
 const LOCATION_ACTION_BIAS = {
-  HOME:      {SLEEPING:.50,RESTING:.30,EATING:.18,DRINKING:.12},
-  CAFE:      {TALKING:.45,DRINKING:.35,EATING:.20,PLAYING:.08,READING:.05},
-  SHOP:      {EATING:.36,DRINKING:.42,EXPLORING:.05,WALKING:.05},
-  LIBRARY:   {READING:.45,STUDYING:.50,WORKING:.05,TALKING:-.08},
-  SCHOOL:    {STUDYING:.48,READING:.30,TALKING:.06,PLAYING:.03},
-  PARK:      {WALKING:.32,PLAYING:.35,TALKING:.25,EXPLORING:.28},
-  SQUARE:    {TALKING:.35,WALKING:.20,PLAYING:.18,EXPLORING:.08},
-  COMMUNITY: {TALKING:.35,WORKING:.22,STUDYING:.18,PLAYING:.12},
-  GYM:       {PLAYING:.48,WALKING:.20,RESTING:.10},
-  CLINIC:    {RESTING:.20,WALKING:.05},
-  NATURE:    {EXPLORING:.42,WALKING:.36,PLAYING:.18},
-  WORKSHOP:  {WORKING:.46,STUDYING:.14,EXPLORING:.10}
+  HOME: { SLEEPING: .50, RESTING: .30, EATING: .18, DRINKING: .12 },
+  CAFE: { TALKING: .45, DRINKING: .35, EATING: .20, PLAYING: .08, READING: .05 },
+  SHOP: { EATING: .36, DRINKING: .42, EXPLORING: .05, WALKING: .05 },
+  LIBRARY: { READING: .45, STUDYING: .50, WORKING: .05, TALKING: -.08 },
+  SCHOOL: { STUDYING: .48, READING: .30, TALKING: .06, PLAYING: .03 },
+  PARK: { WALKING: .32, PLAYING: .35, TALKING: .25, EXPLORING: .28 },
+  SQUARE: { TALKING: .35, WALKING: .20, PLAYING: .18, EXPLORING: .08 },
+  COMMUNITY: { TALKING: .35, WORKING: .22, STUDYING: .18, PLAYING: .12 },
+  GYM: { PLAYING: .48, WALKING: .20, RESTING: .10 },
+  CLINIC: { RESTING: .20, WALKING: .05 },
+  NATURE: { EXPLORING: .42, WALKING: .36, PLAYING: .18 },
+  WORKSHOP: { WORKING: .46, STUDYING: .14, EXPLORING: .10 }
 };
 
 function applyLocationBias(candidates, location) {
@@ -58,88 +211,274 @@ function applyLocationBias(candidates, location) {
   return candidates.map(candidate => ({
     ...candidate,
     score: Math.max(-1, Number(candidate.score || 0) + Number(bias[normalizeAction(candidate.action)] || 0))
-  })).sort((a,b) => b.score - a.score);
+  })).sort((a, b) => b.score - a.score);
 }
 
-async function buildDecisionContext(simulationId, entityId){
-  const [[needs],[traits],[goals],[location],[recentActions]] = await Promise.all([
+async function loadResourceContext(simulationId, entityId, location, simulationTime) {
+  const [rows] = await pool.query(
+    `SELECT BIN_TO_UUID(e.id) AS locationId,
+            l.location_type AS locationType,
+            l.latitude,
+            l.longitude,
+            l.address_data AS addressData,
+            e.attributes
+     FROM locations l
+     JOIN entities e ON e.id=l.entity_id
+     WHERE l.simulation_id=UUID_TO_BIN(?)
+       AND e.simulation_id=UUID_TO_BIN(?)
+       AND e.status='ACTIVE'`,
+    [simulationId, simulationId]
+  );
+
+  const locations = rows.map(row => {
+    const attributes = parseJson(row.attributes, {});
+    return {
+      locationId: row.locationId,
+      locationType: row.locationType,
+      latitude: Number(row.latitude),
+      longitude: Number(row.longitude),
+      data: parseJson(row.addressData),
+      resources: attributes.resources && typeof attributes.resources === "object"
+        ? attributes.resources
+        : {}
+    };
+  });
+
+  const current = locations.find(item => item.locationId === location?.locationId);
+  const nearestResources = {};
+  for (const resource of ["water", "food"]) {
+    nearestResources[resource] = findNearestResourceLocation(
+      locations,
+      location?.locationId,
+      resource
+    );
+  }
+
+  const [knowledgeRows] = await pool.query(
+    `SELECT BIN_TO_UUID(ki.object_entity_id) AS locationId,
+            ki.content,
+            ek.learned_simulation_at AS learnedAt
+     FROM entity_knowledge ek
+     JOIN knowledge_items ki ON ki.id=ek.knowledge_item_id
+     WHERE ek.simulation_id=UUID_TO_BIN(?)
+       AND ek.entity_id=UUID_TO_BIN(?)
+       AND ek.status='ACTIVE'
+       AND ki.knowledge_type='WORLD_EXPERIENCE'
+       AND ki.predicate='RESOURCE_UNAVAILABLE'
+     ORDER BY ek.learned_simulation_at DESC
+     LIMIT 48`,
+    [simulationId, entityId]
+  );
+
+  const blockedResources = {};
+  const now = new Date(simulationTime).getTime();
+  for (const row of knowledgeRows) {
+    const learnedAt = new Date(row.learnedAt).getTime();
+    if (!Number.isFinite(learnedAt) || !Number.isFinite(now)) continue;
+    if (now - learnedAt > RESOURCE_SEARCH_TTL_MINUTES * 60000) continue;
+
+    const payload = parseJson(row.content, null);
+    if (!payload?.resource || !row.locationId) continue;
+    if (row.locationId !== location?.locationId) continue;
+    blockedResources[String(payload.resource).toLowerCase()] = true;
+  }
+
+  const actions = {};
+  for (const [action, requirement] of Object.entries(RESOURCE_REQUIREMENTS)) {
+    const localAvailable = Number(current?.resources?.[requirement.resource] ?? 0);
+    actions[action] = {
+      resource: requirement.resource,
+      required: requirement.amount,
+      localAvailable,
+      locallyAvailable: localAvailable >= requirement.amount,
+      recentlyBlocked: Boolean(blockedResources[requirement.resource]),
+      nearestLocation: nearestResources[requirement.resource] || null
+    };
+  }
+
+  return {
+    currentResources: current?.resources || {},
+    localResources: current?.resources || {},
+    blockedResources,
+    nearestResources,
+    actions
+  };
+}
+
+async function buildDecisionContext(simulationId, entityId, simulationTime = null) {
+  let effectiveSimulationTime = simulationTime;
+  if (!effectiveSimulationTime) {
+    const [rows] = await pool.query(
+      `SELECT current_simulation_at AS currentSimulationAt
+       FROM simulations
+       WHERE id=UUID_TO_BIN(?)
+       LIMIT 1`,
+      [simulationId]
+    );
+    effectiveSimulationTime = rows[0]?.currentSimulationAt || new Date();
+  }
+
+  const [[needs], [traits], [goals], [location], [recentActions]] = await Promise.all([
     pool.query(`
       SELECT nd.code,enc.value,nd.priority_weight AS priorityWeight
       FROM entity_needs_current enc JOIN need_definitions nd ON nd.id=enc.need_id
       WHERE enc.entity_id=UUID_TO_BIN(?) AND nd.active=1
-    `,[entityId]),
+    `, [entityId]),
     pool.query(`
       SELECT td.code,etc.value FROM entity_traits_current etc JOIN trait_definitions td ON td.id=etc.trait_id
       WHERE etc.entity_id=UUID_TO_BIN(?) AND td.active=1
-    `,[entityId]),
+    `, [entityId]),
     pool.query(`
       SELECT BIN_TO_UUID(id) AS id,title,goal_type AS goalType,priority,progress,motivation
       FROM goals WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND status IN ('ACTIVE','PENDING')
       ORDER BY priority DESC LIMIT 10
-    `,[simulationId,entityId]),
+    `, [simulationId, entityId]),
     pool.query(`
       SELECT BIN_TO_UUID(elc.location_id) AS locationId,l.location_type AS locationType,l.address_data AS addressData
       FROM entity_locations_current elc JOIN locations l ON l.entity_id=elc.location_id AND l.simulation_id=elc.simulation_id
       WHERE elc.simulation_id=UUID_TO_BIN(?) AND elc.entity_id=UUID_TO_BIN(?)
       LIMIT 1
-    `,[simulationId,entityId]),
+    `, [simulationId, entityId]),
     pool.query(`
       SELECT action_type AS actionType
       FROM actions
       WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND status='COMPLETED'
       ORDER BY started_simulation_at DESC LIMIT 6
-    `,[simulationId,entityId])
+    `, [simulationId, entityId])
   ]);
 
+  const currentLocation = location[0] || null;
+  const resourceContext = await loadResourceContext(
+    simulationId,
+    entityId,
+    currentLocation,
+    effectiveSimulationTime
+  );
   const cognitiveProfile = await getCognitiveProfile(simulationId, entityId);
-  let candidates=ACTIONS.map(action=>({action,score:scoreAction(action,needs,traits)}));
+
+  let candidates = ACTIONS.map(action => ({
+    action,
+    score: scoreAction(action, needs, traits, resourceContext)
+  }));
 
   candidates = candidates.map(candidate => ({
     ...candidate,
-    score: Number(candidate.score || 0) + cognitiveDecisionModifier(cognitiveProfile, candidate.action)
-  })).sort((a,b) => b.score - a.score);
+    score: Number(candidate.score || 0)
+      + cognitiveDecisionModifier(cognitiveProfile, candidate.action)
+  })).sort((a, b) => b.score - a.score);
 
   candidates = applyPlanBias(candidates, cognitiveProfile.plans);
   candidates = applyRecentActionPenalty(candidates, recentActions.map(row => row.actionType));
-  candidates = applyLocationBias(candidates, location[0]||null);
+  candidates = applyLocationBias(candidates, currentLocation);
+  candidates = applyResourceRoutingBias(candidates, resourceContext, needs);
 
   return {
     needs,
     traits,
     goals,
-    location:location[0]||null,
-    recentActions:recentActions.map(row => row.actionType),
+    location: currentLocation,
+    recentActions: recentActions.map(row => row.actionType),
+    resourceContext,
     cognitiveProfile,
-    allowedActionTypes:ACTIONS,
-    candidates:candidates.slice(0,6)
+    allowedActionTypes: ACTIONS,
+    candidates: candidates.slice(0, 6)
   };
 }
 
-async function makeDecision({simulationId,entityId,simulationTime,triggerType="AUTONOMOUS",triggerEventId=null,context,aiChoice=null}){
-  const decisionId=uuid();
-  const candidates=Array.isArray(context?.candidates) ? context.candidates : [];
+async function makeDecision({
+  simulationId,
+  entityId,
+  simulationTime,
+  triggerType = "AUTONOMOUS",
+  triggerEventId = null,
+  context,
+  aiChoice = null
+}) {
+  const decisionId = uuid();
+  const candidates = Array.isArray(context?.candidates) ? context.candidates : [];
   const topDeterministic = candidates[0]?.action || "RESTING";
   const aiAction = normalizeAction(aiChoice?.selectedActionType);
-  const aiCandidate = candidates.find(x => normalizeAction(x.action) === aiAction);
-  const chosen = aiCandidate && Number(aiCandidate.score || 0) > 0
-    ? aiCandidate.action
-    : topDeterministic;
+  const aiCandidate = candidates.find(candidate => normalizeAction(candidate.action) === aiAction);
+  const chosenCandidate = aiCandidate && Number(aiCandidate.score || 0) > 0
+    ? aiCandidate
+    : (candidates[0] || { action: topDeterministic, score: 0 });
+  const chosen = chosenCandidate.action;
 
   await pool.query(`
     INSERT INTO decisions
       (id,simulation_id,entity_id,simulation_time,trigger_event_id,trigger_type,context,status,version)
     VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,UUID_TO_BIN(?),?,?, 'CREATED',1)
-  `,[decisionId,simulationId,entityId,simulationTime,triggerEventId,triggerType,JSON.stringify({...context,aiChoice:aiChoice||null,chosenAction:chosen})]);
-  const optionId=uuid();
+  `, [
+    decisionId,
+    simulationId,
+    entityId,
+    simulationTime,
+    triggerEventId,
+    triggerType,
+    JSON.stringify({ ...context, aiChoice: aiChoice || null, chosenAction: chosen })
+  ]);
+
+  const optionId = uuid();
   await pool.query(`
-    INSERT INTO decision_options(id,decision_id,option_code,description,action_definition,evaluation,expected_outcome)
+    INSERT INTO decision_options
+      (id,decision_id,option_code,description,action_definition,evaluation,expected_outcome)
     VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?, ?,?)
-  `,[optionId,decisionId,chosen,`Autonomously selected ${chosen}`,JSON.stringify({actionType:chosen}),JSON.stringify({score:candidates.find(x=>x.action===chosen)?.score||0}),JSON.stringify({actionType:chosen})]);
+  `, [
+    optionId,
+    decisionId,
+    chosen,
+    `Autonomously selected ${chosen}`,
+    JSON.stringify({
+      actionType: chosen,
+      targetLocationId: chosenCandidate.targetLocationId || null
+    }),
+    JSON.stringify({
+      score: Number(chosenCandidate.score || 0),
+      resourceIntent: chosenCandidate.resourceIntent || null
+    }),
+    JSON.stringify({
+      actionType: chosen,
+      targetLocationId: chosenCandidate.targetLocationId || null
+    })
+  ]);
+
   await pool.query(`
     UPDATE decisions
     SET selected_option_id=UUID_TO_BIN(?),status='EVALUATED',expected_outcome=?
     WHERE id=UUID_TO_BIN(?)
-  `,[optionId,JSON.stringify({actionType:chosen}),decisionId]);
-  return {decisionId,actionType:chosen,reason:aiCandidate?.action===chosen && aiChoice?.reason ? aiChoice.reason : "deterministic need/trait/cognitive score",confidence:aiCandidate?.action===chosen ? (aiChoice?.confidence??0.7) : 0.7};
+  `, [
+    optionId,
+    JSON.stringify({
+      actionType: chosen,
+      targetLocationId: chosenCandidate.targetLocationId || null
+    }),
+    decisionId
+  ]);
+
+  return {
+    decisionId,
+    actionType: chosen,
+    targetLocationId: chosenCandidate.targetLocationId || null,
+    reason: aiCandidate?.action === chosen && aiChoice?.reason
+      ? aiChoice.reason
+      : (chosenCandidate.resourceIntent
+          ? `resource-driven routing: ${chosenCandidate.resourceIntent.resource}`
+          : "deterministic need/trait/cognitive score"),
+    confidence: aiCandidate?.action === chosen
+      ? (aiChoice?.confidence ?? 0.7)
+      : 0.7
+  };
 }
-module.exports={ACTIONS,scoreAction,buildDecisionContext,makeDecision,applyLocationBias,LOCATION_ACTION_BIAS};
+
+module.exports = {
+  ACTIONS,
+  RESOURCE_REQUIREMENTS,
+  scoreAction,
+  buildDecisionContext,
+  makeDecision,
+  applyLocationBias,
+  LOCATION_ACTION_BIAS,
+  loadResourceContext,
+  findNearestResourceLocation,
+  shortestRoute
+};
