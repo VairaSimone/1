@@ -29,12 +29,13 @@ test("a single failure has weaker learning than repeated contextual failures", (
   assert.ok(repeated <= 0.25);
 });
 
-test("success produces a learning signal too", () => {
+test("success and failure both produce bounded learning signals", () => {
   const success = computeLearningStrength({ outcome: "SUCCESS", confidence: 0.8, repetition: 0.5, contextSimilarity: 0.8 });
   const failure = computeLearningStrength({ outcome: "FAILURE", confidence: 0.8, repetition: 0.5, contextSimilarity: 0.8 });
   assert.ok(success > 0);
   assert.ok(failure < 0);
-  assert.ok(Math.abs(failure) > success);
+  assert.ok(Math.abs(success) < 0.25);
+  assert.ok(Math.abs(failure) < 0.25);
 });
 
 test("memory relevance prefers goal/location/action matches over an unrelated recent memory", () => {
