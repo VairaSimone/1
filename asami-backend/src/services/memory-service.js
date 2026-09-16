@@ -4,6 +4,7 @@ const { uuid } = require("../lib/ids");
 const DECAY_BATCH_SIZE = 250;
 const DECAY_CHECKPOINT_MINUTES = 360;
 const DECAY_PER_HOUR_FACTOR = 0.997;
+const lastDecayCheckBySimulation = new Map();
 
 function normalizeJson(value) {
   if (Buffer.isBuffer(value)) value = value.toString();
@@ -71,7 +72,7 @@ async function createMemory({ simulationId, entityId, eventId = null, activityId
   if (memoryKind === "resource_failure") {
     const resource = metadata?.resource?.resource || metadata?.resource || null, resourceName = resource ? String(resource).trim().toLowerCase() : null, memoryLocationId = locationId || metadata?.locationId || metadata?.location?.id || null;
     if (resourceName && memoryLocationId) {
-      const [existingRows] = await pool.query(`SELECT BIN_TO_UUID(id) AS id,version FROM memories WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND status='ACTIVE' AND JSON_UNQUOTE(JSON_EXTRACT(metadata,'$.kind'))='resource_failure' AND LOWER(JSON_UNQUOTE(JSON_EXTRACT(metadata,'$.resource'))) = ? AND (JSON_UNQUOTE(JSON_EXTRACT(metadata,'$.locationId')) = ? OR location_id=UUID_TO_BIN(?)) ORDER BY created_simulation_at DESC LIMIT 1`, [simulationId, entityId, resourceName, memoryLocationId, memoryLocationId]);
+      const [existingRows] = await pool.query(`SELECT BIN_TO_UUID(id) AS id,version FROM memories WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND status='ACTIVE' AND JSON_UNQUOTE(JSON_EXTRACT(metadata,'$.kind'))='resource_failure' AND LOWER(COALESCE(JSON_UNQUOTE(JSON_EXTRACT(metadata,'$.resource.resource')),JSON_UNQUOTE(JSON_EXTRACT(metadata,'$.resource')))) = ? AND (JSON_UNQUOTE(JSON_EXTRACT(metadata,'$.locationId')) = ? OR location_id=UUID_TO_BIN(?)) ORDER BY created_simulation_at DESC LIMIT 1`, [simulationId, entityId, resourceName, memoryLocationId, memoryLocationId]);
       if (existingRows.length) {
         const existing = existingRows[0];
         await pool.query(`UPDATE memories SET content=?,importance=?,strength=?,confidence=?,emotional_intensity=?,source_event_id=UUID_TO_BIN(?),source_activity_id=UUID_TO_BIN(?),location_id=UUID_TO_BIN(?),created_simulation_at=?,metadata=?,status='ACTIVE',forgotten_simulation_at=NULL,version=version+1 WHERE id=UUID_TO_BIN(?) AND version=?`, [content, importance, Math.max(0.99, Number(strength) || 0), confidence, emotionalIntensity, eventId, activityId, memoryLocationId, simulationAt, metadata ? JSON.stringify(metadata) : null, existing.id, existing.version]);
@@ -85,6 +86,10 @@ async function createMemory({ simulationId, entityId, eventId = null, activityId
 }
 
 async function decayMemories(simulationId, simulationTime) {
+  const nowMs = new Date(simulationTime).getTime();
+  const lastMs = lastDecayCheckBySimulation.get(simulationId);
+  if (Number.isFinite(nowMs) && Number.isFinite(lastMs) && nowMs - lastMs < DECAY_CHECKPOINT_MINUTES * 60000) return;
+  if (Number.isFinite(nowMs)) lastDecayCheckBySimulation.set(simulationId, nowMs);
   const [rows] = await pool.query(`SELECT BIN_TO_UUID(id) AS id,strength,version,created_simulation_at AS createdSimulationAt,metadata FROM memories WHERE simulation_id=UUID_TO_BIN(?) AND status='ACTIVE' AND (forgotten_simulation_at IS NULL OR forgotten_simulation_at>?) AND TIMESTAMPDIFF(MINUTE,COALESCE(JSON_UNQUOTE(JSON_EXTRACT(metadata,'$.decayCheckpointAt')),created_simulation_at),?) >= ? ORDER BY importance DESC,strength ASC,created_simulation_at ASC LIMIT ?`, [simulationId, simulationTime, simulationTime, DECAY_CHECKPOINT_MINUTES, DECAY_BATCH_SIZE]);
   for (const memory of rows) {
     const metadata = normalizeJson(memory.metadata) || {}, checkpoint = metadata.decayCheckpointAt || memory.createdSimulationAt;
