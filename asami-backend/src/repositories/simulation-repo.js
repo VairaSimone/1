@@ -225,11 +225,18 @@ async function createTick(id, simulationTime, tickType, engineVersion) {
 }
 
 async function finishTick(tickId, status = "COMPLETED") {
+  const normalizedStatus = status && typeof status === "object" ? status.status : status;
+  const finalStatus = normalizedStatus || "COMPLETED";
+  const allowedStatuses = new Set(["COMPLETED", "FAILED", "SKIPPED"]);
+  if (!allowedStatuses.has(finalStatus)) {
+    throw Object.assign(new Error(`Invalid simulation tick status: ${String(finalStatus)}`), { code: "INVALID_TICK_STATUS" });
+  }
+
   await pool.query(`
     UPDATE simulation_ticks
     SET status=?, real_finished_at=UTC_TIMESTAMP(3)
-    WHERE id=UUID_TO_BIN(?)
-  `, [status, tickId]);
+    WHERE id=UUID_TO_BIN(?) AND status='RUNNING'
+  `, [finalStatus, tickId]);
 }
 
 async function createSnapshot(id, simulationTime, state, snapshotVersion = 1) {
