@@ -148,7 +148,12 @@ function scoreAction(action, needs, traits, resourceContext = {}) {
   }
 
   score += criticalNeedModifier(action, needs, resourceContext);
-  return score + resourceModifier(action, resourceContext);
+
+  // `intentions.priority` is constrained to non-negative values in the DB.
+  // Infeasible resource-dependent actions can otherwise become negative due
+  // to travel/unavailability penalties, so keep the decision score domain
+  // aligned with the persisted intention priority domain.
+  return Math.max(0, score + resourceModifier(action, resourceContext));
 }
 
 module.exports = { ACTIONS, scoreAction, RESOURCE_REQUIREMENTS, criticalNeedModifier };
