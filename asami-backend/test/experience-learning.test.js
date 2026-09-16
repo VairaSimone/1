@@ -1,6 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { isSignificantExperience, cognitiveExperienceModifier } = require("../src/services/experience-learning-service");
+const { isSignificantExperience, shouldCreateExperiencePreference, cognitiveExperienceModifier } = require("../src/services/experience-learning-service");
 const { emotionAppraisal } = require("../src/services/state-service");
 
 test("significant experiences include failures and meaningful social/resource outcomes", () => {
@@ -8,6 +8,12 @@ test("significant experiences include failures and meaningful social/resource ou
   assert.equal(isSignificantExperience({ outcome: "SUCCESS", targetEntityId: "person-1" }), true);
   assert.equal(isSignificantExperience({ outcome: "SUCCESS", resource: { resource: "water", consumed: 1 } }), true);
   assert.equal(isSignificantExperience({ outcome: "SUCCESS", needChanges: [{ delta: 0.05 }] }), false);
+});
+
+test("routine success does not automatically become a preference", () => {
+  assert.equal(shouldCreateExperiencePreference({ outcome: "SUCCESS", needChanges: [{ delta: 0.08 }] }), false);
+  assert.equal(shouldCreateExperiencePreference({ outcome: "SUCCESS", needChanges: [{ delta: -0.5 }] }), true);
+  assert.equal(shouldCreateExperiencePreference({ outcome: "FAILURE", needChanges: [] }), true);
 });
 
 test("outcome appraisal changes emotion direction independently of action baseline", () => {
@@ -18,7 +24,7 @@ test("outcome appraisal changes emotion direction independently of action baseli
   assert.ok(failure.ANXIETY > success.ANXIETY);
 });
 
-test("experience cognition biases later action selection", () => {
+test("experience cognition biases later action selection within a bounded range", () => {
   const profile = {
     preferences: [
       { targetType: "ACTION:DRINKING", preferenceValue: -1, strength: 0.7, confidence: 0.9 },
@@ -28,5 +34,5 @@ test("experience cognition biases later action selection", () => {
     knowledge: [{ predicate: "ACTION_OUTCOME", content: JSON.stringify({ actionType: "DRINKING", outcome: "FAILURE", locationId: "home" }), confidence: 0.9 }]
   };
   const modifier = cognitiveExperienceModifier(profile, "DRINKING", { locationType: "HOME", locationId: "home" });
-  assert.ok(modifier < -1);
+  assert.ok(modifier >= -0.35 && modifier <= 0.35);
 });
