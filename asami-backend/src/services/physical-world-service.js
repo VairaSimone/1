@@ -53,9 +53,9 @@ async function getLocationPhysicalState(simulationId,locationId){
   return {locationId,locationType:row.locationType,resources:a.resources||{},objects:Array.isArray(a.objects)?a.objects:[]};
 }
 async function consumeResource({simulationId,locationId,resource,amount,simulationTime}){
-  const quantity=Math.max(0,Number(amount)||0);if(!locationId||!resource||!quantity)return {ok:true,consumed:0,remaining:null};
-  let result=null;const next=await updateLocationAttributes(simulationId,locationId,current=>{const resources={...(current.resources||{})};const available=clamp(resources[resource],0);const consumed=Math.min(available,quantity);resources[resource]=available-consumed;result={ok:consumed>=quantity,consumed,remaining:resources[resource]};return {...current,resources,physicalUpdatedAt:simulationTime};});
-  return next&&result?result:{ok:false,consumed:0,remaining:null};
+  const quantity=Math.max(0,Number(amount)||0);if(!locationId||!resource||!quantity)return {ok:true,consumed:0,remaining:null,resource:resource||null};
+  let result=null;const next=await updateLocationAttributes(simulationId,locationId,current=>{const resources={...(current.resources||{})};const available=clamp(resources[resource],0);const consumed=Math.min(available,quantity);resources[resource]=available-consumed;result={ok:consumed>=quantity,consumed,remaining:resources[resource],resource};return {...current,resources,physicalUpdatedAt:simulationTime};});
+  return next&&result?result:{ok:false,consumed:0,remaining:null,resource};
 }
 async function replenishResource({simulationId,locationId,resource,amount,simulationTime}){
   const quantity=Math.max(0,Number(amount)||0);if(!locationId||!resource||!quantity)return null;let remaining=null;
@@ -64,7 +64,7 @@ async function replenishResource({simulationId,locationId,resource,amount,simula
 }
 async function resolveActionResource({simulationId,locationId,actionType,simulationTime}){
   const usage={DRINKING:{resource:'water',amount:1},EATING:{resource:'food',amount:1}}[actionType];
-  if(!usage)return {ok:true,consumed:0,remaining:null};
+  if(!usage)return {ok:true,consumed:0,remaining:null,resource:null};
   return consumeResource({simulationId,locationId,resource:usage.resource,amount:usage.amount,simulationTime});
 }
 module.exports={seedPhysicalWorld,getLocationPhysicalState,consumeResource,replenishResource,resolveActionResource,LOCATION_RESOURCES,LOCATION_OBJECTS};
