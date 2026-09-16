@@ -1,1 +1,0 @@
-// Outcome handling is implemented in SimulationEngine directly; this file is intentionally not used.
