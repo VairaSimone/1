@@ -30,10 +30,57 @@ function isSignificantExperience({ outcome, targetEntityId, relationshipIntent, 
   return meaningfulNeedChange;
 }
 
-function shouldCreateExperiencePreference({ outcome, needChanges = [] }) {
+function shouldCreateExperiencePreference({ outcome, needChanges = [], interrupted = false }) {
+  if (interrupted) return false;
   const normalizedOutcome = normalize(outcome);
   if (normalizedOutcome === "FAILURE" || normalizedOutcome === "PARTIAL") return true;
   return (needChanges || []).some(change => Math.abs(Number(change?.delta || 0)) >= 0.35);
+}
+
+function outcomeLearningSignal(outcome) {
+  const normalized = normalize(outcome);
+  if (normalized === "SUCCESS") return 0.12;
+  if (normalized === "PARTIAL") return -0.055;
+  if (normalized === "FAILURE") return -0.09;
+  return 0;
+}
+
+function computeLearningStrength({ outcome, confidence = 0.7, repetition = 0, contextSimilarity = 0.5, interrupted = false }) {
+  if (interrupted) return 0;
+  const signal = outcomeLearningSignal(outcome);
+  if (!signal) return 0;
+  const confidenceFactor = clamp01(confidence, 0.7);
+  const repetitionFactor = Math.min(1, 0.15 + Math.max(0, Number(repetition) || 0) * 0.85);
+  const contextFactor = 0.35 + 0.65 * clamp01(contextSimilarity, 0.5);
+  return clampSigned(signal * confidenceFactor * repetitionFactor * contextFactor, 0.25);
+}
+
+async function loadExperienceRepetition({ simulationId, entityId, actionType, locationId, locationType, targetEntityId }) {
+  const [rows] = await pool.query(`
+    SELECT action_type AS actionType,result
+    FROM actions
+    WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND status='COMPLETED'
+    ORDER BY completed_simulation_at DESC LIMIT 48
+  `, [simulationId, entityId]);
+
+  const normalizedAction = normalize(actionType);
+  let sameActionCount = 0;
+  let similarContextCount = 0;
+  for (const row of rows) {
+    if (normalize(row.actionType) !== normalizedAction) continue;
+    sameActionCount += 1;
+    const result = parseJson(row.result, {}) || {};
+    const sameTarget = targetEntityId && result.targetEntityId && String(targetEntityId) === String(result.targetEntityId);
+    const sameLocation = locationId && result.targetLocationId && String(locationId) === String(result.targetLocationId);
+    const sameLocationType = locationType && normalize(result.locationType) === normalize(locationType);
+    if (sameTarget || sameLocation || sameLocationType) similarContextCount += 1;
+  }
+
+  const repetition = Math.min(1, (sameActionCount + 1) / 8);
+  const contextSimilarity = sameActionCount
+    ? Math.min(1, (similarContextCount + 1) / (sameActionCount + 1))
+    : 0.35;
+  return { sameActionCount, similarContextCount, repetition, contextSimilarity };
 }
 
 async function upsertExperiencePreference({ simulationId, entityId, simulationTime, targetType, value, strength, confidence }) {
@@ -46,20 +93,23 @@ async function upsertExperiencePreference({ simulationId, entityId, simulationTi
     ORDER BY updated_simulation_at DESC LIMIT 1
   `, [simulationId, entityId, normalizedType]);
 
+  const signedValue = clampSigned(value, 1);
+  const learningWeight = Math.max(0.025, Math.min(0.22, Math.abs(Number(strength)) || 0.025));
   if (!rows.length) {
     const id = uuid();
     await pool.query(`
       INSERT INTO preferences
         (id,simulation_id,entity_id,target_type,target_entity_id,preference_value,strength,confidence,created_simulation_at,updated_simulation_at,version)
       VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,NULL,?,?,?,?,?,1)
-    `, [id, simulationId, entityId, normalizedType, clampSigned(value), clamp01(strength, 0.35), clamp01(confidence, 0.7), simulationTime, simulationTime]);
+    `, [id, simulationId, entityId, normalizedType, signedValue * learningWeight, clamp01(Math.abs(strength), 0.05), clamp01(confidence, 0.7), simulationTime, simulationTime]);
     return id;
   }
 
   const current = rows[0];
-  const nextValue = clampSigned(Number(current.preference_value) * 0.65 + clampSigned(value) * 0.35);
-  const nextStrength = clamp01(Number(current.strength) * 0.7 + clamp01(strength, 0.35) * 0.3);
-  const nextConfidence = clamp01(Number(current.confidence) * 0.7 + clamp01(confidence, 0.7) * 0.3);
+  const currentValue = clampSigned(current.preference_value, 1);
+  const nextValue = clampSigned(currentValue * (1 - learningWeight) + signedValue * learningWeight, 1);
+  const nextStrength = clamp01(Number(current.strength) * 0.82 + Math.abs(Number(strength) || 0) * 0.18);
+  const nextConfidence = clamp01(Number(current.confidence) * 0.8 + clamp01(confidence, 0.7) * 0.2);
   const [updated] = await pool.query(`
     UPDATE preferences SET preference_value=?,strength=?,confidence=?,updated_simulation_at=?,version=version+1
     WHERE id=UUID_TO_BIN(?) AND version=?
@@ -146,21 +196,21 @@ async function recordExperienceKnowledge({ simulationId, entityId, simulationTim
   return updated.affectedRows ? current.id : null;
 }
 
-async function recordSignificantExperience({ simulationId, entityId, simulationTime, actionType, outcome, locationId = null, locationType = null, targetEntityId = null, resource = null, needChanges = [], relationshipIntent = "NONE", consequence = null, learning = null }) {
-  if (!isSignificantExperience({ outcome, targetEntityId, relationshipIntent, resource, needChanges })) return { significant: false, preferenceIds: [], beliefId: null, knowledgeId: null };
+async function recordSignificantExperience({ simulationId, entityId, simulationTime, actionType, outcome, locationId = null, locationType = null, targetEntityId = null, resource = null, needChanges = [], relationshipIntent = "NONE", consequence = null, learning = null, interrupted = false }) {
+  if (!isSignificantExperience({ outcome, targetEntityId, relationshipIntent, resource, needChanges })) return { significant: false, preferenceIds: [], beliefId: null, knowledgeId: null, learningStrength: 0 };
 
   const normalizedOutcome = normalize(outcome);
-  const valence = normalizedOutcome === "SUCCESS" ? 1 : normalizedOutcome === "PARTIAL" ? -0.15 : -1;
+  const evidence = await loadExperienceRepetition({ simulationId, entityId, actionType, locationId, locationType, targetEntityId });
   const confidence = normalizedOutcome === "FAILURE" ? 0.96 : normalizedOutcome === "PARTIAL" ? 0.8 : 0.72;
-  const strength = normalizedOutcome === "FAILURE" ? 0.62 : 0.42;
+  const learningStrength = computeLearningStrength({ outcome: normalizedOutcome, confidence, repetition: evidence.repetition, contextSimilarity: evidence.contextSimilarity, interrupted });
   const preferenceIds = [];
 
-  if (shouldCreateExperiencePreference({ outcome: normalizedOutcome, needChanges })) {
+  if (shouldCreateExperiencePreference({ outcome: normalizedOutcome, needChanges, interrupted })) {
     const actionId = await upsertExperiencePreference({
       simulationId, entityId, simulationTime,
       targetType: `ACTION:${normalize(actionType).slice(0, 70)}`,
-      value: valence,
-      strength,
+      value: Math.sign(learningStrength),
+      strength: Math.abs(learningStrength),
       confidence
     });
     if (actionId) preferenceIds.push(actionId);
@@ -169,8 +219,8 @@ async function recordSignificantExperience({ simulationId, entityId, simulationT
       const locationActionId = await upsertExperiencePreference({
         simulationId, entityId, simulationTime,
         targetType: `LOCATION_ACTION:${normalize(locationType).slice(0, 35)}:${normalize(actionType).slice(0, 35)}`,
-        value: valence,
-        strength: strength * 0.9,
+        value: Math.sign(learningStrength),
+        strength: Math.abs(learningStrength) * 0.9,
         confidence: confidence * 0.95
       });
       if (locationActionId) preferenceIds.push(locationActionId);
@@ -179,7 +229,7 @@ async function recordSignificantExperience({ simulationId, entityId, simulationT
 
   const beliefId = await upsertExperienceBelief({ simulationId, entityId, simulationTime, actionType, outcome, locationId, resource, consequence });
   const knowledgeId = await recordExperienceKnowledge({ simulationId, entityId, simulationTime, actionType, outcome, locationId, resource, consequence, learning });
-  return { significant: true, preferenceIds, beliefId, knowledgeId };
+  return { significant: true, preferenceIds, beliefId, knowledgeId, learningStrength, evidence };
 }
 
 function cognitiveExperienceModifier(profile, actionType, { locationType = null, locationId = null } = {}) {
@@ -207,13 +257,14 @@ function cognitiveExperienceModifier(profile, actionType, { locationType = null,
     else if (normalize(value.outcome) === "SUCCESS") beliefModifier += 0.04 * confidence;
   }
 
-  // Knowledge is retained as episodic/world memory, not converted directly into an action preference.
   return Math.max(-0.35, Math.min(0.35, preferenceModifier + beliefModifier));
 }
 
 module.exports = {
   isSignificantExperience,
   shouldCreateExperiencePreference,
+  outcomeLearningSignal,
+  computeLearningStrength,
   recordSignificantExperience,
   cognitiveExperienceModifier
 };
