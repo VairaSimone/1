@@ -14,6 +14,16 @@ function normalizeJson(value) {
 
 function actionLabel(actionType) { return String(actionType || "ACTION").toLowerCase().replaceAll("_", " "); }
 function normalizeOutcome(outcome) { const value = String(outcome || "SUCCESS").toUpperCase(); return ["SUCCESS", "PARTIAL", "FAILURE"].includes(value) ? value : "SUCCESS"; }
+function clamp01(value, fallback = 0) { const n = Number(value); return Number.isFinite(n) ? Math.max(0, Math.min(1, n)) : fallback; }
+function normalizeText(value) { return String(value || "").trim().toLowerCase(); }
+function tokenOverlap(a, b) {
+  const left = new Set(normalizeText(a).split(/[^a-z0-9_:-]+/i).filter(token => token.length >= 3));
+  const right = new Set(normalizeText(b).split(/[^a-z0-9_:-]+/i).filter(token => token.length >= 3));
+  if (!left.size || !right.size) return 0;
+  let common = 0;
+  for (const token of left) if (right.has(token)) common += 1;
+  return common / Math.max(left.size, right.size);
+}
 
 function buildMemoryContext({ perception, decision, actionType, needChanges, simulationAt, outcome = null, completion = null }) {
   const p = perception || {}, location = p.location || null, nearby = Array.isArray(p.nearby) ? p.nearby : [], recentEvents = Array.isArray(p.recentEvents) ? p.recentEvents : [], relationships = Array.isArray(p.relationships) ? p.relationships : [], needs = Array.isArray(needChanges) ? needChanges : [], result = completion || {};
@@ -102,6 +112,73 @@ async function decayMemories(simulationId, simulationTime) {
   }
 }
 
-async function listMemories(simulationId,entityId,limit=100){const [rows]=await pool.query(`SELECT BIN_TO_UUID(id) AS id,memory_type AS memoryType,content,importance,strength,confidence,emotional_intensity AS emotionalIntensity,created_simulation_at AS simulationAt,last_recalled_simulation_at AS lastRecalledAt,status,metadata FROM memories WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) ORDER BY importance DESC,strength DESC,created_simulation_at DESC LIMIT ?`,[simulationId,entityId,Math.min(limit,500)]);return rows.map(row=>({...row,metadata:normalizeJson(row.metadata)}));}
-async function recallContext(simulationId,entityId,limit=8){return listMemories(simulationId,entityId,limit);}
-module.exports={createMemory,decayMemories,listMemories,recallContext,buildMemoryContext,buildActionMemory,buildFailureMemory};
+function memoryRelevance(memory, context = {}) {
+  const metadata = normalizeJson(memory.metadata) || {};
+  const now = new Date(context.simulationTime || context.now || Date.now()).getTime();
+  const created = new Date(memory.simulationAt || memory.createdSimulationAt || 0).getTime();
+  const ageHours = Number.isFinite(now) && Number.isFinite(created) && now >= created ? (now - created) / 3600000 : 0;
+  const halfLife = Math.max(1, Number(context.recencyHalfLifeHours || 36));
+  const recency = Math.exp(-ageHours / halfLife);
+  const strength = clamp01(memory.strength, 0);
+  const importance = clamp01(memory.importance, 0);
+  const confidence = clamp01(memory.confidence, 0);
+  const locationId = context.locationId || null;
+  const locationType = normalizeText(context.locationType);
+  const actionTypes = Array.isArray(context.candidateActionTypes) ? context.candidateActionTypes.map(normalizeText) : context.actionType ? [normalizeText(context.actionType)] : [];
+  const goalIds = new Set((context.goalIds || []).map(String));
+  const entityIds = new Set((context.entityIds || []).map(String).filter(Boolean));
+  if (context.targetEntityId) entityIds.add(String(context.targetEntityId));
+
+  const memoryLocationId = metadata.locationId || metadata.location?.id || memory.locationId || null;
+  const memoryLocationType = normalizeText(metadata.location?.type || metadata.locationType || "");
+  const locationExact = locationId && memoryLocationId === locationId ? 1 : 0;
+  const locationKind = locationType && memoryLocationType === locationType ? 1 : 0;
+  const memoryAction = normalizeText(metadata.actionType || metadata.decision?.actionType || "");
+  const actionMatch = actionTypes.length && memoryAction ? (actionTypes.includes(memoryAction) ? 1 : 0) : 0;
+  const goalMatch = metadata.goalId && goalIds.has(String(metadata.goalId)) ? 1 : 0;
+  const targetMatch = metadata.targetEntityId && entityIds.has(String(metadata.targetEntityId)) ? 1 : 0;
+  const observed = Array.isArray(metadata.observedPeople) ? metadata.observedPeople.map(String) : [];
+  const observedEntityMatch = observed.some(id => entityIds.has(id)) ? 1 : 0;
+  const relationshipEntityMatch = Array.isArray(metadata.relationshipRefs) && entityIds.size
+    ? metadata.relationshipRefs.some(ref => entityIds.has(String(ref.id))) ? 1 : 0
+    : 0;
+  const entityRelevance = Math.max(targetMatch, observedEntityMatch, relationshipEntityMatch);
+  const textRelevance = context.queryText ? tokenOverlap(memory.content, context.queryText) : 0;
+  const outcomeBonus = context.preferredOutcome && normalizeOutcome(metadata.outcome) === normalizeOutcome(context.preferredOutcome) ? 0.05 : 0;
+
+  const weighted =
+    goalMatch * 0.18 +
+    Math.max(locationExact * 0.75, locationKind * 0.25) * 0.16 +
+    actionMatch * 0.18 +
+    entityRelevance * 0.18 +
+    recency * 0.14 +
+    strength * 0.10 +
+    importance * 0.03 +
+    confidence * 0.01 +
+    textRelevance * 0.08 +
+    outcomeBonus;
+  return weighted;
+}
+
+async function listMemories(simulationId,entityId,limit=100,{includeForgotten=true,context=null}={}) {
+  const scanLimit=Math.min(Math.max(Number(limit)||100,1)*5,500);
+  const statusClause=includeForgotten?"":" AND status='ACTIVE'";
+  const [rows]=await pool.query(`SELECT BIN_TO_UUID(id) AS id,memory_type AS memoryType,content,importance,strength,confidence,emotional_intensity AS emotionalIntensity,created_simulation_at AS simulationAt,last_recalled_simulation_at AS lastRecalledAt,status,location_id AS locationId,metadata FROM memories WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?)${statusClause} ORDER BY created_simulation_at DESC LIMIT ?`,[simulationId,entityId,scanLimit]);
+  const normalized=rows.map(row=>({...row,metadata:normalizeJson(row.metadata)}));
+  if(!context) return normalized.slice(0,Math.min(Number(limit)||100,500));
+  normalized.sort((a,b)=>memoryRelevance(b,context)-memoryRelevance(a,context)||Number(b.strength||0)-Number(a.strength||0)||new Date(b.simulationAt).getTime()-new Date(a.simulationAt).getTime());
+  return normalized.slice(0,Math.min(Number(limit)||100,500));
+}
+
+async function recallContext(simulationId,entityId,limit=8,context={}) {
+  const memories=await listMemories(simulationId,entityId,limit,{includeForgotten:false,context});
+  const recallAt=context?.simulationTime || null;
+  if(recallAt&&memories.length){
+    for(const memory of memories.slice(0,Math.min(8,memories.length))){
+      await pool.query(`UPDATE memories SET last_recalled_simulation_at=?,version=version+1 WHERE id=UUID_TO_BIN(?) AND status='ACTIVE'`,[recallAt,memory.id]);
+    }
+  }
+  return memories;
+}
+
+module.exports={createMemory,decayMemories,listMemories,recallContext,buildMemoryContext,buildActionMemory,buildFailureMemory,memoryRelevance};
