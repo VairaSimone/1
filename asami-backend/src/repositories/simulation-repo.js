@@ -91,11 +91,11 @@ async function createSimulation({ name, startedSimulationAt, asami }) {
     for (const d of traitDefs) await conn.query(
       `INSERT INTO entity_traits_current(entity_id,trait_id,value,updated_simulation_at,version)
        VALUES(UUID_TO_BIN(?),?,?,?,1)`,[asamiEntityId,d.id,d.default_value,t]);
-for (const d of skillDefs) await conn.query(
-  `INSERT INTO entity_skills(entity_id,skill_id,updated_simulation_at,version)
-   VALUES(UUID_TO_BIN(?),?, ?,1)`,
-  [asamiEntityId,d.id,t]
-);
+    for (const d of skillDefs) await conn.query(
+      `INSERT INTO entity_skills(entity_id,skill_id,updated_simulation_at,version)
+       VALUES(UUID_TO_BIN(?),?, ?,1)`,
+      [asamiEntityId,d.id,t]
+    );
 
     await conn.query(`
       INSERT INTO entity_development
@@ -167,21 +167,21 @@ async function changeSpeed(id, speed, simulationTime) {
     `, [id]);
     if (!current.length) throw Object.assign(new Error("No active clock segment"), { code: "CLOCK_NOT_ACTIVE" });
 
-const c = current[0];
+    const c = current[0];
 
-const requestedTime = new Date(simulationTime);
-const anchorTime = new Date(c.simulation_anchor_at);
+    const requestedTime = new Date(simulationTime);
+    const anchorTime = new Date(c.simulation_anchor_at);
 
-const endSimulationTime =
-  requestedTime < anchorTime ? anchorTime : requestedTime;
+    const endSimulationTime =
+      requestedTime < anchorTime ? anchorTime : requestedTime;
 
-await conn.query(`
-  UPDATE simulation_clock_segments
-  SET status='CLOSED',
-      ended_real_at=UTC_TIMESTAMP(3),
-      ended_simulation_at=?
-  WHERE id=?
-`, [endSimulationTime, c.id]);
+    await conn.query(`
+      UPDATE simulation_clock_segments
+      SET status='CLOSED',
+          ended_real_at=UTC_TIMESTAMP(3),
+          ended_simulation_at=?
+      WHERE id=?
+    `, [endSimulationTime, c.id]);
 
     const segmentId = uuid();
     await conn.query(`
@@ -242,5 +242,7 @@ async function createSnapshot(id, simulationTime, state, snapshotVersion = 1) {
 
 module.exports = {
   listSimulations, getSimulation, createSimulation, setStatus, changeSpeed,
-  getActiveClock, updateCurrentTimeOptimistic, createTick, finishTick, createSnapshot
+  getActiveClock, updateCurrentTimeOptimistic, createTick, finishTick,
+  completeTick: finishTick,
+  createSnapshot
 };
