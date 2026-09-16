@@ -55,7 +55,7 @@ function haversineMeters(a, b) {
   const lon1 = Number(a?.longitude);
   const lat2 = Number(b?.latitude);
   const lon2 = Number(b?.longitude);
-  if (![lat1, lon1, lat2, lon2].every(Number.isFinite)) return 0;
+  if (![lat1, lon1, lat2, lon2].every(Number.isFinite)) return Infinity;
 
   const rad = Math.PI / 180;
   const radius = 6371000;
@@ -137,8 +137,9 @@ function shortestRoute(locations, originId, targetId) {
     for (const code of Array.isArray(current?.data?.connections) ? current.data.connections : []) {
       const next = byCode.get(code);
       if (!next || !unvisited.has(next.locationId)) continue;
-
-      const edge = Math.max(5, haversineMeters(current, next) * ROAD_FACTOR);
+      const rawEdge = haversineMeters(current, next);
+      if (!Number.isFinite(rawEdge)) continue;
+      const edge = Math.max(5, rawEdge * ROAD_FACTOR);
       const candidate = currentDistance + edge;
       if (candidate < distances.get(next.locationId)) {
         distances.set(next.locationId, candidate);
@@ -163,7 +164,16 @@ function shortestRoute(locations, originId, targetId) {
 }
 
 function nextHop(locations, originId, targetId = null) {
-  return shortestRoute(locations, originId, targetId)?.path[1] || null;
+  if (targetId) return shortestRoute(locations, originId, targetId)?.path[1] || null;
+  const byId = new Map(locations.map(location => [location.locationId, location]));
+  const byCode = new Map(locations.map(location => [location.data?.worldCode, location]));
+  const origin = byId.get(originId);
+  if (!origin) return null;
+  for (const code of Array.isArray(origin.data?.connections) ? origin.data.connections : []) {
+    const next = byCode.get(code);
+    if (next && next.locationId !== originId) return next.locationId;
+  }
+  return null;
 }
 
 async function chooseDestination(simulationId, entityId, originId, targetId = null) {
@@ -287,6 +297,14 @@ async function completeMovement({ simulationId, entityId, destination, simulatio
   if (!rows.length) return false;
 
   const movement = rows[0];
+  const [updated] = await pool.query(
+    `UPDATE movements
+     SET status='COMPLETED',actual_arrival_simulation_at=?,version=version+1
+     WHERE id=UUID_TO_BIN(?) AND status='ACTIVE' AND version=?`,
+    [simulationTime, movement.id, movement.version]
+  );
+  if (!updated.affectedRows) return false;
+
   await pool.query(
     `INSERT INTO entity_location_history
       (id,simulation_id,entity_id,location_id,entered_simulation_at,reason,source_event_id)
@@ -319,14 +337,7 @@ async function completeMovement({ simulationId, entityId, destination, simulatio
     [entityId, simulationId, destination, simulationTime]
   );
 
-  const [updated] = await pool.query(
-    `UPDATE movements
-     SET status='COMPLETED',actual_arrival_simulation_at=?,version=version+1
-     WHERE id=UUID_TO_BIN(?) AND status='ACTIVE' AND version=?`,
-    [simulationTime, movement.id, movement.version]
-  );
-
-  return Boolean(updated.affectedRows);
+  return true;
 }
 
 async function startAction({
@@ -359,27 +370,16 @@ async function startAction({
         destination = targetLocationId || route.path[1];
 
         if (!targetLocationId) {
-          const [locations] = await pool.query(
-            `SELECT BIN_TO_UUID(entity_id) AS locationId,latitude,longitude,address_data AS addressData
-             FROM locations
-             WHERE simulation_id=UUID_TO_BIN(?)`,
-            [simulationId]
-          );
-          const byId = new Map(
-            locations.map(row => [
-              row.locationId,
-              {
-                ...row,
-                latitude: Number(row.latitude),
-                longitude: Number(row.longitude),
-                data: parseJson(row.addressData)
-              }
-            ])
-          );
+          const locations = await loadLocationGraph(simulationId);
+          const byId = new Map(locations.map(location => [location.locationId, location]));
           route.distanceMeters = Math.max(
             5,
             haversineMeters(byId.get(origin), byId.get(destination)) * ROAD_FACTOR
           );
+        }
+
+        if (!Number.isFinite(Number(route.distanceMeters))) {
+          throw Object.assign(new Error("Movement route has invalid coordinates"), { code: "INVALID_MOVEMENT_ROUTE" });
         }
 
         const speed = actionType === "EXPLORING"
@@ -615,7 +615,7 @@ async function recordResourceFailureKnowledge({
     }
   });
 
-  return { knowledgeId, resource, locationId };
+  return { knowledgeId, resource, locationId, type: "RESOURCE_UNAVAILABLE" };
 }
 
 async function completeAction({
@@ -631,6 +631,27 @@ async function completeAction({
   targetLocationId = null,
   relationshipIntent = "NONE"
 }) {
+  const [activeRows] = await pool.query(
+    `SELECT status,result,version
+     FROM actions
+     WHERE id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?)
+     LIMIT 1`,
+    [actionId, entityId, simulationId]
+  );
+  if (!activeRows.length) return { completed: false, outcome: "FAILURE", success: false, failureReason: "ACTION_NOT_FOUND" };
+  if (activeRows[0].status === "COMPLETED") {
+    const stored = parseJson(activeRows[0].result, {}) || {};
+    return {
+      completed: true,
+      outcome: stored.outcome || "SUCCESS",
+      success: stored.success !== false,
+      failureReason: stored.failureReason || null,
+      resource: stored.resource || null,
+      resourceLearning: stored.resourceLearning || null,
+      eventId: stored.eventId || eventId
+    };
+  }
+
   eventId = await ensureEventId({
     simulationId,
     entityId,
@@ -643,15 +664,46 @@ async function completeAction({
     relationshipIntent
   });
 
-  const physicalLocation = await currentLocation(entityId, simulationId);
-  const physical = await resolveActionResource({
-    simulationId,
-    locationId: physicalLocation,
-    actionType,
-    simulationTime
-  });
-  physical.actionType = actionType;
+  const storedBefore = parseJson(activeRows[0].result, {}) || {};
+  let physical;
+  if (storedBefore.resourceFinalized) {
+    physical = storedBefore.resource || { ok: true, consumed: 0, remaining: null, resource: null };
+  } else {
+    const physicalLocation = await currentLocation(entityId, simulationId);
+    physical = await resolveActionResource({
+      simulationId,
+      locationId: physicalLocation,
+      actionType,
+      simulationTime
+    });
+    physical.actionType = actionType;
 
+    const finalizedResult = { ...storedBefore, resourceFinalized: true, resource: physical };
+    const [claimed] = await pool.query(
+      `UPDATE actions SET result=?,version=version+1
+       WHERE id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?) AND status='ACTIVE' AND version=?`,
+      [JSON.stringify(finalizedResult), actionId, entityId, simulationId, activeRows[0].version]
+    );
+    if (!claimed.affectedRows) {
+      const [reloaded] = await pool.query(`SELECT status,result FROM actions WHERE id=UUID_TO_BIN(?) LIMIT 1`, [actionId]);
+      const recovered = parseJson(reloaded[0]?.result, {}) || {};
+      if (reloaded[0]?.status === "COMPLETED") {
+        return {
+          completed: true,
+          outcome: recovered.outcome || "SUCCESS",
+          success: recovered.success !== false,
+          failureReason: recovered.failureReason || null,
+          resource: recovered.resource || null,
+          resourceLearning: recovered.resourceLearning || null,
+          eventId: recovered.eventId || eventId
+        };
+      }
+      if (!recovered.resourceFinalized) throw Object.assign(new Error("Concurrent action finalization conflict"), { code: "OPTIMISTIC_LOCK" });
+      physical = recovered.resource || physical;
+    }
+  }
+
+  const physicalLocation = await currentLocation(entityId, simulationId);
   const outcome = classifyPhysicalOutcome(physical);
   const learning = await recordResourceFailureKnowledge({
     simulationId,
@@ -671,19 +723,25 @@ async function completeAction({
     targetEntityId,
     targetLocationId,
     relationshipIntent,
-    resourceLearning: learning
+    resourceLearning: learning,
+    resourceFinalized: true
   };
 
   const [updated] = await pool.query(
     `UPDATE actions
-     SET status='COMPLETED',completed_simulation_at=?,result=?
+     SET status='COMPLETED',completed_simulation_at=?,result=?,version=version+1
      WHERE id=UUID_TO_BIN(?)
        AND entity_id=UUID_TO_BIN(?)
        AND simulation_id=UUID_TO_BIN(?)
        AND status='ACTIVE'`,
     [simulationTime, JSON.stringify(result), actionId, entityId, simulationId]
   );
-  if (!updated.affectedRows) return false;
+  if (!updated.affectedRows) {
+    const [reloaded] = await pool.query(`SELECT status,result FROM actions WHERE id=UUID_TO_BIN(?) LIMIT 1`, [actionId]);
+    const recovered = parseJson(reloaded[0]?.result, {}) || {};
+    if (reloaded[0]?.status === "COMPLETED") return { completed: true, outcome: recovered.outcome || outcome.outcome, success: recovered.success !== false, failureReason: recovered.failureReason || outcome.failureReason, resource: recovered.resource || physical, resourceLearning: recovered.resourceLearning || learning, eventId: recovered.eventId || eventId };
+    return { completed: false, outcome: "FAILURE", success: false, failureReason: "ACTION_STATE_CONFLICT" };
+  }
 
   await addEffect({
     simulationId,
@@ -713,9 +771,7 @@ async function completeAction({
       [simulationId, entityId]
     );
     const destination = rows[0]?.destination;
-    if (destination) {
-      await completeMovement({ simulationId, entityId, destination, simulationTime });
-    }
+    if (destination) await completeMovement({ simulationId, entityId, destination, simulationTime });
   }
 
   if (actionType === "TALKING" && targetEntityId) {
