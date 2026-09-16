@@ -7,7 +7,7 @@ const { ensureEntityState, updateNeeds, applyEmotions, developTraits } = require
 const { findAutonomousActors, actForEntity, completeGoalForAction } = require("../services/autonomy-service");
 const { perceive } = require("../services/perception-service");
 const { startAction, completeAction, getActiveAction, learnFromAction } = require("../services/action-service");
-const { createMemory, decayMemories } = require("../services/memory-service");
+const { createMemory, decayMemories, buildActionMemory, buildFailureMemory } = require("../services/memory-service");
 const { generateWorldEvents } = require("../services/world-service");
 const { ensureWorld, evolveRelationships } = require("../services/world-population-service");
 const { seedPhysicalWorld } = require("../services/physical-world-service");
@@ -57,7 +57,50 @@ class SimulationEngine {
               phase = "entity.traits"; if (successful) await developTraits(entityId, completionAt, signalForDecision(active.actionType), null, active.id);
               phase = "entity.habit"; if (successful) await recordHabitEvidence({ entityId, simulationTime: completionAt, actionType: active.actionType });
               phase = "entity.memory";
-              if (outcome !== "FAILURE") await createMemory({ simulationId: sim.id, entityId, eventId, content: buildActionMemoryContent(active, completion), importance: outcome === "PARTIAL" ? 0.6 : 0.45, strength: 0.9, confidence: 0.8, emotionalIntensity: outcome === "PARTIAL" ? 0.3 : 0.25, simulationAt: completionAt, metadata: { actionType: active.actionType, outcome, success: completion.success, failureReason: completion.failureReason || null, resource: completion.resource || null, resourceLearning: completion.resourceLearning || null, perceptionSummary: perception.location || null, durationMinutes, relationshipIntent } });
+              const memoryPayload = outcome === "FAILURE"
+                ? buildFailureMemory({
+                    locationId: perception.location?.locationId || null,
+                    simulationTime: completionAt,
+                    actionType: active.actionType,
+                    perception,
+                    decision: { actionType: active.actionType, goalId: active.metadata?.goalId || null },
+                    needChanges,
+                    physical: completion.resource,
+                    failureReason: completion.failureReason,
+                    resourceLearning: completion.resourceLearning
+                  })
+                : buildActionMemory({
+                    actionType: active.actionType,
+                    outcome,
+                    perception,
+                    decision: { actionType: active.actionType, goalId: active.metadata?.goalId || null },
+                    needChanges,
+                    completion,
+                    simulationAt: completionAt
+                  });
+              await createMemory({
+                simulationId: sim.id,
+                entityId,
+                eventId,
+                locationId: perception.location?.locationId || null,
+                type: "EPISODIC",
+                content: memoryPayload.content,
+                importance: memoryPayload.importance,
+                strength: memoryPayload.strength,
+                confidence: memoryPayload.confidence,
+                emotionalIntensity: memoryPayload.emotionalIntensity,
+                simulationAt: completionAt,
+                metadata: {
+                  ...memoryPayload.metadata,
+                  actionId: active.id,
+                  eventId,
+                  durationMinutes,
+                  relationshipIntent,
+                  goalId: active.metadata?.goalId || null,
+                  planId: active.metadata?.planId || null,
+                  planStepId: active.metadata?.planStepId || null
+                }
+              });
             }
             phase = "entity.mental_state"; if (["TALKING", "STUDYING", "WORKING", "EXPLORING"].includes(active.actionType)) await updateMentalState(sim.id, entityId, nextTime, { currentFocus: active.actionType.toLowerCase().replaceAll("_", " "), mentalLoad: ["WORKING", "STUDYING"].includes(active.actionType) ? 0.55 : 0.35, certainty: 0.7 });
             phase = "entity.publish"; this.hub.publish(sim.id, "entity.state", { entityId, action: { ...active, status: wasCompleted ? "COMPLETED" : "ACTIVE", startedSimulationAt: active.startedSimulationAt, expectedCompletionSimulationAt: completionAt, relationshipIntent }, needChanges }); continue;
@@ -81,12 +124,6 @@ class SimulationEngine {
   }
 }
 
-function buildActionMemoryContent(action, completion) {
-  const actionLabel = action.actionType.toLowerCase().replaceAll("_", " ");
-  if (completion.outcome === "PARTIAL") return `I tried to ${actionLabel}, but only part of the expected result was achieved. I should consider this outcome in future decisions.`;
-  return `I completed ${actionLabel} successfully. This experience can inform future decisions.`;
-}
-
 function signalForDecision(action) { return { TALKING: { EXTRAVERSION: 1, SOCIABILITY: 1, EMPATHY: 0.2 }, EXPLORING: { OPENNESS: 1, CURIOSITY: 1, CONFIDENCE: 0.2 }, STUDYING: { CONSCIENTIOUSNESS: 1, DISCIPLINE: 1, PATIENCE: 0.4 }, WORKING: { CONSCIENTIOUSNESS: 1, DISCIPLINE: 1 }, PLAYING: { OPENNESS: 0.4, IMPULSIVITY: 0.3 }, WALKING: { OPENNESS: 0.3 }, READING: { OPENNESS: 0.4, CURIOSITY: 0.6 }, SLEEPING: { PATIENCE: 0.2 }, RESTING: { PATIENCE: 0.2 }, EATING: { SELF_CARE: 0.2 }, DRINKING: { SELF_CARE: 0.2 }, WATCHING: { OPENNESS: 0.1 } }[action] || {}; }
 async function buildSnapshot(simulationId, simulationTime) { const actors = await entityRepo.listActors(simulationId, env.MAX_ENTITIES_PER_TICK); const entities = []; for (const actor of actors) { const dashboard = await entityRepo.getDashboard(simulationId, actor.id); entities.push({ entity: dashboard.entity, needs: dashboard.needs, emotions: dashboard.emotions, traits: dashboard.traits, location: dashboard.location, currentAction: dashboard.currentAction }); } return { simulationId, simulationTime, entities }; }
-module.exports = { SimulationEngine, signalForDecision, buildSnapshot, buildActionMemoryContent };
+module.exports = { SimulationEngine, signalForDecision, buildSnapshot };
