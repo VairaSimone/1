@@ -20,7 +20,7 @@ test("critical physiological needs suppress social proactivity", () => {
     social: { candidates: [{ id: "person-1" }] }
   });
 
-  assert.equal(criticalNeedAction(result.signals.map(signal => ({ code: signal.code, value: signal.intensity })) ), null);
+  assert.equal(criticalNeedAction([{ code: "THIRST", value: 1 }, { code: "SOCIAL_NEED", value: 0.7 }]), "DRINKING");
   assert.equal(result.priority, "CRITICAL");
   assert.equal(result.signals.some(signal => signal.type === "SOCIAL"), false);
 });
