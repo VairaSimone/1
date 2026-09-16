@@ -7,7 +7,7 @@ test("Gemini decision schema accepts strategy and multi-step plan proposals", ()
   const parsed = DecisionSchema.parse({
     selectedActionType: "WALKING",
     targetEntityId: null,
-    targetLocationId: "11111111-1111-1111-1111-111111111111",
+    targetLocationId: "11111111-1111-4111-8111-111111111111",
     reason: "Try a different route after the failed attempt.",
     confidence: 0.72,
     strategy: {
@@ -48,10 +48,10 @@ test("Gemini is triggered by failures and periodic strategic deliberation", () =
 });
 
 test("Gemini target and plan proposals are constrained by deterministic world data", () => {
-  const validEntity = "22222222-2222-2222-2222-222222222222";
-  const invalidEntity = "33333333-3333-3333-3333-333333333333";
-  const current = "44444444-4444-4444-4444-444444444444";
-  const target = "55555555-5555-5555-5555-555555555555";
+  const validEntity = "22222222-2222-4222-8222-222222222222";
+  const invalidEntity = "33333333-3333-4333-8333-333333333333";
+  const current = "44444444-4444-4444-8444-444444444444";
+  const target = "55555555-5555-4555-8555-555555555555";
 
   const result = sanitizeGeminiChoice({
     selectedActionType: "WALKING",
