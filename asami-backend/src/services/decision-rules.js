@@ -37,6 +37,12 @@ const actionNeedGates = {
   WORKING: ["ACHIEVEMENT", 0.20]
 };
 
+const CRITICAL_NEED_ACTIONS = {
+  THIRST: { action: "DRINKING", threshold: 0.80, maxBoost: 1.60, resource: "water" },
+  HUNGER: { action: "EATING", threshold: 0.80, maxBoost: 1.40, resource: "food" },
+  SLEEPINESS: { action: "SLEEPING", threshold: 0.85, maxBoost: 1.50 }
+};
+
 const RESOURCE_REQUIREMENTS = {
   EATING: { resource: "food", amount: 1 },
   DRINKING: { resource: "water", amount: 1 }
@@ -72,6 +78,27 @@ function resourceModifier(action, resourceContext = {}) {
   const travelPenalty = Math.min(0.55, Math.max(0.05, finiteTravel / 60 * 0.45));
   const knowledgePenalty = localBlocked ? 0.35 : 0;
   return -0.55 - travelPenalty - knowledgePenalty;
+}
+
+function criticalNeedModifier(action, needs, resourceContext = {}) {
+  for (const [code, policy] of Object.entries(CRITICAL_NEED_ACTIONS)) {
+    if (policy.action !== action) continue;
+
+    const value = needValue(needs, code);
+    if (!Number.isFinite(value) || value <= policy.threshold) return 0;
+
+    if (policy.resource) {
+      const required = RESOURCE_REQUIREMENTS[action];
+      const available = Number(resourceContext.localResources?.[policy.resource] ?? 0);
+      if (!required || available < required.amount) return 0;
+    }
+
+    const urgency = Math.min(1, (value - policy.threshold) / (1 - policy.threshold));
+    const shapedUrgency = urgency * urgency;
+    return shapedUrgency * policy.maxBoost * needWeight(needs, code);
+  }
+
+  return 0;
 }
 
 function scoreAction(action, needs, traits, resourceContext = {}) {
@@ -121,7 +148,8 @@ function scoreAction(action, needs, traits, resourceContext = {}) {
     score += (traitMap.get("CONSCIENTIOUSNESS") || 0.5) * 0.25;
   }
 
+  score += criticalNeedModifier(action, needs, resourceContext);
   return score + resourceModifier(action, resourceContext);
 }
 
-module.exports = { ACTIONS, scoreAction, RESOURCE_REQUIREMENTS };
+module.exports = { ACTIONS, scoreAction, RESOURCE_REQUIREMENTS, criticalNeedModifier };
