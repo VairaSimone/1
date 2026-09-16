@@ -251,15 +251,7 @@ async function consolidateSemanticEvidence({ simulationId, entityId, simulationT
   if (locationType) {
     const preferenceValue = semanticOutcome === "RELIABLE" ? 1 : semanticOutcome === "UNRELIABLE" ? -1 : 0;
     const preferenceStrength = Math.max(0.03, Math.min(0.22, Math.abs(reliability - 0.5) * 0.38 * Math.min(1, observations / 8)));
-    preferenceId = await upsertExperiencePreference({
-      simulationId,
-      entityId,
-      simulationTime,
-      targetType: `LOCATION_RESOURCE:${normalize(locationType).slice(0, 18)}:${normalizedResource.slice(0, 18)}`,
-      value: preferenceValue,
-      strength: preferenceStrength,
-      confidence
-    });
+    preferenceId = await upsertExperiencePreference({ simulationId, entityId, simulationTime, targetType: `LOCATION_RESOURCE:${normalize(locationType).slice(0, 18)}:${normalizedResource.slice(0, 18)}`, value: preferenceValue, strength: preferenceStrength, confidence });
   }
 
   return { consolidated: true, reliability, observations, success, partial, failure, status: semanticOutcome, beliefId, preferenceId };
@@ -267,7 +259,8 @@ async function consolidateSemanticEvidence({ simulationId, entityId, simulationT
 
 function habitActionForProfile(profile, actionType, simulationTime) {
   const action = normalize(actionType);
-  const date = new Date(simulationTime || Date.now());
+  const profileTime = profile?.mentalState?.updatedSimulationAt || profile?.mentalState?.updatedAt;
+  const date = new Date(simulationTime || profileTime || Date.now());
   const currentHour = date.getUTCHours() + date.getUTCMinutes() / 60;
   let best = null;
   for (const habit of profile?.habits || []) {
@@ -288,7 +281,7 @@ function habitActionForProfile(profile, actionType, simulationTime) {
   return best;
 }
 
-function cognitiveExperienceModifier(profile, actionType, { locationType = null, locationId = null, simulationTime = Date.now() } = {}) {
+function cognitiveExperienceModifier(profile, actionType, { locationType = null, locationId = null, simulationTime = null } = {}) {
   if (!profile || !actionType) return 0;
   const actionKey = `ACTION:${normalize(actionType)}`;
   const locationKey = locationType ? `LOCATION_ACTION:${normalize(locationType)}:${normalize(actionType)}` : null;
@@ -312,12 +305,12 @@ function cognitiveExperienceModifier(profile, actionType, { locationType = null,
   }
 
   let semanticModifier = 0;
-  const actionResourceKeys = [];
-  if (locationType) actionResourceKeys.push(`LOCATION_RESOURCE:${normalize(locationType)}`);
-  for (const preference of profile.preferences || []) {
-    const target = normalize(preference.targetType);
-    if (!actionResourceKeys.some(key => target.startsWith(key))) continue;
-    semanticModifier += Number(preference.preferenceValue || 0) * Number(preference.strength || 0) * Number(preference.confidence || 0) * 0.45;
+  const prefix = locationType ? `LOCATION_RESOURCE:${normalize(locationType)}` : null;
+  if (prefix) {
+    for (const preference of profile.preferences || []) {
+      const target = normalize(preference.targetType);
+      if (target.startsWith(prefix)) semanticModifier += Number(preference.preferenceValue || 0) * Number(preference.strength || 0) * Number(preference.confidence || 0) * 0.45;
+    }
   }
 
   const habit = habitActionForProfile(profile, actionType, simulationTime);
