@@ -94,8 +94,7 @@ function criticalNeedModifier(action, needs, resourceContext = {}) {
     }
 
     const urgency = Math.min(1, (value - policy.threshold) / (1 - policy.threshold));
-    const shapedUrgency = urgency * urgency;
-    return shapedUrgency * policy.maxBoost * needWeight(needs, code);
+    return urgency * policy.maxBoost * needWeight(needs, code);
   }
 
   return 0;
