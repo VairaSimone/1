@@ -149,7 +149,7 @@ function buildActionMemory({
       consequence,
       learning,
       strategyAlternative: alternative,
-      location: location,
+      location,
       resource: resource || null,
       failureReason: result.failureReason || null,
       needChanges: Array.isArray(needChanges) ? needChanges.slice(0, 12) : [],
@@ -163,11 +163,9 @@ function buildActionMemory({
   };
 }
 
-function buildFailureMemory({ simulationId, entityId, locationId, simulationTime, actionType, perception, decision, needChanges, physical, failureReason, resourceLearning, strategyAlternative = null }) {
+function buildFailureMemory({ locationId, simulationTime, actionType, perception, decision, needChanges, physical, failureReason, resourceLearning, strategyAlternative = null }) {
   const resource = physical?.resource ? String(physical.resource).toLowerCase() : null;
-  const resourceState = Number.isFinite(Number(physical?.remaining))
-    ? Number(physical.remaining)
-    : null;
+  const resourceState = Number.isFinite(Number(physical?.remaining)) ? Number(physical.remaining) : null;
   const normalizedLearning = resourceLearning
     ? { ...resourceLearning, type: resourceLearning.type || "RESOURCE_UNAVAILABLE" }
     : null;
@@ -198,6 +196,7 @@ function buildFailureMemory({ simulationId, entityId, locationId, simulationTime
   memory.metadata.resourceLearning = normalizedLearning;
   memory.metadata.strategyAlternative = strategyAlternative || memory.metadata.strategyAlternative;
   memory.metadata.source = "action_completion";
+  memory.metadata.kind = "resource_failure";
   return memory;
 }
 
@@ -216,32 +215,54 @@ async function createMemory({
   simulationAt,
   metadata = null
 }) {
-  const id = uuid();
+  const memoryKind = metadata?.kind || null;
 
+  if (memoryKind === "resource_failure") {
+    const resource = metadata?.resource?.resource || metadata?.resource || null;
+    const resourceName = resource ? String(resource).trim().toLowerCase() : null;
+    const memoryLocationId = locationId || metadata?.locationId || metadata?.location?.id || null;
+    if (resourceName && memoryLocationId) {
+      const [existingRows] = await pool.query(`
+        SELECT BIN_TO_UUID(id) AS id,version
+        FROM memories
+        WHERE simulation_id=UUID_TO_BIN(?)
+          AND entity_id=UUID_TO_BIN(?)
+          AND status='ACTIVE'
+          AND JSON_UNQUOTE(JSON_EXTRACT(metadata,'$.kind'))='resource_failure'
+          AND LOWER(JSON_UNQUOTE(JSON_EXTRACT(metadata,'$.resource'))) = ?
+          AND (JSON_UNQUOTE(JSON_EXTRACT(metadata,'$.locationId')) = ? OR location_id=UUID_TO_BIN(?))
+        ORDER BY created_simulation_at DESC
+        LIMIT 1
+      `, [simulationId, entityId, resourceName, memoryLocationId, memoryLocationId]);
+
+      if (existingRows.length) {
+        const existing = existingRows[0];
+        await pool.query(`
+          UPDATE memories
+          SET content=?,importance=?,strength=?,confidence=?,emotional_intensity=?,
+              source_event_id=UUID_TO_BIN(?),source_activity_id=UUID_TO_BIN(?),
+              location_id=UUID_TO_BIN(?),created_simulation_at=?,metadata=?,
+              status='ACTIVE',forgotten_simulation_at=NULL,version=version+1
+          WHERE id=UUID_TO_BIN(?) AND version=?
+        `, [
+          content, importance, Math.max(0.99, Number(strength) || 0), confidence, emotionalIntensity,
+          eventId, activityId, memoryLocationId, simulationAt, metadata ? JSON.stringify(metadata) : null,
+          existing.id, existing.version
+        ]);
+        return existing.id;
+      }
+    }
+  }
+
+  const id = uuid();
   await pool.query(`
     INSERT INTO memories
-      (
-        id,
-        simulation_id,
-        entity_id,
-        memory_type,
-        content,
-        importance,
-        strength,
-        confidence,
-        emotional_intensity,
-        source_event_id,
-        source_activity_id,
-        location_id,
-        created_simulation_at,
-        status,
-        metadata,
-        version
-      )
-    VALUES (
-      UUID_TO_BIN(?), UUID_TO_BIN(?), UUID_TO_BIN(?), ?, ?, ?, ?, ?, ?,
-      UUID_TO_BIN(?), UUID_TO_BIN(?), UUID_TO_BIN(?), ?, 'ACTIVE', ?, 1
-    )
+      (id,simulation_id,entity_id,memory_type,content,importance,strength,confidence,
+       emotional_intensity,source_event_id,source_activity_id,location_id,created_simulation_at,
+       status,metadata,version)
+    VALUES
+      (UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?, ?,?,?,?,
+       UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,'ACTIVE',?,1)
   `, [
     id, simulationId, entityId, type, content, importance, strength, confidence,
     emotionalIntensity, eventId, activityId, locationId, simulationAt,
@@ -277,13 +298,9 @@ async function decayMemories(simulationId, simulationTime) {
 
 async function listMemories(simulationId,entityId,limit=100){
   const [rows]=await pool.query(`
-    SELECT BIN_TO_UUID(id) AS id,
-           memory_type AS memoryType,
-           content,importance,strength,confidence,
-           emotional_intensity AS emotionalIntensity,
-           created_simulation_at AS simulationAt,
-           last_recalled_simulation_at AS lastRecalledAt,
-           status,metadata
+    SELECT BIN_TO_UUID(id) AS id,memory_type AS memoryType,content,importance,strength,confidence,
+           emotional_intensity AS emotionalIntensity,created_simulation_at AS simulationAt,
+           last_recalled_simulation_at AS lastRecalledAt,status,metadata
     FROM memories
     WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?)
     ORDER BY importance DESC,strength DESC,created_simulation_at DESC LIMIT ?
