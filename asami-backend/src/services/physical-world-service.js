@@ -5,7 +5,7 @@ const LOCATION_ENTITY_TYPE_ID = "00000000-0000-4000-8000-000000000003";
 const LOCATION_RESOURCES = {
   HOME: { water: 24, food: 14, beds: 1, books: 4 }, PARK: { water: 30, food: 0, beds: 0, books: 0 },
   CAFE: { water: 80, food: 120, beds: 0, books: 8 }, GROCERY: { water: 160, food: 240, beds: 0, books: 0 },
-  LIBRARY: { water: 24, food: 0, beds: 180 }, SQUARE: { water: 20, food: 8, beds: 0, books: 0 },
+  LIBRARY: { water: 24, food: 0, beds: 0, books: 180 }, SQUARE: { water: 20, food: 8, beds: 0, books: 0 },
   SCHOOL: { water: 40, food: 20, beds: 0, books: 80 }, COMMUNITY: { water: 35, food: 30, beds: 0, books: 30 },
   GYM: { water: 70, food: 10, beds: 0, books: 0 }, CLINIC: { water: 80, food: 10, beds: 1, books: 15 },
   NATURE: { water: 18, food: 0, beds: 0, books: 0 }, WORKSHOP: { water: 24, food: 8, beds: 0, books: 12 }
