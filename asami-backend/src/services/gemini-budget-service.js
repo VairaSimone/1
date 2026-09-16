@@ -73,10 +73,7 @@ async function getUsage() {
   const byKey = new Map(rows.map(r => [rowKey(r.period_type, r.period_key), r]));
   const d = byKey.get(rowKey("DAY", day));
   const m = byKey.get(rowKey("MONTH", month));
-  return {
-    day: d || emptyUsage("DAY", day),
-    month: m || emptyUsage("MONTH", month)
-  };
+  return { day: d || emptyUsage("DAY", day), month: m || emptyUsage("MONTH", month) };
 }
 
 function emptyUsage(period_type, period_key) {
@@ -86,9 +83,7 @@ function emptyUsage(period_type, period_key) {
 async function reserve({ prompt, outputTokenCeiling, kind }) {
   await ensureGeminiUsageTable();
   const blockedMs = providerBlockRemainingMs();
-  if (blockedMs > 0) {
-    return { allowed: false, reason: "PROVIDER_RATE_LIMIT", retryAfterMs: blockedMs };
-  }
+  if (blockedMs > 0) return { allowed: false, reason: "PROVIDER_RATE_LIMIT", retryAfterMs: blockedMs };
   const now = new Date();
   const { day, month } = periodKeys(now);
   const inputTokens = estimateInputTokens(prompt);
@@ -97,26 +92,10 @@ async function reserve({ prompt, outputTokenCeiling, kind }) {
   try {
     await conn.beginTransaction();
     for (const [type, key] of [["DAY", day], ["MONTH", month]]) {
-      await conn.query(`
-        INSERT INTO gemini_usage(period_type,period_key)
-        VALUES(?,?)
-        ON DUPLICATE KEY UPDATE period_key=VALUES(period_key)
-      `, [type, key]);
+      await conn.query(`INSERT INTO gemini_usage(period_type,period_key) VALUES(?,?) ON DUPLICATE KEY UPDATE period_key=VALUES(period_key)`, [type, key]);
     }
-    const [[dayRow]] = await conn.query(`
-      SELECT reserved_usd,estimated_usd,requests,
-             TIMESTAMPDIFF(MICROSECOND, updated_real_at, CURRENT_TIMESTAMP(3)) / 1000 AS elapsed_ms
-      FROM gemini_usage
-      WHERE period_type='DAY' AND period_key=?
-      FOR UPDATE
-    `, [day]);
-    const [[monthRow]] = await conn.query(`
-      SELECT reserved_usd,estimated_usd,requests
-      FROM gemini_usage
-      WHERE period_type='MONTH' AND period_key=?
-      FOR UPDATE
-    `, [month]);
-
+    const [[dayRow]] = await conn.query(`SELECT reserved_usd,estimated_usd,requests,TIMESTAMPDIFF(MICROSECOND, updated_real_at, CURRENT_TIMESTAMP(3)) / 1000 AS elapsed_ms FROM gemini_usage WHERE period_type='DAY' AND period_key=? FOR UPDATE`, [day]);
+    const [[monthRow]] = await conn.query(`SELECT reserved_usd,estimated_usd,requests FROM gemini_usage WHERE period_type='MONTH' AND period_key=? FOR UPDATE`, [month]);
     const minSpacingMs = 12_500;
     const elapsedMs = Math.max(0, Number(dayRow.elapsed_ms || 0));
     if (elapsedMs > 0 && elapsedMs < minSpacingMs) {
@@ -124,7 +103,6 @@ async function reserve({ prompt, outputTokenCeiling, kind }) {
       await conn.rollback();
       return { allowed: false, reason: "RATE_LIMIT_PACED", retryAfterMs, estimatedUsd };
     }
-
     const dailyLimit = Number(env.GEMINI_DAILY_BUDGET_USD);
     const monthlyLimit = Number(env.GEMINI_MONTHLY_BUDGET_USD);
     const pacedDailyLimit = Math.min(dailyLimit, dailyPacedLimitUsd(now));
@@ -132,9 +110,7 @@ async function reserve({ prompt, outputTokenCeiling, kind }) {
     const monthlyRequests = Math.min(Number(env.GEMINI_MONTHLY_MAX_REQUESTS), 500);
     const dailyCommitted = Number(dayRow.estimated_usd) + Number(dayRow.reserved_usd);
     const monthlyCommitted = Number(monthRow.estimated_usd) + Number(monthRow.reserved_usd);
-    const canSpend = dailyCommitted + estimatedUsd <= pacedDailyLimit + 1e-9 &&
-      monthlyCommitted + estimatedUsd <= monthlyLimit + 1e-9 &&
-      Number(dayRow.requests) < dailyRequests && Number(monthRow.requests) < monthlyRequests;
+    const canSpend = dailyCommitted + estimatedUsd <= pacedDailyLimit + 1e-9 && monthlyCommitted + estimatedUsd <= monthlyLimit + 1e-9 && Number(dayRow.requests) < dailyRequests && Number(monthRow.requests) < monthlyRequests;
     if (!canSpend) {
       await conn.rollback();
       const dailyBlocked = dailyCommitted + estimatedUsd > pacedDailyLimit + 1e-9 || Number(dayRow.requests) >= dailyRequests;
@@ -147,9 +123,7 @@ async function reserve({ prompt, outputTokenCeiling, kind }) {
   } catch (err) {
     try { await conn.rollback(); } catch {}
     throw err;
-  } finally {
-    conn.release();
-  }
+  } finally { conn.release(); }
 }
 
 async function finalize(reservation, usageMetadata) {
@@ -159,18 +133,8 @@ async function finalize(reservation, usageMetadata) {
   const outputTokens = Number(usageMetadata?.candidatesTokenCount || 0) + Number(usageMetadata?.thoughtsTokenCount || 0);
   const actualUsd = estimateCostUsd(inputTokens, outputTokens);
   const deltaReserved = actualUsd - Number(estimatedUsd);
-  await pool.query(`
-    UPDATE gemini_usage
-    SET input_tokens=input_tokens+?, output_tokens=output_tokens+?,
-        estimated_usd=estimated_usd+?, reserved_usd=GREATEST(0,reserved_usd+?)
-    WHERE period_type='DAY' AND period_key=?
-  `, [inputTokens, outputTokens, actualUsd, deltaReserved, day]);
-  await pool.query(`
-    UPDATE gemini_usage
-    SET input_tokens=input_tokens+?, output_tokens=output_tokens+?,
-        estimated_usd=estimated_usd+?, reserved_usd=GREATEST(0,reserved_usd+?)
-    WHERE period_type='MONTH' AND period_key=?
-  `, [inputTokens, outputTokens, actualUsd, deltaReserved, month]);
+  await pool.query(`UPDATE gemini_usage SET input_tokens=input_tokens+?, output_tokens=output_tokens+?, estimated_usd=estimated_usd+?, reserved_usd=GREATEST(0,reserved_usd+?) WHERE period_type='DAY' AND period_key=?`, [inputTokens, outputTokens, actualUsd, deltaReserved, day]);
+  await pool.query(`UPDATE gemini_usage SET input_tokens=input_tokens+?, output_tokens=output_tokens+?, estimated_usd=estimated_usd+?, reserved_usd=GREATEST(0,reserved_usd+?) WHERE period_type='MONTH' AND period_key=?`, [inputTokens, outputTokens, actualUsd, deltaReserved, month]);
 }
 
 async function release(reservation) {
@@ -180,7 +144,11 @@ async function release(reservation) {
   await pool.query(`UPDATE gemini_usage SET reserved_usd=GREATEST(0,reserved_usd-?) WHERE period_type='MONTH' AND period_key=?`, [estimatedUsd, month]);
 }
 
-module.exports = {
-  ensureGeminiUsageTable, reserve, finalize, release, getUsage,
-  blockProvider, providerBlockRemainingMs, estimateInputTokens, estimateCostUsd, dailyPacedLimitUsd
-};
+async function restoreRejectedRequest(reservation) {
+  if (!reservation?.allowed) return;
+  const { day, month } = reservation;
+  await pool.query(`UPDATE gemini_usage SET requests=GREATEST(0,requests-1) WHERE period_type='DAY' AND period_key=?`, [day]);
+  await pool.query(`UPDATE gemini_usage SET requests=GREATEST(0,requests-1) WHERE period_type='MONTH' AND period_key=?`, [month]);
+}
+
+module.exports = { ensureGeminiUsageTable, reserve, finalize, release, restoreRejectedRequest, getUsage, blockProvider, providerBlockRemainingMs, estimateInputTokens, estimateCostUsd, dailyPacedLimitUsd };
