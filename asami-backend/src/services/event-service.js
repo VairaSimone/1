@@ -27,6 +27,13 @@ async function createEvent({simulationId,eventTypeCode,title,description,simulat
 }
 
 async function addEffect({simulationId,eventId,effectType,targetEntityId=null,targetRelationshipId=null,targetActivityId=null,targetMemoryId=null,targetGoalId=null,targetActionId=null,beforeState=null,afterState=null,magnitude=null,createdSimulationAt}) {
+  // Environmental effects historically arrived without an explicit target,
+  // while the database requires every effect to reference something. When the
+  // location entity is carried in afterState.locationId, use it as the target.
+  const resolvedTargetEntityId=targetEntityId||afterState?.locationId||null;
+  if(!resolvedTargetEntityId&&!targetRelationshipId&&!targetActivityId&&!targetMemoryId&&!targetGoalId&&!targetActionId){
+    throw Object.assign(new Error("Event effect requires at least one target"),{code:"EVENT_EFFECT_TARGET_REQUIRED"});
+  }
   const effectId=uuid();
   await pool.query(`
     INSERT INTO event_effects
@@ -34,7 +41,7 @@ async function addEffect({simulationId,eventId,effectType,targetEntityId=null,ta
     VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,
            UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),
            ?,?,?,?)
-  `,[effectId,simulationId,eventId,effectType,targetEntityId,targetRelationshipId,targetActivityId,targetMemoryId,targetGoalId,targetActionId,
+  `,[effectId,simulationId,eventId,effectType,resolvedTargetEntityId,targetRelationshipId,targetActivityId,targetMemoryId,targetGoalId,targetActionId,
      beforeState?JSON.stringify(beforeState):null,afterState?JSON.stringify(afterState):null,magnitude,createdSimulationAt]);
   return effectId;
 }
