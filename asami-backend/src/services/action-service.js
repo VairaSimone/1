@@ -85,7 +85,9 @@ async function loadLocationGraph(simulationId) {
             location_type AS locationType
      FROM locations l
      JOIN entities e ON e.id=l.entity_id
-     WHERE l.simulation_id=UUID_TO_BIN(?) AND e.simulation_id=UUID_TO_BIN(?)`,
+     WHERE l.simulation_id=UUID_TO_BIN(?)
+       AND e.simulation_id=UUID_TO_BIN(?)
+       AND e.status='ACTIVE'`,
     [simulationId, simulationId]
   );
 
@@ -354,7 +356,7 @@ async function startAction({
           };
 
       if (route?.path?.[1]) {
-        destination = route.path[1];
+        destination = targetLocationId || route.path[1];
 
         if (!targetLocationId) {
           const [locations] = await pool.query(
