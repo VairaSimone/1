@@ -39,8 +39,8 @@ function actionNeedCodes(action){
 function actionPriorityState(action,needs=[]){
   const priority=needPriorityState(needs),codes=new Set(actionNeedCodes(action).map(normalizeNeedCode));
   const directlyServes=codes.has(priority.code);
-  const criticalAlternative=(priority.level==="CRITICAL" && ((priority.code==="THIRST"&&action==="WALKING")||(priority.code==="HUNGER"&&action==="WALKING")));
-  if(priority.level==="CRITICAL") return { ...priority, servesPriorityNeed:directlyServes||criticalAlternative, multiplier:directlyServes?2.4:criticalAlternative?1.45:0.55 };
+  const criticalAlternative=priority.level==="CRITICAL"&&((priority.code==="THIRST"||priority.code==="HUNGER")&&action==="WALKING");
+  if(priority.level==="CRITICAL") return { ...priority, servesPriorityNeed:directlyServes||criticalAlternative, multiplier:directlyServes?2.4:criticalAlternative?1.45:1 };
   if(priority.level==="HIGH") return { ...priority, servesPriorityNeed:directlyServes, multiplier:directlyServes?1.55:0.9 };
   if(priority.level==="MEDIUM") return { ...priority, servesPriorityNeed:directlyServes, multiplier:directlyServes?1.2:1 };
   return { ...priority, servesPriorityNeed:directlyServes, multiplier:1 };
@@ -53,7 +53,6 @@ function scoreAction(action,needs,traits,resourceContext={}){
   const gate=actionNeedGates[action],gatedNeed=gate?needValue(needs,gate[0]):null;
   if(gate&&gatedNeed<gate[1])return 0;
   const priority=actionPriorityState(action,needs);
-  if(priority.level==="CRITICAL"&&!priority.servesPriorityNeed&&!action===priority.action)return 0;
   let score=0;
   if(action==="SLEEPING"){const sleepiness=needValue(needs,"SLEEPINESS"),energy=needValue(needs,"ENERGY");score+=sleepiness*2*needWeight(needs,"SLEEPINESS");score+=(1-energy)*1.4*needWeight(needs,"ENERGY");if(sleepiness<.18&&energy>.72)score*=.15;}
   else if(action==="RESTING"){const energy=needValue(needs,"ENERGY"),comfort=needValue(needs,"COMFORT");if(energy>=.72&&comfort<.65)score=0;else{score+=Math.max(0,1-energy)*needWeight(needs,"ENERGY");score+=Math.max(0,.65-comfort)*.7*needWeight(needs,"COMFORT");if(energy>=.82)score*=.25;else if(energy>=.72)score*=.5;}}
