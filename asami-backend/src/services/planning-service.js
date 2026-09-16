@@ -201,7 +201,7 @@ async function createPlanForGoal({ simulationId, entityId, goalId, simulationTim
       `INSERT INTO plan_steps
         (id,plan_id,sequence,title,description,status,activity_type_id,
          intended_start_simulation_at,deadline_simulation_at,result,version)
-       VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,'PENDING',UUID_TO_BIN(?),NULL,NULL,?,1)`,
+       VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,'PENDING',?,NULL,NULL,?,1)`,
       [
         uuid(),
         planId,
