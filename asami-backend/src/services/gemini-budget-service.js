@@ -147,8 +147,8 @@ async function release(reservation) {
 async function restoreRejectedRequest(reservation) {
   if (!reservation?.allowed) return;
   const { day, month } = reservation;
-  await pool.query(`UPDATE gemini_usage SET requests=GREATEST(0,requests-1) WHERE period_type='DAY' AND period_key=?`, [day]);
-  await pool.query(`UPDATE gemini_usage SET requests=GREATEST(0,requests-1) WHERE period_type='MONTH' AND period_key=?`, [month]);
+  await pool.query(`UPDATE gemini_usage SET requests=IF(requests > 0, requests - 1, 0) WHERE period_type='DAY' AND period_key=?`, [day]);
+  await pool.query(`UPDATE gemini_usage SET requests=IF(requests > 0, requests - 1, 0) WHERE period_type='MONTH' AND period_key=?`, [month]);
 }
 
 module.exports = { ensureGeminiUsageTable, reserve, finalize, release, restoreRejectedRequest, getUsage, blockProvider, providerBlockRemainingMs, estimateInputTokens, estimateCostUsd, dailyPacedLimitUsd };
