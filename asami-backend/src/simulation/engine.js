@@ -5,7 +5,7 @@ const simRepo = require("../repositories/simulation-repo");
 const { ensureEntityState, updateNeeds, applyEmotions, developTraits, readNeeds } = require("../services/state-service");
 const { findAutonomousActors, actForEntity, completeGoalForAction } = require("../services/autonomy-service");
 const { perceive } = require("../services/perception-service");
-const { startAction, completeAction, getActiveAction, learnFromAction, recordResourceFailureKnowledge } = require("../services/action-service");
+const { completeAction, getActiveAction, learnFromAction, recordResourceFailureKnowledge } = require("../services/action-service");
 const { createMemory, decayMemories, buildActionMemory, buildFailureMemory } = require("../services/memory-service");
 const { generateWorldEvents } = require("../services/world-service");
 const { ensureWorld, evolveRelationships } = require("../services/world-population-service");
@@ -173,8 +173,15 @@ class SimulationEngine {
             phase = "entity.mental_state"; if (["TALKING", "STUDYING", "WORKING", "EXPLORING"].includes(active.actionType)) await updateMentalState(sim.id, entityId, nextTime, { currentFocus: active.actionType.toLowerCase().replaceAll("_", " "), mentalLoad: ["WORKING", "STUDYING"].includes(active.actionType) ? 0.55 : 0.35, certainty: 0.7 });
             phase = "entity.publish"; this.hub.publish(sim.id, "entity.state", { entityId, action: { ...active, status: wasCompleted ? "COMPLETED" : "ACTIVE" }, needChanges });
           } else {
-            phase = "entity.autonomy"; const decision = await actForEntity({ simulationId: sim.id, entityId, simulationTime: nextTime.toISOString(), gemini: this.gemini }); if (!decision) continue;
-            actionType = decision.actionType; phase = "entity.action.start"; const started = await startAction({ simulationId: sim.id, entityId, decisionId: decision.decisionId, intentionId: decision.intentionId, actionType: decision.actionType, simulationTime: nextTime.toISOString(), targetEntityId: decision.targetEntityId || null, targetLocationId: decision.targetLocationId || null, relationshipIntent: decision.relationshipIntent || "NONE" });
+            phase = "entity.autonomy";
+            const autonomy = await actForEntity({ simulationId: sim.id, entityId, simulationTime: nextTime.toISOString(), gemini: this.gemini });
+            if (!autonomy) continue;
+            const decision = autonomy.decision;
+            if (!decision?.actionType) throw Object.assign(new Error("Autonomy produced no executable action type"), { code: "AUTONOMY_ACTION_TYPE_REQUIRED" });
+            actionType = decision.actionType;
+            phase = "entity.action.start";
+            const started = autonomy.started || null;
+            if (!started?.actionId) throw Object.assign(new Error("Autonomy action was not started"), { code: "AUTONOMY_ACTION_START_REQUIRED" });
             this.hub.publish(sim.id, "action.created", { entityId, decision, action: started });
           }
         }
