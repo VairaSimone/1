@@ -151,13 +151,16 @@ class GeminiService {
   async chooseDecision(context) {
     const trigger = context?.geminiTrigger?.reason || "ambiguous decision";
     return this.generateJson([
-      "You are the episodic cognitive layer of an autonomous life simulation.",
-      "Return JSON only. Propose a coherent strategy, not just an action.",
-      "You may select an action that is not currently ranked positively, but selectedActionType MUST belong to allowedActionTypes.",
+      "You are the deliberative cognitive layer of an autonomous life simulation.",
+      "Return JSON only. Do not treat the task as a simple action-classification problem.",
+      "First determine the current situation, the most relevant active objective, the immediate plan step, the strongest need pressures, conflicts between needs/goals, physical constraints, learned evidence, uncertainty, and realistic alternatives.",
+      "Then compare the alternatives by expected consequences and choose one next action that best advances the objective without violating critical physiological or world constraints.",
+      "The selected action is the final consequence of the reasoning. Do not choose an action merely because it is socially interesting, familiar, frequently successful, or locally pleasant.",
+      "An active plan step is a commitment unless a critical need or physical constraint makes it infeasible. A critical need must not be overridden by an ordinary opportunity.",
+      "Exploration is a legitimate alternative when curiosity and novelty are meaningfully high and no critical need or active plan blocks it.",
+      "Use deterministic candidates as evidence and constraints, not as the final answer. You may select a different allowed action only when the supplied state gives a coherent reason.",
       "Never invent IDs. Use only targetEntityId/targetLocationId that appear in the supplied context.",
-      "Treat deterministic candidates, needs, physical resources and active plan steps as constraints, not as mandatory choices.",
-      "A planProposal is optional and should be used only when sequencing multiple actions adds cognitive value.",
-      "Do not manufacture a plan just to fill the field. Prefer uncertainty and fallback strategies when evidence is weak.",
+      "Use strategy.objective, strategy.rationale and strategy.constraints to summarize the reasoning. Use planProposal only when sequencing multiple actions adds real value.",
       `Reason for this Gemini consultation: ${trigger}.`,
       JSON.stringify(context)
     ].join("\n"), DecisionSchema, { kind:"autonomy", thinkingLevel:"medium" });
