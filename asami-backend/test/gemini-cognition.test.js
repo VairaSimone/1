@@ -29,9 +29,10 @@ test("Gemini decision schema accepts strategy and multi-step plan proposals", ()
   assert.equal(parsed.planProposal.steps.length, 2);
 });
 
-test("Gemini is triggered by a recent failure rather than every ordinary decision", () => {
-  const entity = { entityType: "PERSON" };
+test("Gemini is triggered by failures and periodic strategic deliberation", () => {
+  const entity = { entityType: "PERSON", id: "person-1" };
   const context = {
+    simulationTime: "2026-09-19T01:42:01.000Z",
     candidates: [
       { action: "DRINKING", score: 1.1 },
       { action: "RESTING", score: 0.5 }
@@ -40,7 +41,10 @@ test("Gemini is triggered by a recent failure rather than every ordinary decisio
   };
 
   assert.equal(getGeminiTrigger(entity, context).priority, "HIGH");
-  assert.equal(getGeminiTrigger(entity, { candidates: [{ action: "DRINKING", score: 1.1 }, { action: "RESTING", score: 0.8 }] }, []).reason, null);
+  assert.equal(getGeminiTrigger(entity, {
+    simulationTime: "2026-09-19T01:42:01.000Z",
+    candidates: [{ action: "DRINKING", score: 1.1 }, { action: "RESTING", score: 0.8 }]
+  }, []).type, "PERIODIC_DELIBERATION");
 });
 
 test("Gemini target and plan proposals are constrained by deterministic world data", () => {
