@@ -15,6 +15,7 @@ const { updateDevelopment } = require("../services/development-service");
 const { initiateConversation } = require("../services/chat-service");
 const { recordHabitEvidence } = require("../services/habit-service");
 const { updateMentalState } = require("../services/personality-service");
+const { recordSignificantExperience } = require("../services/experience-learning-service");
 
 class SimulationEngine {
   constructor({ gemini, hub }) { this.gemini = gemini; this.hub = hub; this.running = new Set(); this.interval = null; this.tickCounter = new Map(); this.worldMaintenanceAt = new Map(); }
@@ -50,57 +51,23 @@ class SimulationEngine {
               const completion = await completeAction({ simulationId: sim.id, entityId, actionId: active.id, decisionId: active.decisionId, eventId, intentionId: active.intentionId, actionType: active.actionType, simulationTime: completionAt, targetEntityId, targetLocationId, relationshipIntent });
               if (!completion?.completed) { logger.warn({ simulationId: sim.id, entityId, actionId: active.id }, "action completion was not committed; skipping downstream learning"); continue; }
               const outcome = completion.outcome || "SUCCESS"; const successful = outcome === "SUCCESS";
+              phase = "entity.emotions.outcome";
+              const expectedOutcome = active.decisionId ? await getDecisionExpectedOutcome(active.decisionId) : null;
+              const needRelief = needChanges.filter(change => Number(change.delta) < 0).reduce((sum, change) => sum + Math.abs(Number(change.delta)), 0);
+              await applyEmotions(entityId, completionAt, needChanges, eventId, active.id, active.actionType, 0, { event: true, outcome, expectedOutcome, targetEntityId, targetLocationId, relationshipIntent, failureReason: completion.failureReason || null, meaning: active.metadata?.goalId ? (outcome === "SUCCESS" ? "GOAL_PROGRESS" : "GOAL_BLOCKED") : null, needRelief: Math.min(1, needRelief) });
               phase = "entity.goal";
               await completeGoalForAction(active.metadata?.goalId || null, active.actionType, completionAt, outcome, { simulationId: sim.id, entityId, actionId: active.id, targetEntityId, targetLocationId, ...completion });
               phase = "entity.learning"; if (successful) await learnFromAction(entityId, active.actionType, completionAt);
               phase = "entity.development"; if (successful) await updateDevelopment(sim.id, entityId, completionAt);
-              phase = "entity.traits"; if (successful) await developTraits(entityId, completionAt, signalForDecision(active.actionType), null, active.id);
+              phase = "entity.traits"; await developTraits(entityId, completionAt, signalForDecision(active.actionType), eventId, active.id);
               phase = "entity.habit"; if (successful) await recordHabitEvidence({ entityId, simulationTime: completionAt, actionType: active.actionType });
+              phase = "entity.cognition";
+              const cognitive = await recordSignificantExperience({ simulationId: sim.id, entityId, simulationTime: completionAt, actionType: active.actionType, outcome, locationId: perception.location?.locationId || null, locationType: perception.location?.locationType || null, targetEntityId, resource: completion.resource || null, needChanges, relationshipIntent, consequence: outcome === "SUCCESS" ? "expected result obtained" : "intended result not fully obtained", learning: completion.resourceLearning?.type || completion.failureReason || null });
               phase = "entity.memory";
               const memoryPayload = outcome === "FAILURE"
-                ? buildFailureMemory({
-                    locationId: perception.location?.locationId || null,
-                    simulationTime: completionAt,
-                    actionType: active.actionType,
-                    perception,
-                    decision: { actionType: active.actionType, goalId: active.metadata?.goalId || null },
-                    needChanges,
-                    physical: completion.resource,
-                    failureReason: completion.failureReason,
-                    resourceLearning: completion.resourceLearning
-                  })
-                : buildActionMemory({
-                    actionType: active.actionType,
-                    outcome,
-                    perception,
-                    decision: { actionType: active.actionType, goalId: active.metadata?.goalId || null },
-                    needChanges,
-                    completion,
-                    simulationAt: completionAt
-                  });
-              await createMemory({
-                simulationId: sim.id,
-                entityId,
-                eventId,
-                locationId: perception.location?.locationId || null,
-                type: "EPISODIC",
-                content: memoryPayload.content,
-                importance: memoryPayload.importance,
-                strength: memoryPayload.strength,
-                confidence: memoryPayload.confidence,
-                emotionalIntensity: memoryPayload.emotionalIntensity,
-                simulationAt: completionAt,
-                metadata: {
-                  ...memoryPayload.metadata,
-                  actionId: active.id,
-                  eventId,
-                  durationMinutes,
-                  relationshipIntent,
-                  goalId: active.metadata?.goalId || null,
-                  planId: active.metadata?.planId || null,
-                  planStepId: active.metadata?.planStepId || null
-                }
-              });
+                ? buildFailureMemory({ locationId: perception.location?.locationId || null, simulationTime: completionAt, actionType: active.actionType, perception, decision: { actionType: active.actionType, goalId: active.metadata?.goalId || null }, needChanges, physical: completion.resource, failureReason: completion.failureReason, resourceLearning: completion.resourceLearning })
+                : buildActionMemory({ actionType: active.actionType, outcome, perception, decision: { actionType: active.actionType, goalId: active.metadata?.goalId || null }, needChanges, completion, simulationAt: completionAt });
+              await createMemory({ simulationId: sim.id, entityId, eventId, locationId: perception.location?.locationId || null, type: "EPISODIC", content: memoryPayload.content, importance: memoryPayload.importance, strength: memoryPayload.strength, confidence: memoryPayload.confidence, emotionalIntensity: memoryPayload.emotionalIntensity, simulationAt: completionAt, metadata: { ...memoryPayload.metadata, actionId: active.id, eventId, durationMinutes, relationshipIntent, goalId: active.metadata?.goalId || null, planId: active.metadata?.planId || null, planStepId: active.metadata?.planStepId || null, cognitive } });
             }
             phase = "entity.mental_state"; if (["TALKING", "STUDYING", "WORKING", "EXPLORING"].includes(active.actionType)) await updateMentalState(sim.id, entityId, nextTime, { currentFocus: active.actionType.toLowerCase().replaceAll("_", " "), mentalLoad: ["WORKING", "STUDYING"].includes(active.actionType) ? 0.55 : 0.35, certainty: 0.7 });
             phase = "entity.publish"; this.hub.publish(sim.id, "entity.state", { entityId, action: { ...active, status: wasCompleted ? "COMPLETED" : "ACTIVE", startedSimulationAt: active.startedSimulationAt, expectedCompletionSimulationAt: completionAt, relationshipIntent }, needChanges }); continue;
@@ -122,6 +89,15 @@ class SimulationEngine {
       } catch (err) { const errorContext = { ...context, tickId, phase, entityId, actionType }; try { await simRepo.finishTick(tickId, "FAILED"); } catch (finishErr) { logger.error(logger.contextError({ ...errorContext, secondaryFailure: "finishTick" }, finishErr, "failed to mark simulation tick failed")); } throw Object.assign(err, { simulationContext: errorContext }); }
     } catch (err) { const mergedContext = { ...context, ...(err.simulationContext || {}), phase, entityId, actionType }; logger.error(logger.contextError(mergedContext, err, "simulation failed")); throw err; }
   }
+}
+
+async function getDecisionExpectedOutcome(decisionId) {
+  const [rows] = await pool.query(`SELECT expected_outcome AS expectedOutcome FROM decisions WHERE id=UUID_TO_BIN(?) LIMIT 1`, [decisionId]);
+  if (!rows.length) return null;
+  const value = rows[0].expectedOutcome;
+  if (Buffer.isBuffer(value)) return JSON.parse(value.toString());
+  if (typeof value === "string") { try { return JSON.parse(value); } catch { return value; } }
+  return value || null;
 }
 
 function signalForDecision(action) { return { TALKING: { EXTRAVERSION: 1, SOCIABILITY: 1, EMPATHY: 0.2 }, EXPLORING: { OPENNESS: 1, CURIOSITY: 1, CONFIDENCE: 0.2 }, STUDYING: { CONSCIENTIOUSNESS: 1, DISCIPLINE: 1, PATIENCE: 0.4 }, WORKING: { CONSCIENTIOUSNESS: 1, DISCIPLINE: 1 }, PLAYING: { OPENNESS: 0.4, IMPULSIVITY: 0.3 }, WALKING: { OPENNESS: 0.3 }, READING: { OPENNESS: 0.4, CURIOSITY: 0.6 }, SLEEPING: { PATIENCE: 0.2 }, RESTING: { PATIENCE: 0.2 }, EATING: { SELF_CARE: 0.2 }, DRINKING: { SELF_CARE: 0.2 }, WATCHING: { OPENNESS: 0.1 } }[action] || {}; }
