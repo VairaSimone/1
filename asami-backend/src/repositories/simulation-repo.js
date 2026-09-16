@@ -240,11 +240,14 @@ async function finishTick(tickId, status = "COMPLETED") {
 }
 
 async function createSnapshot(id, simulationTime, state, snapshotVersion = 1) {
+  const snapshotState = state === undefined || state === null
+    ? { simulationTime: simulationTime instanceof Date ? simulationTime.toISOString() : String(simulationTime || "") }
+    : state;
   await pool.query(`
     INSERT INTO simulation_snapshots
       (id,simulation_id,simulation_time,snapshot_version,state)
     VALUES (UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?)
-  `, [uuid(), id, simulationTime, snapshotVersion, JSON.stringify(state)]);
+  `, [uuid(), id, simulationTime, snapshotVersion, JSON.stringify(snapshotState)]);
 }
 
 module.exports = {
