@@ -1,13 +1,36 @@
 const DEFAULT_LEVELS = Object.freeze({ CRITICAL: 4, HIGH: 3, MEDIUM: 2, LOW: 1 });
-const REACTIVE_NEEDS = new Set(["HUNGER", "THIRST", "SLEEPINESS", "SAFETY"]);
+const REACTIVE_NEEDS = new Set(["HUNGER", "THIRST", "SLEEPINESS", "ENERGY", "SAFETY"]);
 const DELIBERATIVE_NEEDS = new Set(["SOCIAL_NEED", "BELONGING", "FUN", "CURIOSITY", "ACHIEVEMENT"]);
+const NEED_DIRECTIONS = Object.freeze({
+  HUNGER: "HIGH", THIRST: "HIGH", SLEEPINESS: "HIGH",
+  ENERGY: "LOW", SAFETY: "LOW"
+});
+const CRITICAL_THRESHOLDS = Object.freeze({ THIRST: 0.8, HUNGER: 0.8, SLEEPINESS: 0.85, ENERGY: 0.15, SAFETY: 0.2 });
 
 function normalize(value) { return String(value || "").trim().toUpperCase().replace(/\s+/g, "_"); }
 function clamp01(value, fallback = 0) { const n = Number(value); return Number.isFinite(n) ? Math.max(0, Math.min(1, n)) : fallback; }
-function needPriority(value) { const v = clamp01(value); if (v >= 0.85) return "CRITICAL"; if (v >= 0.60) return "HIGH"; if (v >= 0.35) return "MEDIUM"; return "LOW"; }
+function needPriority(value, code = null) {
+  const v = clamp01(value), normalized = normalize(code), direction = NEED_DIRECTIONS[normalized] || "HIGH";
+  if (normalized && CRITICAL_THRESHOLDS[normalized] !== undefined) {
+    const threshold = CRITICAL_THRESHOLDS[normalized];
+    if (direction === "LOW" && v <= threshold) return "CRITICAL";
+    if (direction === "HIGH" && v >= threshold) return "CRITICAL";
+  }
+  if (direction === "LOW") {
+    if (v <= 0.3) return "HIGH";
+    if (v <= 0.6) return "MEDIUM";
+    return "LOW";
+  }
+  if (v >= 0.6) return "HIGH";
+  if (v >= 0.35) return "MEDIUM";
+  return "LOW";
+}
 
 function buildReactiveLayer(needs = []) {
-  const items = (needs || []).filter(need => REACTIVE_NEEDS.has(normalize(need.code))).map(need => ({ code: normalize(need.code), value: clamp01(need.value), level: needPriority(need.value), priorityWeight: Number(need.priorityWeight || 1) })).sort((a, b) => DEFAULT_LEVELS[b.level] - DEFAULT_LEVELS[a.level] || b.value - a.value);
+  const items = (needs || [])
+    .filter(need => REACTIVE_NEEDS.has(normalize(need.code)))
+    .map(need => ({ code: normalize(need.code), value: clamp01(need.value), level: needPriority(need.value, need.code), priorityWeight: Number(need.priorityWeight || 1) }))
+    .sort((a, b) => DEFAULT_LEVELS[b.level] - DEFAULT_LEVELS[a.level] || (NEED_DIRECTIONS[a.code] === "LOW" ? a.value - b.value : b.value - a.value));
   const critical = items.find(item => item.level === "CRITICAL") || null;
   const high = items.find(item => item.level === "HIGH") || null;
   return { kind: "REACTIVE", blocking: Boolean(critical), priority: critical ? "CRITICAL" : high ? "HIGH" : items.length ? items[0].level : "LOW", topNeed: critical || high || items[0] || null, needs: items };
@@ -50,7 +73,7 @@ function composeCognitiveLayers({ needs = [], goals = [], activePlanStep = null,
 }
 
 function habitActionBonus(cognitiveLayers, actionType) { const selected = cognitiveLayers?.habit?.selected; if (!selected || normalize(selected.actionType) !== normalize(actionType)) return 0; return 0.18 * clamp01(selected.score); }
-function shouldBlockByReactive(cognitiveLayers, actionType) { const reactive = cognitiveLayers?.reactive; if (!reactive?.blocking) return false; const critical = reactive.topNeed?.code; const mapping = { HUNGER: "EATING", THIRST: "DRINKING", SLEEPINESS: "SLEEPING", SAFETY: "RESTING" }; return Boolean(critical && mapping[critical] && normalize(actionType) !== mapping[critical]); }
+function shouldBlockByReactive(cognitiveLayers, actionType) { const reactive = cognitiveLayers?.reactive; if (!reactive?.blocking) return false; const critical = reactive.topNeed?.code; const mapping = { HUNGER: "EATING", THIRST: "DRINKING", SLEEPINESS: "SLEEPING", ENERGY: "RESTING", SAFETY: "RESTING" }; return Boolean(critical && mapping[critical] && normalize(actionType) !== mapping[critical]); }
 function habitActionForProfile(profile, actionType, simulationTime = null) { const layers = buildHabitLayer({ habits: profile?.habits || [], needs: [], simulationTime: simulationTime || profile?.mentalState?.updatedSimulationAt || Date.now() }); return layers.candidates.find(candidate => normalize(candidate.actionType) === normalize(actionType)) || null; }
 
-module.exports = { needPriority, buildReactiveLayer, buildDeliberativeLayer, buildHabitLayer, composeCognitiveLayers, habitActionBonus, shouldBlockByReactive, habitActionForProfile, habitTriggerMatch };
+module.exports = { needPriority, buildReactiveLayer, buildDeliberativeLayer, buildHabitLayer, composeCognitiveLayers, habitActionBonus, shouldBlockByReactive, habitActionForProfile, habitTriggerMatch, NEED_DIRECTIONS, CRITICAL_THRESHOLDS };
