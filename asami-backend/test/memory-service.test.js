@@ -21,7 +21,7 @@ test("action memory captures context, cause, outcome, consequence and learning",
   assert.match(memory.content, /Consequence:/);
   assert.match(memory.content, /Learning:/);
   assert.equal(memory.metadata.outcome, "SUCCESS");
-  assert.equal(memory.metadata.goalId, undefined);
+  assert.equal(memory.metadata.decision.goalId, "goal-1");
 });
 
 test("resource failure memory records the exhausted resource and alternative strategy", () => {
