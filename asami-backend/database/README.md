@@ -1,6 +1,6 @@
 # Database
 
-The canonical MySQL schema supplied for Asami on 2026-09-15 is stored in this directory as five ordered Base64 text parts of the gzip-compressed dump. Concatenating the five parts and decoding them reconstructs the original dump without changing its SQL contents.
+The canonical MySQL schema supplied for Asami on 2026-09-15 is stored in this directory as seven ordered Base64 text parts of the gzip-compressed dump. Concatenating the seven parts and decoding them reconstructs the original dump without changing its SQL contents.
 
 ## Automatic creation
 
@@ -15,7 +15,7 @@ The initializer adapts only the dump's database identifier (`asami`) to the conf
 ## Reconstruct the dump locally
 
 ```bash
-cat schema.sql.gz.b64.001 schema.sql.gz.b64.002 schema.sql.gz.b64.003 schema.sql.gz.b64.004 schema.sql.gz.b64.005 | base64 -d | gunzip > schema.sql
+cat schema.sql.gz.b64.001 schema.sql.gz.b64.002a schema.sql.gz.b64.002b schema.sql.gz.b64.003a schema.sql.gz.b64.003b schema.sql.gz.b64.004 schema.sql.gz.b64.005 | base64 -d | gunzip > schema.sql
 sha256sum schema.sql
 ```
 

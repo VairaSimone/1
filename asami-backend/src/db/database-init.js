@@ -7,8 +7,10 @@ const logger = require("../lib/logger");
 
 const SCHEMA_PARTS = [
   "schema.sql.gz.b64.001",
-  "schema.sql.gz.b64.002",
-  "schema.sql.gz.b64.003",
+  "schema.sql.gz.b64.002a",
+  "schema.sql.gz.b64.002b",
+  "schema.sql.gz.b64.003a",
+  "schema.sql.gz.b64.003b",
   "schema.sql.gz.b64.004",
   "schema.sql.gz.b64.005"
 ].map((name) => path.resolve(__dirname, "../../database", name));
