@@ -24,58 +24,53 @@ jobs:
           set -euo pipefail
           python3 - <<'PY'
           from pathlib import Path
+          import re
+
+          def once(text, pattern, replacement, label):
+              text2, count = re.subn(pattern, replacement, text, count=1, flags=re.S)
+              if count != 1:
+                  raise SystemExit(f'{label}: expected one match, found {count}')
+              return text2
 
           root = Path('.')
 
-          def replace_exact(text, label, old, new, expected=1):
-              count = text.count(old)
-              if count != expected:
-                  raise SystemExit(f'{label}: expected {expected} occurrences, found {count} for {old!r}')
-              return text.replace(old, new)
-
-          # actions.source_goal_id is an explicit nullable FK used for goal provenance/analysis.
+          # actions.source_goal_id is a nullable FK to goals and is used by analysis.
           p = root / 'asami-backend/src/services/action-service.js'
           text = p.read_text()
-          text = replace_exact(text, 'action-service signature',
-              'async function startAction({simulationId,entityId,decisionId,intentionId=null,actionType,simulationTime,targetEntityId=null,targetLocationId=null,relationshipIntent="NONE"})',
-              'async function startAction({simulationId,entityId,decisionId,intentionId=null,goalId=null,actionType,simulationTime,targetEntityId=null,targetLocationId=null,relationshipIntent="NONE"})')
-          text = replace_exact(text, 'action-service insert',
-              "INSERT INTO actions(id,simulation_id,entity_id,decision_id,action_type,source_type,source_intention_id,started_simulation_at,status,target,parameters,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),'AUTONOMOUS',UUID_TO_BIN(?),?,'ACTIVE',?,?,1)",
-              "INSERT INTO actions(id,simulation_id,entity_id,decision_id,action_type,source_type,source_goal_id,source_intention_id,started_simulation_at,status,target,parameters,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),'AUTONOMOUS',UUID_TO_BIN(?),UUID_TO_BIN(?),?,'ACTIVE',?,?,1)")
-          text = replace_exact(text, 'action-service params',
-              '[actionId,simulationId,entityId,decisionId,actionType,intentionId,simulationTime,targetLocationId?JSON.stringify({locationId:targetLocationId}):null,JSON.stringify({targetEntityId,targetLocationId,relationshipIntent,durationMinutes:duration,expectedCompletionSimulationAt:expectedCompletion.toISOString(),movement:move?{movementId:move.movementId,originLocationId:origin,destinationLocationId:destination,distanceMeters:move.distanceMeters,speedKmh:move.speedKmh,expectedArrivalSimulationAt:move.expectedArrival.toISOString()}:null})]',
-              '[actionId,simulationId,entityId,decisionId,actionType,goalId,intentionId,simulationTime,targetLocationId?JSON.stringify({locationId:targetLocationId}):null,JSON.stringify({targetEntityId,targetLocationId,relationshipIntent,durationMinutes:duration,expectedCompletionSimulationAt:expectedCompletion.toISOString(),movement:move?{movementId:move.movementId,originLocationId:origin,destinationLocationId:destination,distanceMeters:move.distanceMeters,speedKmh:move.speedKmh,expectedArrivalSimulationAt:move.expectedArrival.toISOString()}:null})]')
+          text = once(text,
+              r'INSERT INTO actions\(id,simulation_id,entity_id,decision_id,action_type,source_type,source_intention_id,started_simulation_at,status,target,parameters,version\) VALUES\(UUID_TO_BIN\(\?\),UUID_TO_BIN\(\?\),UUID_TO_BIN\(\?\),UUID_TO_BIN\(\?\),\?,\'AUTONOMOUS\',UUID_TO_BIN\(\?\),\?,\'ACTIVE\',\?,\?,1\)',
+              "INSERT INTO actions(id,simulation_id,entity_id,decision_id,action_type,source_type,source_goal_id,source_intention_id,started_simulation_at,status,target,parameters,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,'AUTONOMOUS',(SELECT goal_id FROM intentions WHERE id=UUID_TO_BIN(?)),UUID_TO_BIN(?),?,'ACTIVE',?,?,1)",
+              'action-service insert')
+          text = once(text,
+              r'\[actionId,simulationId,entityId,decisionId,actionType,intentionId,simulationTime,targetLocationId\?JSON\.stringify\(\{locationId:targetLocationId\}\):null,',
+              '[actionId,simulationId,entityId,decisionId,actionType,intentionId,intentionId,simulationTime,targetLocationId?JSON.stringify({locationId:targetLocationId}):null,',
+              'action-service params')
           p.write_text(text)
 
-          p = root / 'asami-backend/src/services/autonomy-service.js'
-          text = p.read_text()
-          text = replace_exact(text, 'autonomy startAction call',
-              'startAction({simulationId,entityId,decisionId:decision.decisionId,intentionId,actionType:decision.actionType,simulationTime,targetEntityId:decision.targetEntityId,targetLocationId:decision.targetLocationId,relationshipIntent:',
-              'startAction({simulationId,entityId,decisionId:decision.decisionId,intentionId,goalId:goalState.goal?.id||null,actionType:decision.actionType,simulationTime,targetEntityId:decision.targetEntityId,targetLocationId:decision.targetLocationId,relationshipIntent:')
-          p.write_text(text)
-
-          # AI-generated references must belong to the same simulation because the schema enforces composite FKs.
+          # Generated entity references must belong to this simulation before hitting composite FKs.
           p = root / 'asami-backend/src/services/personality-service.js'
           text = p.read_text()
           helper = 'async function resolveEntityIdInSimulation(simulationId,entityId){if(!entityId)return null;const[rows]=await pool.query(`SELECT BIN_TO_UUID(id) AS id FROM entities WHERE simulation_id=UUID_TO_BIN(?) AND id=UUID_TO_BIN(?) LIMIT 1`,[simulationId,entityId]);return rows[0]?.id||null;}\n'
           marker = "function normalizeKey(value, max = 50) {\n  return safeText(value, max).toUpperCase().replace(/\\s+/g, '_');\n}\n"
           if helper not in text:
-              if marker not in text:
-                  raise SystemExit('personality-service.js: normalizeKey marker not found')
               text = text.replace(marker, marker + helper, 1)
-          old = "const targetType=normalizeKey(item?.targetType||item?.topic||'TOPIC',50),targetEntityId=item?.targetEntityId||null,value=clampSigned(item?.value??item?.preferenceValue,1,0),strength=clamp01(item?.strength,.5),confidence=clamp01(item?.confidence,.5);if(!targetType)return null;"
-          new = "const targetType=normalizeKey(item?.targetType||item?.topic||'TOPIC',50),rawTargetEntityId=item?.targetEntityId||null,targetEntityId=await resolveEntityIdInSimulation(simulationId,rawTargetEntityId),value=clampSigned(item?.value??item?.preferenceValue,1,0),strength=clamp01(item?.strength,.5),confidence=clamp01(item?.confidence,.5);if(!targetType||rawTargetEntityId&&!targetEntityId)return null;"
-          text = replace_exact(text, 'personality preference target', old, new)
-          old = 'const predicate=safeText(item?.predicate,150);if(!predicate)return null;const subjectEntityId=item?.subjectEntityId||null,objectValue=item?.objectValue??item?.value??null;if(objectValue===null||objectValue===undefined)return null;'
-          new = 'const predicate=safeText(item?.predicate,150);if(!predicate)return null;const rawSubjectEntityId=item?.subjectEntityId||null,subjectEntityId=await resolveEntityIdInSimulation(simulationId,rawSubjectEntityId),objectValue=item?.objectValue??item?.value??null;if(rawSubjectEntityId&&!subjectEntityId||objectValue===null||objectValue===undefined)return null;'
-          text = replace_exact(text, 'personality belief subject', old, new)
-          old = "const content=safeText(item?.content,1000);if(!content)return null;const knowledgeType=normalizeKey(item?.knowledgeType||item?.type||'CONVERSATION',50),predicate=safeText(item?.predicate,150)||null,subjectEntityId=item?.subjectEntityId||entityId,objectEntityId=item?.objectEntityId||null,confidence=clamp01(item?.confidence,.6),importance=clamp01(item?.importance,.55);"
-          new = "const content=safeText(item?.content,1000);if(!content)return null;const knowledgeType=normalizeKey(item?.knowledgeType||item?.type||'CONVERSATION',50),predicate=safeText(item?.predicate,150)||null,rawSubjectEntityId=item?.subjectEntityId||entityId,rawObjectEntityId=item?.objectEntityId||null,subjectEntityId=await resolveEntityIdInSimulation(simulationId,rawSubjectEntityId),objectEntityId=await resolveEntityIdInSimulation(simulationId,rawObjectEntityId),confidence=clamp01(item?.confidence,.6),importance=clamp01(item?.importance,.55);if(!subjectEntityId)return null;"
-          text = replace_exact(text, 'personality knowledge subjects', old, new)
+
+          text = once(text,
+              r"const targetType=normalizeKey\(item\?\.targetType\|\|item\?\.topic\|\|'TOPIC',50\),targetEntityId=item\?\.targetEntityId\|\|null,value=clampSigned\(item\?\.value\?\?item\?\.preferenceValue,1,0\),strength=clamp01\(item\?\.strength,\.5\),confidence=clamp01\(item\?\.confidence,\.5\);if\(!targetType\)return null;",
+              "const targetType=normalizeKey(item?.targetType||item?.topic||'TOPIC',50),rawTargetEntityId=item?.targetEntityId||null,targetEntityId=await resolveEntityIdInSimulation(simulationId,rawTargetEntityId),value=clampSigned(item?.value??item?.preferenceValue,1,0),strength=clamp01(item?.strength,.5),confidence=clamp01(item?.confidence,.5);if(!targetType||rawTargetEntityId&&!targetEntityId)return null;",
+              'personality preference target')
+          text = once(text,
+              r'const predicate=safeText\(item\?\.predicate,150\);if\(!predicate\)return null;const subjectEntityId=item\?\.subjectEntityId\|\|null,objectValue=item\?\.objectValue\?\?item\?\.value\?\?null;if\(objectValue===null\|\|objectValue===undefined\)return null;',
+              'const predicate=safeText(item?.predicate,150);if(!predicate)return null;const rawSubjectEntityId=item?.subjectEntityId||null,subjectEntityId=await resolveEntityIdInSimulation(simulationId,rawSubjectEntityId),objectValue=item?.objectValue??item?.value??null;if(rawSubjectEntityId&&!subjectEntityId||objectValue===null||objectValue===undefined)return null;',
+              'personality belief subject')
+          text = once(text,
+              r"const content=safeText\(item\?\.content,1000\);if\(!content\)return null;const knowledgeType=normalizeKey\(item\?\.knowledgeType\|\|item\?\.type\|\|'CONVERSATION',50\),predicate=safeText\(item\?\.predicate,150\)\|\|null,subjectEntityId=item\?\.subjectEntityId\|\|entityId,objectEntityId=item\?\.objectEntityId\|\|null,confidence=clamp01\(item\?\.confidence,\.6\),importance=clamp01\(item\?\.importance,\.55\);",
+              "const content=safeText(item?.content,1000);if(!content)return null;const knowledgeType=normalizeKey(item?.knowledgeType||item?.type||'CONVERSATION',50),predicate=safeText(item?.predicate,150)||null,rawSubjectEntityId=item?.subjectEntityId||entityId,rawObjectEntityId=item?.objectEntityId||null,subjectEntityId=await resolveEntityIdInSimulation(simulationId,rawSubjectEntityId),objectEntityId=await resolveEntityIdInSimulation(simulationId,rawObjectEntityId),confidence=clamp01(item?.confidence,.6),importance=clamp01(item?.importance,.55);if(!subjectEntityId)return null;",
+              'personality knowledge subjects')
           p.write_text(text)
 
           test = root / 'asami-backend/test/schema-contract-second-pass.test.js'
-          test.write_text('''const test=require("node:test");\nconst assert=require("node:assert/strict");\nconst fs=require("node:fs");\nconst path=require("node:path");\nconst src=path.join(__dirname,"../src");\nconst read=name=>fs.readFileSync(path.join(src,name),"utf8");\n\ntest("autonomous actions preserve goal provenance in source_goal_id",()=>{\n  const action=read("services/action-service.js");\n  const autonomy=read("services/autonomy-service.js");\n  assert.match(action,/source_goal_id/);\n  assert.match(action,/goalId=null/);\n  assert.match(autonomy,/goalId:goalState\\.goal\\?\\.id\\|\\|null/);\n});\n\ntest("generated entity references are validated against the active simulation before DB writes",()=>{\n  const personality=read("services/personality-service.js");\n  assert.match(personality,/resolveEntityIdInSimulation/);\n  assert.match(personality,/rawTargetEntityId/);\n  assert.match(personality,/rawSubjectEntityId/);\n  assert.match(personality,/rawObjectEntityId/);\n});\n''')
+          test.write_text('''const test=require("node:test");\nconst assert=require("node:assert/strict");\nconst fs=require("node:fs");\nconst path=require("node:path");\nconst src=path.join(__dirname,"../src");\nconst read=name=>fs.readFileSync(path.join(src,name),"utf8");\n\ntest("autonomous actions preserve goal provenance through the source goal FK",()=>{\n  const action=read("services/action-service.js");\n  assert.match(action,/source_goal_id/);\n  assert.match(action,/SELECT goal_id FROM intentions/);\n});\n\ntest("generated entity references are validated against the active simulation",()=>{\n  const personality=read("services/personality-service.js");\n  assert.match(personality,/resolveEntityIdInSimulation/);\n  assert.match(personality,/rawTargetEntityId/);\n  assert.match(personality,/rawSubjectEntityId/);\n  assert.match(personality,/rawObjectEntityId/);\n});\n''')
           PY
 
       - name: Install backend dependencies
@@ -93,9 +88,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('asami-backend/README.md')
+          text=p.read_text().replace('\n<!-- second-audit-trigger -->\n','\n')
+          p.write_text(text)
+          PY
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add asami-backend/src asami-backend/test/schema-contract-second-pass.test.js
+          git add asami-backend/src asami-backend/test/schema-contract-second-pass.test.js asami-backend/README.md
           git rm .github/workflows/db-contract-fix4.yml
           git commit -m "fix: preserve goal provenance and validate simulation references"
           git push origin HEAD:main
