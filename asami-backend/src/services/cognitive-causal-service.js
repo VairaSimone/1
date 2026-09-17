@@ -37,12 +37,16 @@ async function ensureLink({ simulationId, entityId, simulationTime, sourceType, 
   const [rows] = await pool.query(`SELECT BIN_TO_UUID(id) AS id,weight,polarity,confidence,evidence_count,version FROM causal_links WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND source_type=? AND source_key=? AND target_type=? AND target_key=? LIMIT 1`, [simulationId,entityId,sType,sKey,tType,tKey]);
   if (!rows.length) {
     const id = uuid();
-    await pool.query(`INSERT INTO causal_links(id,simulation_id,entity_id,source_type,source_key,target_type,target_key,weight,polarity,confidence,evidence_count,last_activated_simulation_at,status,version,created_simulation_at,updated_simulation_at) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,?,?,?,?,1,?,'ACTIVE',1,?,?)`, [id,simulationId,entityId,sType,sKey,tType,tKey,signed(weight),polarity >= 0 ? 1 : -1,clamp01(confidence),simulationTime,simulationTime,simulationTime]);
+    const initialWeight = signed(weight);
+    const initialPolarity = initialWeight === 0 ? (polarity >= 0 ? 1 : -1) : initialWeight < 0 ? -1 : 1;
+    await pool.query(`INSERT INTO causal_links(id,simulation_id,entity_id,source_type,source_key,target_type,target_key,weight,polarity,confidence,evidence_count,last_activated_simulation_at,status,version,created_simulation_at,updated_simulation_at) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,?,?,?,?,1,?,'ACTIVE',1,?,?)`, [id,simulationId,entityId,sType,sKey,tType,tKey,initialWeight,initialPolarity,clamp01(confidence),simulationTime,simulationTime,simulationTime]);
     return id;
   }
   const row = rows[0];
-  const nextWeight = clamp01(Math.abs(Number(row.weight)) * 0.82 + Math.abs(signed(weight)) * 0.18) * (Number(weight) < 0 ? -1 : 1);
-  const nextPolarity = Number(weight) < 0 ? -1 : Number(row.polarity || polarity || 1);
+  const previousWeight = signed(row.weight);
+  const observedWeight = signed(weight);
+  const nextWeight = signed(previousWeight * 0.82 + observedWeight * 0.18);
+  const nextPolarity = nextWeight < 0 ? -1 : nextWeight > 0 ? 1 : (Number(row.polarity) < 0 ? -1 : 1);
   const nextConfidence = clamp01(Number(row.confidence) * 0.88 + clamp01(confidence) * 0.12);
   await pool.query(`UPDATE causal_links SET weight=?,polarity=?,confidence=?,evidence_count=evidence_count+1,last_activated_simulation_at=?,updated_simulation_at=?,version=version+1 WHERE id=UUID_TO_BIN(?) AND version=?`, [nextWeight,nextPolarity,nextConfidence,simulationTime,simulationTime,row.id,row.version]);
   return row.id;
@@ -50,11 +54,12 @@ async function ensureLink({ simulationId, entityId, simulationTime, sourceType, 
 
 async function activate({ simulationId, entityId, simulationTime, parentActivationId = null, sourceType, sourceKey, targetType, targetKey, activation, depth = 0, causeType = 'EXPERIENCE', causeRef = null, metadata = null, weight, polarity = 1, confidence = 0.5 }) {
   const magnitude = Math.max(-1, Math.min(1, Number(activation) || 0));
-  if (Math.abs(magnitude) < 0.03) return null;
+  const safeDepth = Math.max(0, Math.min(MAX_DEPTH, Math.round(Number(depth) || 0)));
+  if (Math.abs(magnitude) < 0.03 || safeDepth > MAX_DEPTH) return null;
   const linkId = await ensureLink({ simulationId,entityId,simulationTime,sourceType,sourceKey,targetType,targetKey,weight:weight ?? magnitude,polarity,confidence });
   const id = uuid();
-  await pool.query(`INSERT INTO causal_activations(id,simulation_id,entity_id,link_id,parent_activation_id,source_type,source_key,target_type,target_key,activation,depth,cause_type,cause_ref,simulation_time,metadata,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,?,?,?,?,UUID_TO_BIN(?),?,?,1)`, [id,simulationId,entityId,linkId,parentActivationId,normalize(sourceType),normalize(sourceKey),normalize(targetType),normalize(targetKey),magnitude,depth,normalize(causeType),causeRef,simulationTime,metadata ? JSON.stringify(metadata) : null]);
-  return { id, linkId, activation: magnitude, targetType: normalize(targetType), targetKey: normalize(targetKey), depth };
+  await pool.query(`INSERT INTO causal_activations(id,simulation_id,entity_id,link_id,parent_activation_id,source_type,source_key,target_type,target_key,activation,depth,cause_type,cause_ref,simulation_time,metadata,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,?,?,?,?,UUID_TO_BIN(?),?,?,1)`, [id,simulationId,entityId,linkId,parentActivationId,normalize(sourceType),normalize(sourceKey),normalize(targetType),normalize(targetKey),magnitude,safeDepth,normalize(causeType),causeRef,simulationTime,metadata ? JSON.stringify(metadata) : null]);
+  return { id, linkId, activation: magnitude, targetType: normalize(targetType), targetKey: normalize(targetKey), depth: safeDepth };
 }
 
 async function updateMemory({ simulationId, entityId, actionType, outcome, simulationTime, activation }) {
@@ -95,7 +100,7 @@ async function updateDesire({ simulationId, entityId, simulationTime, desireKey,
   const nextProgress = clamp01(Number(row.progress) + progressDelta);
   const nextPriority = clamp01(Number(row.priority) + priorityDelta);
   const nextPersistence = clamp01(Number(row.persistence) + persistenceDelta);
-  await pool.query(`UPDATE long_term_desires SET progress=?,priority=?,persistence=?,updated_simulation_at=?,version=version+1 WHERE id=UUID_TO_BIN(?) AND version=?`, [nextProgress,nextPriority,nextPersistence,simulationTime,row.id,row.version]);
+  await pool.query(`UPDATE long_term_desires SET progress=?,priority=?,persistence=?,updated_at=?,version=version+1 WHERE id=UUID_TO_BIN(?) AND version=?`, [nextProgress,nextPriority,nextPersistence,simulationTime,row.id,row.version]);
   return { id: row.id, progress: nextProgress, priority: nextPriority, persistence: nextPersistence };
 }
 
@@ -103,10 +108,11 @@ async function updateValue({ simulationId, entityId, simulationTime, valueCode, 
   const [rows] = await pool.query(`SELECT BIN_TO_UUID(id) AS id,importance,confidence,version FROM identity_values WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND code=? LIMIT 1`, [simulationId,entityId,normalize(valueCode)]);
   if (!rows.length) return null;
   const row = rows[0], outcome = normalize(actionOutcome), magnitude = Math.min(0.025,Math.abs(activation) * 0.018);
-  const delta = outcome === 'SUCCESS' ? magnitude : outcome === 'PARTIAL' ? magnitude * 0.30 : -magnitude;
-  const nextImportance = clamp01(Number(row.importance) + delta, Number(row.importance));
-  const nextConfidence = clamp01(Number(row.confidence) + delta * 0.65, Number(row.confidence));
-  await pool.query(`UPDATE identity_values SET importance=?,confidence=?,salience=?,origin='CAUSAL_EXPERIENCE',updated_simulation_at=?,version=version+1 WHERE id=UUID_TO_BIN(?) AND version=?`, [nextImportance,nextConfidence,clamp01(0.45+Math.abs(delta)*8),simulationTime,row.id,row.version]);
+  const delta = outcome === 'SUCCESS' ? magnitude : outcome === 'PARTIAL' ? magnitude * 0.30 : 0;
+  const nextImportance = clamp01(Number(row.importance) + delta);
+  const nextConfidence = clamp01(Number(row.confidence) + delta * 0.65);
+  const nextSalience = clamp01(0.45 + Math.abs(delta) * 8);
+  await pool.query(`UPDATE identity_values SET importance=?,confidence=?,salience=?,origin='CAUSAL_EXPERIENCE',updated_simulation_at=?,version=version+1 WHERE id=UUID_TO_BIN(?) AND version=?`, [nextImportance,nextConfidence,nextSalience,simulationTime,row.id,row.version]);
   return { code: valueCode, importance: nextImportance, confidence: nextConfidence };
 }
 
@@ -123,7 +129,7 @@ async function updateRelationshipInfluence({ simulationId, entityId, targetEntit
 async function processExperience({ simulationId, entityId, simulationTime, actionType, outcome, actionId = null, decisionId = null, targetEntityId = null }) {
   const action = normalize(actionType), result = normalize(outcome), base = result === 'SUCCESS' ? 0.78 : result === 'PARTIAL' ? 0.52 : -0.82;
   const desireKey = DESIRES[action] || null, belief = beliefForAction(action), values = VALUES[action] || [];
-  const chain = [], visited = new Set();
+  const chain = [];
   const root = await activate({ simulationId,entityId,simulationTime,sourceType:'EXPERIENCE',sourceKey:`${action}:${result}`,targetType:'MEMORY',targetKey:`${action}:${result}`,activation:base,depth:0,causeType:'ACTION_OUTCOME',causeRef:actionId,metadata:{ decisionId,targetEntityId,outcome:result } });
   if (root) chain.push(root);
   if (root) await updateMemory({ simulationId,entityId,actionType:action,outcome:result,simulationTime,activation:root.activation });
@@ -161,7 +167,7 @@ async function processExperience({ simulationId, entityId, simulationTime, actio
     if (consolidated) { chain.push(consolidated); await updateDesire({ simulationId,entityId,simulationTime,desireKey,actionOutcome:result,activation:consolidated.activation }); }
   }
 
-  return { action, outcome: result, steps: chain.length, chain };
+  return { action, outcome: result, steps: Math.min(chain.length, MAX_STEPS), chain: chain.slice(0, MAX_STEPS) };
 }
 
 async function getCausalMind(simulationId, entityId, limit = 40) {
