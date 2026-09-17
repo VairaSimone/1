@@ -8,7 +8,7 @@ import './Mind.css'
 
 type AttentionItem = { type?: string; title?: string; reason?: string; code?: string; intensity?: number }
 type ConflictItem = { left?: { code?: string; id?: string }; right?: { code?: string; id?: string }; intensity?: number }
-type CommitmentItem = (PromiseItem & { kind: string })
+type CommitmentItem = PromiseItem & { kind: string }
 
 function Metric({ label, value }: { label: string; value: number }) {
   const safe = Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 0
@@ -42,6 +42,7 @@ export function Mind({ simulationId, entityId, onRefresh }: { simulationId: stri
       status: String(o.status ?? 'OPEN'), importance: Number(o.priority ?? o.importance ?? 0.5), createdAt: String(o.createdAt ?? ''), kind: 'OBLIGATION'
     }))
   ]
+  const latestEvolution = data.emergent.evolution[0]
 
   return <div className="mind-page">
     {error && <div className="mind-inline-error"><TriangleAlert size={15} /> {error}</div>}
@@ -91,11 +92,30 @@ export function Mind({ simulationId, entityId, onRefresh }: { simulationId: stri
     </div>
 
     <div className="mind-grid two">
+      <Panel title="Self evolution" eyebrow="EXPERIENCE → SELF MODEL">
+        {latestEvolution ? <div className="mind-narrative"><div><span>{labelize(latestEvolution.triggerType)}</span><strong>{latestEvolution.selfView}</strong><small>{formatSimTime(latestEvolution.simulationTime)}</small></div><div><span>Recent success rate</span><strong>{typeof latestEvolution.metrics?.successRate === 'number' ? pct(latestEvolution.metrics.successRate) : '—'}</strong></div></div> : <EmptyState title="Nessuna evoluzione registrata" text="Le esperienze significative aggiorneranno progressivamente il self model." />}
+      </Panel>
+      <Panel title="Learning evidence" eyebrow="BELIEF REVISION">
+        <div className="mind-belief-list">{data.emergent.evidence.length ? data.emergent.evidence.slice(0, 6).map(item => <div className="mind-belief" key={item.id}><strong>{labelize(item.beliefKey)}</strong><span>{item.polarity > 0 ? '+' : '−'} evidence · {Math.round(item.evidenceStrength * 100)}% · {labelize(item.sourceType)}</span><small>{item.statement || 'Experience updated this belief.'}</small></div>) : <EmptyState title="Nessuna evidenza" text="Le azioni completate inizieranno a lasciare tracce epistemiche." />}</div>
+      </Panel>
+    </div>
+
+    <div className="mind-grid two">
+      <Panel title="Memory consolidation" eyebrow="EPISODIC → SEMANTIC">
+        <div className="mind-narrative">{data.emergent.consolidations.length ? data.emergent.consolidations.map(item => <div key={item.id}><span>{item.sourceCount} experiences</span><strong>{item.summary}</strong><small>{formatSimTime(item.createdAt)}</small></div>) : <EmptyState title="Nessuna regola consolidata" text="Le esperienze ripetute verranno trasformate in conoscenza più stabile." />}</div>
+      </Panel>
+      <Panel title="Counterfactual worlds" eyebrow="BRANCHED FUTURES">
+        <div className="mind-counterfactuals">{data.emergent.worlds.length ? data.emergent.worlds.slice(0, 6).map(world => <div className="mind-counterfactual" key={world.id}><Target size={14} /><div><strong>{labelize(world.worldKey)}</strong><span>{world.status} · utility {world.predictedUtility.toFixed(2)}</span></div><b>{world.selected ? 'chosen' : `regret ${world.regretScore.toFixed(2)}`}</b></div>) : <EmptyState title="Nessun branch" text="Ogni decisione importante può lasciare una traccia delle alternative non scelte." />}</div>
+      </Panel>
+    </div>
+
+    <div className="mind-grid two">
       <Panel title="Autobiographical narrative" eyebrow="LIFE STORY">
         <div className="mind-narrative">{data.narrative.map(chapter => <div key={chapter.id}><span>Chapter {chapter.chapterIndex}</span><strong>{chapter.title}</strong><p>{chapter.summary}</p><small>{formatSimTime(chapter.createdAt)}</small></div>)}</div>
       </Panel>
       <Panel title="Social mind" eyebrow="GROUPS · REPUTATION · OBLIGATIONS">
         <div className="mind-social-summary"><div className="social-kpi"><HeartHandshake size={15} /><strong>{data.social.memberships.length}</strong><span>groups</span></div><div className="social-kpi"><HeartHandshake size={15} /><strong>{data.social.reputations.length}</strong><span>reputations</span></div><div className="social-kpi"><HeartHandshake size={15} /><strong>{commitments.length}</strong><span>open commitments</span></div></div>
+        {data.emergent.groups.length > 0 && <div className="mind-commitments">{data.emergent.groups.map(group => <div key={group.id}><span>{labelize(group.groupType)}</span><strong>{group.name}</strong><small>{labelize(group.role || 'MEMBER')}</small></div>)}</div>}
         <div className="mind-commitments">{commitments.slice(0, 8).map((item, index) => <div key={`${item.id}-${index}`}><span>{item.kind}</span><strong>{item.title}</strong><small>{item.dueSimulationAt || 'No deadline'}</small></div>)}</div>
       </Panel>
     </div>
