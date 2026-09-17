@@ -1,19 +1,18 @@
 const fs = require("fs");
 const path = require("path");
 const zlib = require("zlib");
+const crypto = require("crypto");
 const mysql = require("mysql2/promise");
 const { env } = require("../config/env");
 const logger = require("../lib/logger");
 
-const SCHEMA_PARTS = [
-  "schema.sql.gz.b64.001",
-  "schema.sql.gz.b64.002a",
-  "schema.sql.gz.b64.002b",
-  "schema.sql.gz.b64.003a",
-  "schema.sql.gz.b64.003b",
-  "schema.sql.gz.b64.004",
-  "schema.sql.gz.b64.005"
-].map((name) => path.resolve(__dirname, "../../database", name));
+const DATABASE_DIR = path.resolve(__dirname, "../../database");
+const SCHEMA_PARTS = Array.from({ length: 19 }, (_, index) =>
+  path.join(DATABASE_DIR, `canonical-schema.b64.${String(index + 1).padStart(2, "0")}`)
+);
+const EXPECTED_SCHEMA_SHA256 = "b702e7aea39ed8aa54fb75fa8db0949acbf7fb3370512c2f0e55ed06ae46747b";
+const EXPECTED_SCHEMA_GZIP_SHA256 = "8ce8d37aa78c6a1fba38a2fa333ba7553e927366fb545d92a879585dbc351174";
+const INIT_LOCK_NAME = "asami:schema-init";
 
 function quoteIdentifier(value) {
   if (!/^[A-Za-z0-9_$-]+$/.test(value)) {
@@ -22,7 +21,7 @@ function quoteIdentifier(value) {
   return `\`${value.replace(/`/g, "``")}\``;
 }
 
-function buildSchemaSql() {
+function loadSchemaSql() {
   const encoded = SCHEMA_PARTS.map((filePath) => {
     if (!fs.existsSync(filePath)) {
       throw new Error(`Database schema snapshot part not found: ${filePath}`);
@@ -30,14 +29,26 @@ function buildSchemaSql() {
     return fs.readFileSync(filePath, "utf8").trim();
   }).join("");
 
-  const dump = zlib.gunzipSync(Buffer.from(encoded, "base64")).toString("utf8");
+  const compressed = Buffer.from(encoded, "base64");
+  const gzipSha256 = crypto.createHash("sha256").update(compressed).digest("hex");
+  if (gzipSha256 !== EXPECTED_SCHEMA_GZIP_SHA256) {
+    throw new Error(`Database schema gzip integrity check failed: expected ${EXPECTED_SCHEMA_GZIP_SHA256}, got ${gzipSha256}`);
+  }
+
+  const dump = zlib.gunzipSync(compressed);
+  const schemaSha256 = crypto.createHash("sha256").update(dump).digest("hex");
+  if (schemaSha256 !== EXPECTED_SCHEMA_SHA256) {
+    throw new Error(`Database schema integrity check failed: expected ${EXPECTED_SCHEMA_SHA256}, got ${schemaSha256}`);
+  }
+
+  const sql = dump.toString("utf8");
   const databaseName = quoteIdentifier(env.DB_NAME);
   const createPattern = /CREATE DATABASE(\s+IF NOT EXISTS\s+)`asami`/;
-  if (!createPattern.test(dump) || !/^USE `asami`;/m.test(dump)) {
+  if (!createPattern.test(sql) || !/^USE `asami`;/m.test(sql)) {
     throw new Error("Invalid Asami schema snapshot: expected CREATE DATABASE/USE for `asami`");
   }
 
-  return dump
+  return sql
     .replace(createPattern, (_, spacing) => `CREATE DATABASE${spacing}${databaseName}`)
     .replace(/^USE `asami`;/m, `USE ${databaseName};`);
 }
@@ -53,19 +64,27 @@ async function ensureDatabase() {
     timezone: "Z"
   });
 
+  let lockAcquired = false;
   try {
+    const [lockRows] = await connection.query("SELECT GET_LOCK(?, 30) AS acquired", [INIT_LOCK_NAME]);
+    lockAcquired = lockRows[0]?.acquired === 1;
+    if (!lockAcquired) throw new Error("Could not acquire database initialization lock within 30 seconds");
+
     const [rows] = await connection.query(
       "SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME = ? LIMIT 1",
       [env.DB_NAME]
     );
     if (rows.length > 0) return false;
 
-    await connection.query(buildSchemaSql());
-    logger.info({ database: env.DB_NAME }, "database created from schema snapshot");
+    await connection.query(loadSchemaSql());
+    logger.info({ database: env.DB_NAME }, "database created from canonical schema snapshot");
     return true;
   } finally {
+    if (lockAcquired) {
+      try { await connection.query("SELECT RELEASE_LOCK(?)", [INIT_LOCK_NAME]); } catch {}
+    }
     await connection.end();
   }
 }
 
-module.exports = { ensureDatabase };
+module.exports = { ensureDatabase, EXPECTED_SCHEMA_SHA256 };
