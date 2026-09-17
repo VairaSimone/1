@@ -2,6 +2,25 @@ const { pool, withTransaction } = require("../db/pool");
 const { uuid } = require("../lib/ids");
 const { env } = require("../config/env");
 
+const DEFAULT_ASAMI_PERSONALITY = {
+  OPENNESS: .72,
+  EXTRAVERSION: .58,
+  CURIOSITY: .80,
+  CONFIDENCE: .58,
+  EMPATHY: .70,
+  SOCIABILITY: .62,
+  CONSCIENTIOUSNESS: .62,
+  DISCIPLINE: .58,
+  PATIENCE: .56,
+  INDEPENDENCE: .46,
+  IMPULSIVITY: .42,
+  CREATIVITY: .68,
+  RISK_TAKING: .42,
+  NEUROTICISM: .40,
+  SELF_CARE: .62,
+  AGREEABLENESS: .68
+};
+
 async function listSimulations() {
   const [rows] = await pool.query(`
     SELECT BIN_TO_UUID(id) AS id, name, status,
@@ -79,7 +98,7 @@ async function createSimulation({ name, startedSimulationAt, asami }) {
     const [[needDefs],[emotionDefs],[traitDefs],[skillDefs]] = await Promise.all([
       conn.query("SELECT id,default_value FROM need_definitions WHERE active=1"),
       conn.query("SELECT id,default_value FROM emotion_definitions WHERE active=1"),
-      conn.query("SELECT id,default_value FROM trait_definitions WHERE active=1"),
+      conn.query("SELECT id,code,default_value FROM trait_definitions WHERE active=1"),
       conn.query("SELECT id FROM skill_definitions WHERE active=1")
     ]);
     for (const d of needDefs) await conn.query(
@@ -88,9 +107,15 @@ async function createSimulation({ name, startedSimulationAt, asami }) {
     for (const d of emotionDefs) await conn.query(
       `INSERT INTO entity_emotions_current(entity_id,emotion_id,intensity,updated_simulation_at,version)
        VALUES(UUID_TO_BIN(?),?,?,?,1)`,[asamiEntityId,d.id,d.default_value,t]);
-    for (const d of traitDefs) await conn.query(
-      `INSERT INTO entity_traits_current(entity_id,trait_id,value,updated_simulation_at,version)
-       VALUES(UUID_TO_BIN(?),?,?,?,1)`,[asamiEntityId,d.id,d.default_value,t]);
+    for (const d of traitDefs) {
+      const initialValue = Object.prototype.hasOwnProperty.call(DEFAULT_ASAMI_PERSONALITY,String(d.code||"").toUpperCase())
+        ? DEFAULT_ASAMI_PERSONALITY[String(d.code).toUpperCase()]
+        : d.default_value;
+      await conn.query(
+        `INSERT INTO entity_traits_current(entity_id,trait_id,value,updated_simulation_at,version)
+         VALUES(UUID_TO_BIN(?),?,?,?,1)`,[asamiEntityId,d.id,initialValue,t]
+      );
+    }
     for (const d of skillDefs) await conn.query(
       `INSERT INTO entity_skills(entity_id,skill_id,updated_simulation_at,version)
        VALUES(UUID_TO_BIN(?),?, ?,1)`,
@@ -168,18 +193,13 @@ async function changeSpeed(id, speed, simulationTime) {
     if (!current.length) throw Object.assign(new Error("No active clock segment"), { code: "CLOCK_NOT_ACTIVE" });
 
     const c = current[0];
-
     const requestedTime = new Date(simulationTime);
     const anchorTime = new Date(c.simulation_anchor_at);
-
-    const endSimulationTime =
-      requestedTime < anchorTime ? anchorTime : requestedTime;
+    const endSimulationTime = requestedTime < anchorTime ? anchorTime : requestedTime;
 
     await conn.query(`
       UPDATE simulation_clock_segments
-      SET status='CLOSED',
-          ended_real_at=UTC_TIMESTAMP(3),
-          ended_simulation_at=?
+      SET status='CLOSED',ended_real_at=UTC_TIMESTAMP(3),ended_simulation_at=?
       WHERE id=?
     `, [endSimulationTime, c.id]);
 
@@ -189,7 +209,6 @@ async function changeSpeed(id, speed, simulationTime) {
         (id,simulation_id,real_anchor_at,simulation_anchor_at,speed,status,created_real_at)
       VALUES (UUID_TO_BIN(?),UUID_TO_BIN(?),UTC_TIMESTAMP(3),?,?,'ACTIVE',UTC_TIMESTAMP(3))
     `, [segmentId, id, simulationTime, speed]);
-
     return getSimulation(id, conn);
   });
 }
@@ -229,7 +248,6 @@ async function advanceAndCreateTick(id, nowSimulation, version, tickType, engine
         (id,simulation_id,simulation_time,real_started_at,tick_type,status,engine_version)
       VALUES (UUID_TO_BIN(?),UUID_TO_BIN(?),?,UTC_TIMESTAMP(3),?,'RUNNING',?)
     `, [tickId, id, nowSimulation, tickType, engineVersion]);
-
     return tickId;
   });
 }
@@ -260,7 +278,6 @@ async function finishTick(tickId, status = "COMPLETED") {
   if (!allowedStatuses.has(finalStatus)) {
     throw Object.assign(new Error(`Invalid simulation tick status: ${String(finalStatus)}`), { code: "INVALID_TICK_STATUS" });
   }
-
   await pool.query(`
     UPDATE simulation_ticks
     SET status=?, real_finished_at=UTC_TIMESTAMP(3)
