@@ -5,6 +5,7 @@ const { listEvents,listTimeline } = require("../services/event-service");
 const { listMemories } = require("../services/memory-service");
 const { getRelationships } = require("../services/relationship-service");
 const { getDevelopment,getDevelopmentHistory } = require("../services/development-service");
+const { analyzeSimulation } = require("../services/analysis-service");
 const { sendMessage } = require("../services/chat-service");
 const { getUsage } = require("../services/gemini-budget-service");
 const { simulationCreate, speed, message, uuid, queryLimit } = require("./validation");
@@ -95,6 +96,9 @@ function buildRouter({hub,gemini}){
     const dashboard=await entityRepo.getDashboard(uuid.parse(req.params.simulationId),uuid.parse(req.params.entityId));
     if(!dashboard)return res.status(404).json({error:"Entity not found"});
     res.json(dashboard);
+  });
+  router.get("/simulations/:simulationId/analysis",async(req,res)=>{
+    res.json(await analyzeSimulation(uuid.parse(req.params.simulationId),{from:req.query.from,to:req.query.to}));
   });
   router.get("/simulations/:simulationId/timeline",async(req,res)=>{
     const simulationId=uuid.parse(req.params.simulationId);
