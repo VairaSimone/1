@@ -13,7 +13,6 @@ import { Chat } from './pages/Chat'
 import { Mind } from './pages/Mind'
 import { NewSimulation } from './pages/NewSimulation'
 import { useSimulation } from './hooks/useSimulation'
-import { labelize } from './lib/format'
 
 export type View = 'overview' | 'analysis' | 'timeline' | 'memory' | 'mind' | 'relationships' | 'development' | 'chat'
 
