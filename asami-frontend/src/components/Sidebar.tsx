@@ -1,9 +1,8 @@
-import { BrainCircuit, Clock3, Database, HeartHandshake, History, LayoutDashboard, MessageCircle, Plus, Sparkles, Users } from 'lucide-react'
+import { BrainCircuit, Clock3, Database, HeartHandshake, History, LayoutDashboard, MessageCircle, Plus, Sparkles, Users, Activity } from 'lucide-react'
 import type { Simulation } from '../types'
 import { formatSimTime } from '../lib/format'
 import { Brand } from './Brand'
-
-type View = 'overview' | 'timeline' | 'memory' | 'relationships' | 'development' | 'chat'
+import type { View } from '../App'
 
 interface Props {
   simulations: Simulation[]
@@ -17,6 +16,7 @@ interface Props {
 export function Sidebar({ simulations, simulation, view, setView, onSimulationChange, onNewSimulation }: Props) {
   const nav = [
     ['overview', LayoutDashboard, 'Control room'],
+    ['analysis', Activity, 'Analysis'],
     ['timeline', History, 'Timeline'],
     ['memory', BrainCircuit, 'Memory'],
     ['relationships', HeartHandshake, 'Relationships'],
