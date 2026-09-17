@@ -45,7 +45,7 @@ function ActivityChart({ series }: { series: AnalysisData['series'] }) {
   const x = (i: number) => padX + (i / Math.max(1, series.length - 1)) * (width - padX * 2)
   const y = (value: number) => height - padY - (value / max) * (height - padY * 2)
   const line = (key: 'events' | 'actions' | 'failedTicks') => series.map((p, i) => `${i === 0 ? 'M' : 'L'} ${x(i).toFixed(1)} ${y(p[key]).toFixed(1)}`).join(' ')
-  return <div className="analysis-chart-wrap"><svg className="analysis-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Attività simulazione nel tempo"><line x1={padX} x2={width - padX} y1={height - padY} y2={height - padY} className="chart-axis" /><path d={line('events')} className="chart-line events-line" /><path d={line('actions')} className="chart-line actions-line" /><path d={line('failedTicks')} className="chart-line failures-line" />{series.map((p, i) => <circle key={p.at} cx={x(i)} cy={y(p.events)} r="2.6" className="chart-dot" />)}</svg><div className="chart-legend"><span><i className="legend-dot events" /> Eventi</span><span><i className="legend-dot actions" /> Azioni</span><span><i className="legend-dot failures" /> Tick falliti</span></div><div className="chart-labels"><span>{formatSimTime(series[0].at)}</span><span>{formatSimTime(series[series.length - 1].at)}</span></div></div>
+  return <div className="analysis-chart-wrap"><svg className="analysis-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Attività simulazione nel tempo"><line x1={padX} x2={width - padX} y1={height - padY} y2={height - padY} className="chart-axis" /><path d={line('events')} className="chart-line events-line" /><path d={line('actions')} className="chart-line actions-line" /><path d={line('failedTicks')} className="chart-line failures-line" />{series.map((p) => <circle key={p.at} cx={x(series.indexOf(p))} cy={y(p.events)} r="2.6" className="chart-dot" />)}</svg><div className="chart-legend"><span><i className="legend-dot events" /> Eventi</span><span><i className="legend-dot actions" /> Azioni</span><span><i className="legend-dot failures" /> Tick falliti</span></div><div className="chart-labels"><span>{formatSimTime(series[0].at)}</span><span>{formatSimTime(series[series.length - 1].at)}</span></div></div>
 }
 
 export function Analysis({ simulationId, currentSimulationAt, onRefresh }: { simulationId: string; currentSimulationAt: string; onRefresh?: () => void }) {
@@ -98,7 +98,7 @@ export function Analysis({ simulationId, currentSimulationAt, onRefresh }: { sim
     {error && <div className="analysis-alert critical"><ShieldAlert size={18} /><div><strong>Analisi non disponibile</strong><span>{error}</span></div></div>}
 
     {data && <>
-      {headline && <div className={`analysis-alert ${headline.cls}`}>{headline.icon}<div><strong>{headline.text}</strong><span>{formatSimTime(data.range.from)} → {formatSimTime(data.range.to)}</span></div><span className="analysis-alert-count">{data.anomalies.length} anomalie</span></div>}
+      {headline && <div className={`analysis-alert ${headline.cls}`}>{headline.icon}<div><strong>{headline.text}</strong><span>{formatSimTime(data.range.from)} → {formatSimTime(data.range.to)}</span></div><span className="analysis-alert-count">{data.anomalies.length} segnali</span></div>}
 
       <div className="analysis-kpis">
         <div className="analysis-kpi"><div className="kpi-icon"><Timer size={17} /></div><span>Tick elaborati</span><strong>{data.kpis.ticks.total}</strong><small>{data.kpis.ticks.failed} falliti · {data.kpis.ticks.skipped} saltati</small></div>
@@ -123,7 +123,7 @@ export function Analysis({ simulationId, currentSimulationAt, onRefresh }: { sim
 
       <div className="analysis-grid three">
         <Panel title="Qualità delle azioni" eyebrow="OUTCOMES"><div className="outcome-grid"><div><strong>{data.kpis.actions.completed}</strong><span>completate</span></div><div><strong>{data.kpis.actions.failed}</strong><span>fallite</span></div><div><strong>{formatDuration(data.kpis.actions.avgDurationSeconds)}</strong><span>durata media</span></div></div></Panel>
-        <Panel title="Eventi importanti" eyebrow="SIGNALS"><div className="signal-stack"><div><span>Importanza media</span><strong>{pct(data.kpis.events.avgImportance)}</strong></div><div><span>Massima importanza</span><strong>{pct(data.kpis.events.maxImportance)}</strong></div><div><span>Eventi con causa</span><strong>{data.kpis.events.withCause}</strong></div></div></Panel>
+        <Panel title="Eventi importanti" eyebrow="SIGNALS"><div className="signal-stack"><div><span>Importanza media</span><strong>{pct(data.kpis.events.avgImportance)}</strong></div><div><span>Massima importanza</span><strong>{pct(data.kpis.events.maxImportance)}</strong></div><div><span>Totale eventi</span><strong>{data.kpis.events.total}</strong></div></div></Panel>
         <Panel title="Controllo temporale" eyebrow="CONSISTENCY"><div className="signal-stack"><div><span>Tick completati</span><strong>{data.kpis.ticks.completionRate}%</strong></div><div><span>Durate sospette</span><strong>{data.kpis.actions.suspiciousDuration}</strong></div><div><span>Sequenze temporali anomale</span><strong>{data.kpis.integrity.temporal}</strong></div></div></Panel>
       </div>
     </>}
