@@ -89,3 +89,5 @@ La sola struttura aggiunta automaticamente dal backend è `gemini_usage`, usata 
 ```bash
 npm test
 ```
+
+<!-- audit-trigger -->
