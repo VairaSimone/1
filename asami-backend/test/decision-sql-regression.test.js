@@ -47,5 +47,6 @@ test("16-byte UUID buffers are converted to canonical UUID strings", () => {
 test("unrelated SQL is not modified", () => {
   const sql = "SELECT * FROM decisions WHERE id=UUID_TO_BIN(?)";
   assert.equal(fixDecisionInsertSql(sql), sql);
-  assert.equal(normalizeQueryValues(sql, ["x", Buffer.alloc(16)]), ["x", Buffer.alloc(16)]);
+  const values = ["x", Buffer.alloc(16)];
+  assert.deepEqual(normalizeQueryValues(sql, values), values);
 });
