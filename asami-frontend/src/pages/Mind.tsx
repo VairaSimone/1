@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Brain, Compass, HeartHandshake, Lightbulb, RefreshCw, Sparkles, Target, TriangleAlert } from 'lucide-react'
+import { Brain, Compass, GitBranch, HeartHandshake, Lightbulb, RefreshCw, Sparkles, Target, TriangleAlert } from 'lucide-react'
 import { EmptyState, Panel } from '../components/Ui'
 import { api } from '../lib/api'
 import { formatSimTime, labelize, pct } from '../lib/format'
@@ -43,6 +43,8 @@ export function Mind({ simulationId, entityId, onRefresh }: { simulationId: stri
     }))
   ]
   const latestEvolution = data.emergent.evolution[0]
+  const causalActivations = data.causal.activations || []
+  const causalLinks = data.causal.links || []
 
   return <div className="mind-page">
     {error && <div className="mind-inline-error"><TriangleAlert size={15} /> {error}</div>}
@@ -88,6 +90,20 @@ export function Mind({ simulationId, entityId, onRefresh }: { simulationId: stri
       </Panel>
       <Panel title="Counterfactuals" eyebrow="WHAT ELSE COULD I HAVE DONE">
         <div className="mind-counterfactuals">{data.counterfactuals.length ? data.counterfactuals.slice(0, 6).map(c => <div className="mind-counterfactual" key={c.id}><Target size={14} /><div><strong>{labelize(c.alternativeAction)}</strong><span>Predicted utility {c.predictedUtility.toFixed(2)}</span></div><b>regret {c.regretScore.toFixed(2)}</b></div>) : <EmptyState title="Nessun controfattuale" text="Il sistema salva alternative rilevanti quando Asami prende una decisione." />}</div>
+      </Panel>
+    </div>
+
+    <div className="mind-grid two">
+      <Panel title="Causal mind" eyebrow="EXPERIENCE → MEMORY → BELIEF → DESIRE → VALUE">
+        {causalActivations.length ? <div className="mind-causal-list">{causalActivations.slice(0, 8).map(item => <div className="mind-causal" key={item.id}><GitBranch size={14} /><div><strong>{labelize(item.sourceType)} · {labelize(item.sourceKey)}</strong><span>→ {labelize(item.targetType)} · {labelize(item.targetKey)}</span></div><b>{item.activation >= 0 ? '+' : '−'}{Math.abs(item.activation).toFixed(2)}</b></div>)}</div> : <EmptyState title="Nessuna catena causale" text="Quando le esperienze vengono propagate, qui comparirà il percorso che ha cambiato la mente di Asami." />}
+        <div className="mind-causal-footer"><span>{causalActivations.length} recent activations · {causalLinks.length} learned links</span></div>
+      </Panel>
+      <Panel title="Causal trajectory" eyebrow="HOW CHANGE PERSISTS">
+        <div className="mind-causal-explain">
+          <div><span>Latest cause</span><strong>{causalActivations[0] ? `${labelize(causalActivations[0].sourceType)} → ${labelize(causalActivations[0].targetType)}` : '—'}</strong></div>
+          <div><span>Deepest propagation</span><strong>{causalActivations.length ? `${Math.max(...causalActivations.map(a => Number(a.depth || 0)))} levels` : '—'}</strong></div>
+          <div><span>Most reinforced link</span><strong>{causalLinks[0] ? `${labelize(causalLinks[0].sourceKey)} → ${labelize(causalLinks[0].targetKey)}` : '—'}</strong></div>
+        </div>
       </Panel>
     </div>
 
