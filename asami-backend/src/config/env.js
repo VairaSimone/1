@@ -29,7 +29,11 @@ const Env = z.object({
   GEMINI_MONTHLY_BUDGET_USD: z.coerce.number().positive().default(10),
   GEMINI_DAILY_MAX_REQUESTS: z.coerce.number().int().positive().default(100),
   GEMINI_MONTHLY_MAX_REQUESTS: z.coerce.number().int().positive().default(2500),
-  GEMINI_AUTONOMY_MIN_INTERVAL_MINUTES: z.coerce.number().nonnegative().default(60),
+  GEMINI_AUTONOMY_MIN_INTERVAL_MINUTES: z.preprocess((value)=>{
+    if(value===undefined||value===null||String(value).trim()==="")return 60;
+    const n=Number(value);
+    return Number.isFinite(n)?Math.min(60,Math.max(1,n)):value;
+  },z.coerce.number().nonnegative().default(60)),
   GEMINI_DAILY_PACING_GRACE_MINUTES: z.coerce.number().nonnegative().default(10),
   GEMINI_PROACTIVE_EVERY_TICKS: z.coerce.number().int().positive().default(90),
   WORLD_EVENT_RATE_PER_SIM_HOUR: z.coerce.number().nonnegative().default(0.25),
