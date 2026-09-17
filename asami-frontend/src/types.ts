@@ -30,6 +30,12 @@ export interface Expectation { id: string; decisionId: string; actionType: strin
 export interface Counterfactual { id: string; decisionId: string; alternativeAction: string; predictedOutcome: unknown; predictedUtility: number; regretScore: number; createdAt: string }
 export interface PromiseItem { id: string; title: string; description: string | null; targetEntityId: string | null; dueSimulationAt: string | null; status: string; importance: number; createdAt: string }
 export interface SocialMind { memberships: Array<Record<string, unknown>>; reputations: Array<Record<string, unknown>>; obligations: Array<Record<string, unknown>>; norms: Array<Record<string, unknown>> }
+export interface EmergentSnapshot { id: string; simulationTime: string; triggerType: string; selfView: string; capabilities?: Record<string, unknown>; limitations?: string[]; metrics?: Record<string, unknown> }
+export interface BeliefEvidence { id: string; beliefKey: string; polarity: number; evidenceStrength: number; sourceType: string; statement?: string | null; createdAt: string; metadata?: Record<string, unknown> }
+export interface MemoryConsolidation { id: string; consolidationKey: string; sourceCount: number; sourceFrom: string | null; sourceTo: string | null; summary: string; confidence: number; createdAt: string }
+export interface CounterfactualWorld { id: string; decisionId: string; worldKey: string; selected: number; predictedState?: Record<string, unknown>; predictedUtility: number; actualOutcome?: string | null; regretScore: number; status: string; createdAt: string; resolvedAt?: string | null }
+export interface SocialGroup { id: string; name: string; groupType: string; status: string; role?: string | null; joinedAt: string }
+export interface EmergentMind { evolution: EmergentSnapshot[]; evidence: BeliefEvidence[]; consolidations: MemoryConsolidation[]; worlds: CounterfactualWorld[]; groups: SocialGroup[] }
 export interface MindData {
   self: { id: string; identitySummary: string; selfConcept: string; capabilities: unknown; aspirations: unknown; limitations: unknown; currentSelfView: string | null; version: number; updatedAt: string } | null
   values: MindValue[]
@@ -41,6 +47,7 @@ export interface MindData {
   counterfactuals: Counterfactual[]
   promises: PromiseItem[]
   social: SocialMind
+  emergent: EmergentMind
 }
 
 export type AnalysisRangePreset = '1h' | '6h' | '24h' | '7d' | 'all' | 'custom'
