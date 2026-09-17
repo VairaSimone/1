@@ -4,6 +4,7 @@ const express = require("express");
 const { WebSocketServer } = require("ws");
 require("./services/runtime-enhancements").install();
 require("./services/memory-normalization-bootstrap").install();
+require("./services/behavioral-policy-bootstrap").install();
 const { env } = require("./config/env");
 const logger = require("./lib/logger");
 const { ping, close } = require("./db/pool");
