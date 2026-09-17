@@ -22,6 +22,7 @@ function parseJson(value, fallback = null) {
 function normalizeKey(value, max = 50) {
   return safeText(value, max).toUpperCase().replace(/\s+/g, '_');
 }
+async function resolveEntityIdInSimulation(simulationId,entityId){if(!entityId)return null;const[rows]=await pool.query(`SELECT BIN_TO_UUID(id) AS id FROM entities WHERE simulation_id=UUID_TO_BIN(?) AND id=UUID_TO_BIN(?) LIMIT 1`,[simulationId,entityId]);return rows[0]?.id||null;}
 
 async function getCognitiveProfile(simulationId, entityId) {
   const [[entityRows], [preferences], [beliefs], [knowledge], [habits], [plans]] = await Promise.all([
@@ -74,7 +75,7 @@ async function updateMentalState(simulationId, entityId, simulationTime, patch =
 }
 
 async function upsertPreference({ simulationId, entityId, simulationTime, item }) {
-  const targetType=normalizeKey(item?.targetType||item?.topic||'TOPIC',50),targetEntityId=item?.targetEntityId||null,value=clampSigned(item?.value??item?.preferenceValue,1,0),strength=clamp01(item?.strength,.5),confidence=clamp01(item?.confidence,.5);if(!targetType)return null;
+  const targetType=normalizeKey(item?.targetType||item?.topic||'TOPIC',50),rawTargetEntityId=item?.targetEntityId||null,targetEntityId=await resolveEntityIdInSimulation(simulationId,rawTargetEntityId),value=clampSigned(item?.value??item?.preferenceValue,1,0),strength=clamp01(item?.strength,.5),confidence=clamp01(item?.confidence,.5);if(!targetType||rawTargetEntityId&&!targetEntityId)return null;
   let rows;
   if(targetEntityId)[rows]=await pool.query(`SELECT BIN_TO_UUID(id) AS id,version,preference_value,strength,confidence FROM preferences WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND target_type=? AND target_entity_id=UUID_TO_BIN(?) ORDER BY updated_simulation_at DESC LIMIT 1`,[simulationId,entityId,targetType,targetEntityId]);
   else [rows]=await pool.query(`SELECT BIN_TO_UUID(id) AS id,version,preference_value,strength,confidence FROM preferences WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND target_type=? AND target_entity_id IS NULL ORDER BY updated_simulation_at DESC LIMIT 1`,[simulationId,entityId,targetType]);
@@ -83,13 +84,13 @@ async function upsertPreference({ simulationId, entityId, simulationTime, item }
 }
 
 async function upsertBelief({ simulationId, entityId, simulationTime, item }) {
-  const predicate=safeText(item?.predicate,150);if(!predicate)return null;const subjectEntityId=item?.subjectEntityId||null,objectValue=item?.objectValue??item?.value??null;if(objectValue===null||objectValue===undefined)return null;
+  const predicate=safeText(item?.predicate,150);if(!predicate)return null;const rawSubjectEntityId=item?.subjectEntityId||null,subjectEntityId=await resolveEntityIdInSimulation(simulationId,rawSubjectEntityId),objectValue=item?.objectValue??item?.value??null;if(rawSubjectEntityId&&!subjectEntityId||objectValue===null||objectValue===undefined)return null;
   const[rows]=await pool.query(`SELECT BIN_TO_UUID(id) AS id,version,object_value,confidence,importance,status FROM beliefs WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND predicate=? AND ((subject_entity_id=UUID_TO_BIN(?)) OR (subject_entity_id IS NULL AND ? IS NULL)) ORDER BY updated_simulation_at DESC LIMIT 1`,[simulationId,entityId,predicate,subjectEntityId,subjectEntityId]);
   const confidence=clamp01(item?.confidence,.55),importance=clamp01(item?.importance,.55);if(!rows.length){const id=uuid();await pool.query(`INSERT INTO beliefs(id,simulation_id,entity_id,subject_entity_id,predicate,object_value,confidence,importance,status,created_simulation_at,updated_simulation_at,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,CAST(? AS JSON),?,?, 'ACTIVE',?,?,1)`,[id,simulationId,entityId,subjectEntityId,predicate,JSON.stringify(objectValue),confidence,importance,simulationTime,simulationTime]);return id;}const current=rows[0],nextConfidence=clamp01(Number(current.confidence)*.7+confidence*.3),nextImportance=Math.max(Number(current.importance),importance),[updated]=await pool.query(`UPDATE beliefs SET object_value=CAST(? AS JSON),confidence=?,importance=?,status='REVISED',updated_simulation_at=?,version=version+1 WHERE id=UUID_TO_BIN(?) AND version=?`,[JSON.stringify(objectValue),nextConfidence,nextImportance,simulationTime,current.id,current.version]);return updated.affectedRows?current.id:null;
 }
 
 async function upsertKnowledge({ simulationId, entityId, simulationTime, item }) {
-  const content=safeText(item?.content,1000);if(!content)return null;const knowledgeType=normalizeKey(item?.knowledgeType||item?.type||'CONVERSATION',50),predicate=safeText(item?.predicate,150)||null,subjectEntityId=item?.subjectEntityId||entityId,objectEntityId=item?.objectEntityId||null,confidence=clamp01(item?.confidence,.6),importance=clamp01(item?.importance,.55);
+  const content=safeText(item?.content,1000);if(!content)return null;const knowledgeType=normalizeKey(item?.knowledgeType||item?.type||'CONVERSATION',50),predicate=safeText(item?.predicate,150)||null,rawSubjectEntityId=item?.subjectEntityId||entityId,rawObjectEntityId=item?.objectEntityId||null,subjectEntityId=await resolveEntityIdInSimulation(simulationId,rawSubjectEntityId),objectEntityId=await resolveEntityIdInSimulation(simulationId,rawObjectEntityId),confidence=clamp01(item?.confidence,.6),importance=clamp01(item?.importance,.55);if(!subjectEntityId)return null;
   const semanticDedup=knowledgeType==='WORLD_EXPERIENCE'&&predicate;
   const existingQuery=semanticDedup
     ? `SELECT BIN_TO_UUID(ki.id) AS id,ek.version,ek.confidence,ek.importance FROM knowledge_items ki JOIN entity_knowledge ek ON ek.knowledge_item_id=ki.id AND ek.entity_id=UUID_TO_BIN(?) WHERE ki.simulation_id=UUID_TO_BIN(?) AND ki.knowledge_type=? AND ki.predicate=? AND ((ki.subject_entity_id=UUID_TO_BIN(?)) OR (ki.subject_entity_id IS NULL AND ? IS NULL)) AND ((ki.object_entity_id=UUID_TO_BIN(?)) OR (ki.object_entity_id IS NULL AND ? IS NULL)) ORDER BY ek.learned_simulation_at DESC LIMIT 1`
