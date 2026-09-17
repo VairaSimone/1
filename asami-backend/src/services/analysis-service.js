@@ -36,7 +36,7 @@ async function analyzeSimulation(simulationId, { from, to } = {}) {
   const [
     [ticks], [actions], [events], [decisions], [memories],
     [actionBreakdown], [eventBreakdown], [decisionBreakdown], [seriesRows],
-    [temporalRows], [invalidRows], [memoryFailureRows], [causeRows]
+    [temporalRows], [invalidRows], [memoryFailureRows]
   ] = await Promise.all([
     pool.query(`SELECT COUNT(*) total,
       SUM(status='COMPLETED') completed,
@@ -81,9 +81,7 @@ async function analyzeSimulation(simulationId, { from, to } = {}) {
       FROM events e WHERE e.simulation_id=UUID_TO_BIN(?)${eventRange.where}`, [simulationId, ...eventRange.params]),
     pool.query(`SELECT COUNT(*) failures FROM memories m WHERE m.simulation_id=UUID_TO_BIN(?)${memoryRange.where}
       AND (LOWER(COALESCE(JSON_UNQUOTE(JSON_EXTRACT(m.metadata,'$.kind')),'')) IN ('resource_failure','action_failure')
-           OR LOWER(COALESCE(JSON_UNQUOTE(JSON_EXTRACT(m.metadata,'$.outcome')),''))='failure')`, [simulationId, ...memoryRange.params]),
-    pool.query(`SELECT COUNT(*) withCause FROM events e WHERE e.simulation_id=UUID_TO_BIN(?)${eventRange.where}
-      AND EXISTS (SELECT 1 FROM event_causes ec WHERE ec.event_id=e.id AND ec.simulation_id=e.simulation_id)`, [simulationId, ...eventRange.params])
+           OR LOWER(COALESCE(JSON_UNQUOTE(JSON_EXTRACT(m.metadata,'$.outcome')),''))='failure')`, [simulationId, ...memoryRange.params])
   ]);
 
   const tick = ticks[0] || {}, action = actions[0] || {}, event = events[0] || {}, decision = decisions[0] || {}, memory = memories[0] || {};
@@ -106,9 +104,10 @@ async function analyzeSimulation(simulationId, { from, to } = {}) {
   const [highlightRows] = await pool.query(`
     SELECT * FROM (
       SELECT e.simulation_at at,'EVENT' kind,BIN_TO_UUID(e.id) id,e.title title,
-             COALESCE(e.description,'Evento registrato') description,
+             COALESCE(e.description,et.code,'Evento registrato') description,
              CASE WHEN COALESCE(e.importance,0)>=0.9 THEN 'WARNING' ELSE 'INFO' END severity
-      FROM events e WHERE e.simulation_id=UUID_TO_BIN(?)${eventRange.where}
+      FROM events e JOIN event_types et ON et.id=e.event_type_id
+      WHERE e.simulation_id=UUID_TO_BIN(?)${eventRange.where}
       UNION ALL
       SELECT a.started_simulation_at at,'ACTION' kind,BIN_TO_UUID(a.id) id,
              CONCAT(a.action_type,' · ',a.status) title,
@@ -122,7 +121,7 @@ async function analyzeSimulation(simulationId, { from, to } = {}) {
     kpis: {
       ticks: { total: number(tick.total), completed: number(tick.completed), failed: failedTicks, skipped: number(tick.skipped), completionRate: rate(number(tick.completed), number(tick.total)) },
       actions: { total: number(action.total), completed: number(action.completed), failed: failedActions, successRate: rate(number(action.completed), number(action.total)), avgDurationSeconds: action.avgDurationSeconds === null ? null : number(action.avgDurationSeconds), suspiciousDuration },
-      events: { total: number(event.total), important: number(event.important), avgImportance: number(event.avgImportance), maxImportance: number(event.maxImportance), withCause: number(causeRows[0]?.withCause) },
+      events: { total: number(event.total), important: number(event.important), avgImportance: number(event.avgImportance), maxImportance: number(event.maxImportance) },
       decisions: { total: number(decision.total), failed: failedDecisionCount },
       memories: { total: number(memory.total), failures: number(memoryFailureRows[0]?.failures) },
       integrity: { temporal: temporal + invalidImportance }
