@@ -100,7 +100,7 @@ async function updateDesire({ simulationId, entityId, simulationTime, desireKey,
   const nextProgress = clamp01(Number(row.progress) + progressDelta);
   const nextPriority = clamp01(Number(row.priority) + priorityDelta);
   const nextPersistence = clamp01(Number(row.persistence) + persistenceDelta);
-  await pool.query(`UPDATE long_term_desires SET progress=?,priority=?,persistence=?,updated_at=?,version=version+1 WHERE id=UUID_TO_BIN(?) AND version=?`, [nextProgress,nextPriority,nextPersistence,simulationTime,row.id,row.version]);
+  await pool.query(`UPDATE long_term_desires SET progress=?,priority=?,persistence=?,updated_simulation_at=?,version=version+1 WHERE id=UUID_TO_BIN(?) AND version=?`, [nextProgress,nextPriority,nextPersistence,simulationTime,row.id,row.version]);
   return { id: row.id, progress: nextProgress, priority: nextPriority, persistence: nextPersistence };
 }
 
