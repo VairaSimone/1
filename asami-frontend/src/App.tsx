@@ -10,10 +10,11 @@ import { Memory } from './pages/Memory'
 import { Relationships } from './pages/Relationships'
 import { Development } from './pages/Development'
 import { Chat } from './pages/Chat'
+import { Mind } from './pages/Mind'
 import { NewSimulation } from './pages/NewSimulation'
 import { useSimulation } from './hooks/useSimulation'
 
-export type View = 'overview' | 'analysis' | 'timeline' | 'memory' | 'relationships' | 'development' | 'chat'
+export type View = 'overview' | 'analysis' | 'timeline' | 'memory' | 'mind' | 'relationships' | 'development' | 'chat'
 
 export default function App() {
   const sim = useSimulation()
@@ -27,6 +28,7 @@ export default function App() {
     analysis: ['OBSERVABILITY', 'Simulation analysis', 'Leggi cosa è successo in un intervallo preciso, misura l’attività e lascia che i controlli evidenzino dati sospetti.'],
     timeline: ['OBSERVABILITY', 'Timeline', 'Eventi e azioni ordinati per tempo simulato.'],
     memory: ['COGNITION', 'Memory', 'Esperienze persistenti che possono essere richiamate dal sistema cognitivo.'],
+    mind: ['COGNITION', 'Asami’s mind', 'Identità, valori, desideri, attenzione, conflitti, aspettative e narrativa autobiografica.'],
     relationships: ['SOCIAL', 'Relationships', 'La struttura relazionale di Asami e come cambiano i punteggi sociali.'],
     development: ['GROWTH', 'Development', 'Tratti, capacità e segnali longitudinali di sviluppo.'],
     chat: ['COMMUNICATION', 'Talk to Asami', 'Una superficie di comunicazione collegata al communication service del backend.'],
@@ -54,6 +56,7 @@ export default function App() {
         {view === 'analysis' && <Analysis simulationId={sim.simulation.id} entityId={sim.asamiId || sim.dashboard.entity.id} currentSimulationAt={sim.simulation.currentSimulationAt} onRefresh={() => void sim.refresh(true)} />}
         {view === 'timeline' && <Timeline items={sim.timeline} events={sim.events} />}
         {view === 'memory' && <Memory memories={sim.memories} />}
+        {view === 'mind' && <Mind simulationId={sim.simulation.id} entityId={sim.asamiId || sim.dashboard.entity.id} />}
         {view === 'relationships' && <Relationships relationships={sim.dashboard.relationships} />}
         {view === 'development' && <Development current={sim.development.current} history={sim.development.history} traits={sim.dashboard.traits} />}
         {view === 'chat' && <Chat messages={sim.messages} asami={sim.dashboard.entity} senderId={sim.chatSenderId} onSenderId={sim.setChatSenderId} onSend={async (text) => { await sim.sendMessage(text) }} />}

@@ -1,4 +1,4 @@
-import type { AnalysisData, ChatMessage, ChatResponse, Clock, Dashboard, Development, DevelopmentHistoryItem, EventItem, Memory, Simulation, TimelineItem } from '../types'
+import type { AnalysisData, ChatMessage, ChatResponse, Clock, Dashboard, Development, DevelopmentHistoryItem, EventItem, Memory, Simulation, TimelineItem, MindData } from '../types'
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/$/, '')
 const REQUEST_TIMEOUT_MS = 15000
@@ -39,6 +39,7 @@ export const api = {
   speed: (id: string, speed: number) => request<Simulation>(`/simulations/${id}/speed`, { method: 'POST', headers: { 'Idempotency-Key': crypto.randomUUID() }, body: JSON.stringify({ speed }) }),
   asami: (id: string) => request<Dashboard['entity']>(`/simulations/${id}/asami`),
   dashboard: (simulationId: string, entityId: string) => request<Dashboard>(`/simulations/${simulationId}/dashboard/${entityId}`),
+  mind: (simulationId: string, entityId: string) => request<MindData>(`/simulations/${simulationId}/mind/${entityId}`),
   analysis: (simulationId: string, from?: string, to?: string, entityId?: string) => {
     const params = new URLSearchParams(); if (from) params.set('from', from); if (to) params.set('to', to); if (entityId) params.set('entityId', entityId)
     const query = params.toString(); return request<AnalysisData>(`/simulations/${simulationId}/analysis${query ? `?${query}` : ''}`)

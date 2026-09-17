@@ -1,4 +1,4 @@
-import { BrainCircuit, Clock3, Database, HeartHandshake, History, LayoutDashboard, MessageCircle, Plus, Sparkles, Users, Activity } from 'lucide-react'
+import { Brain, BrainCircuit, Clock3, Database, HeartHandshake, History, LayoutDashboard, MessageCircle, Plus, Sparkles, Users, Activity } from 'lucide-react'
 import type { Simulation } from '../types'
 import { formatSimTime } from '../lib/format'
 import { Brand } from './Brand'
@@ -19,6 +19,7 @@ export function Sidebar({ simulations, simulation, view, setView, onSimulationCh
     ['analysis', Activity, 'Analysis'],
     ['timeline', History, 'Timeline'],
     ['memory', BrainCircuit, 'Memory'],
+    ['mind', Brain, 'Asami’s mind'],
     ['relationships', HeartHandshake, 'Relationships'],
     ['development', Sparkles, 'Development'],
     ['chat', MessageCircle, 'Chat with Asami'],
@@ -46,7 +47,7 @@ export function Sidebar({ simulations, simulation, view, setView, onSimulationCh
         <div className="mini-stat"><Database size={15} /><span>MySQL source of truth</span></div>
         <div className="mini-stat"><Clock3 size={15} /><span>{simulation ? formatSimTime(simulation.currentSimulationAt) : '—'}</span></div>
         <div className="mini-stat"><Users size={15} /><span>Autonomy engine</span></div>
-        <div className="version-chip">Frontend 1.0 · API native</div>
+        <div className="version-chip">Frontend 1.1 · Cognitive v2</div>
       </div>
     </aside>
   )

@@ -21,6 +21,28 @@ export interface ChatMessage { id: string; senderEntityId: string; messageType: 
 export interface ChatResponse { conversationId: string; userMessageId: string; assistantMessageId: string; reply: string; aiUsed: boolean }
 export interface WsMessage { type: string; simulationId: string; occurredAt: string; payload: Record<string, unknown> }
 
+export interface MindValue { id: string; code: string; label: string; importance: number; confidence: number; origin: string; salience: number; updatedAt: string }
+export interface SelfBelief { id: string; beliefKey: string; statement: string; confidence: number; importance: number; sourceType: string; status: string; updatedAt: string }
+export interface LongTermDesire { id: string; desireKey: string; title: string; description: string | null; desireType: string; priority: number; persistence: number; progress: number; status: string; origin: string; createdAt: string; updatedAt: string }
+export interface NarrativeChapter { id: string; chapterIndex: number; title: string; summary: string; importance: number; createdAt: string; updatedAt: string }
+export interface CognitiveState { attention: Array<Record<string, unknown>>; interpretation: Array<Record<string, unknown>>; conflicts: Array<Record<string, unknown>>; simulationTime: string | null }
+export interface Expectation { id: string; decisionId: string; actionType: string; expectedUtility: number; expectedSuccessProbability: number; predictionError: number | null; regretScore: number | null; status: string; createdAt: string; resolvedAt: string | null }
+export interface Counterfactual { id: string; decisionId: string; alternativeAction: string; predictedOutcome: unknown; predictedUtility: number; regretScore: number; createdAt: string }
+export interface PromiseItem { id: string; title: string; description: string | null; targetEntityId: string | null; dueSimulationAt: string | null; status: string; importance: number; createdAt: string }
+export interface SocialMind { memberships: Array<Record<string, unknown>>; reputations: Array<Record<string, unknown>>; obligations: Array<Record<string, unknown>>; norms: Array<Record<string, unknown>> }
+export interface MindData {
+  self: { id: string; identitySummary: string; selfConcept: string; capabilities: unknown; aspirations: unknown; limitations: unknown; currentSelfView: string | null; version: number; updatedAt: string } | null
+  values: MindValue[]
+  beliefs: SelfBelief[]
+  desires: LongTermDesire[]
+  narrative: NarrativeChapter[]
+  state: CognitiveState
+  expectations: Expectation[]
+  counterfactuals: Counterfactual[]
+  promises: PromiseItem[]
+  social: SocialMind
+}
+
 export type AnalysisRangePreset = '1h' | '6h' | '24h' | '7d' | 'all' | 'custom'
 export interface AnalysisPattern { id: string; severity: 'INFO' | 'WARNING' | 'CRITICAL'; title: string; detail: string; count: number; evidence?: Record<string, unknown> | null }
 export interface AnalysisData {
