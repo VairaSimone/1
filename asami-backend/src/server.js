@@ -11,6 +11,7 @@ require("./services/decision-sql-compat-bootstrap").install();
 require("./services/action-runtime-bootstrap").install();
 const { env } = require("./config/env");
 const logger = require("./lib/logger");
+const { ensureDatabase } = require("./db/database-init");
 const { ping, close } = require("./db/pool");
 const { bootstrapCoreDefinitions } = require("./services/bootstrap-service");
 const { RealtimeHub } = require("./realtime/hub");
@@ -20,6 +21,7 @@ const { buildRouter } = require("./api/routes");
 const { errorHandler } = require("./api/error-handler");
 
 async function main(){
+  await ensureDatabase();
   await ping();
   await bootstrapCoreDefinitions();
   const gemini=new GeminiService();
