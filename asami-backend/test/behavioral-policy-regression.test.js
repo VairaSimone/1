@@ -118,7 +118,14 @@ test("habit maturity requires temporal, contextual and reward stability", () => 
 });
 
 test("ordinary arbitration remains deliberate without being mislabeled proactive", () => {
-  const context = baseContext();
+  const context = {
+    ...baseContext(),
+    candidates: [
+      { action: "PLAYING", score: 0.9 },
+      { action: "WALKING", score: 0.65 },
+      { action: "READING", score: 0.4 }
+    ]
+  };
   const proactivity = buildProactivity(context, "PLAYING");
   assert.equal(proactivity.mode, "DELIBERATIVE");
   assert.equal(proactivity.isProactive, false);
