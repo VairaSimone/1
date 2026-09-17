@@ -1,0 +1,80 @@
+name: Execute verified backend DB contract fixes
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: asami-backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: asami-backend/package-lock.json
+      - name: Patch verified contract issues
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          root=Path('.')
+
+          def replace(path, old, new, expected=1):
+              p=root/path; s=p.read_text(); n=s.count(old)
+              if n!=expected: raise SystemExit(f'{path}: expected {expected}, got {n}: {old!r}')
+              p.write_text(s.replace(old,new))
+
+          replace('src/services/planning-service.js', "SET status='BLOCKED'", "SET status='FAILED'")
+          replace('src/services/planning-service.js', 'blockedSteps=refreshedPlan.steps.filter(candidate=>candidate.status==="BLOCKED").length', 'failedSteps=refreshedPlan.steps.filter(candidate=>candidate.status==="FAILED").length')
+          replace('src/services/planning-service.js', 'if(blockedSteps>0)', 'if(failedSteps>0)', 2)
+
+          for name in ('src/services/memory-service.js','src/services/decision-service.js'):
+              p=root/name; s=p.read_text()
+              pattern=re.compile(r"(FROM goals\\b(?:(?!;).){0,1500}?)status IN \\(\\'ACTIVE\\',\\'PENDING\\'\\)",re.S)
+              hits=len(pattern.findall(s))
+              if not hits: raise SystemExit(f'{name}: invalid goal status predicate not found')
+              p.write_text(pattern.sub(lambda m:m.group(1)+"status IN ('DRAFT','ACTIVE','PAUSED')",s))
+
+          replace('src/services/autonomy-service.js',
+            'async function completeGoalForAction(goalId,actionType,simulationTime,outcome,actionResult){if(!goalId)return null;return advancePlanForAction({simulationId:actionResult?.simulationId,entityId:actionResult?.entityId,goalId,actionType,outcome,simulationTime,actionResult});}',
+            'async function completeGoalForAction(goalId,actionType,simulationTime,outcome,actionResult={}){if(!goalId)return null;let simulationId=actionResult?.simulationId||null,entityId=actionResult?.entityId||null;if(!simulationId||!entityId){const[rows]=await pool.query(`SELECT BIN_TO_UUID(simulation_id) AS simulationId,BIN_TO_UUID(entity_id) AS entityId FROM goals WHERE id=UUID_TO_BIN(?) LIMIT 1`,[goalId]);simulationId=simulationId||rows[0]?.simulationId||null;entityId=entityId||rows[0]?.entityId||null;}if(!simulationId||!entityId)return null;return advancePlanForAction({simulationId,entityId,goalId,actionType,outcome,simulationTime,actionResult});}')
+
+          replace('src/simulation/engine.js',
+            "UPDATE movements SET status='COMPLETED',actual_arrival_simulation_at=?,reason='autonomous route interrupted by critical state',version=version+1",
+            "UPDATE movements SET status='INTERRUPTED',actual_arrival_simulation_at=NULL,reason='autonomous route interrupted by critical state',version=version+1")
+          replace('src/simulation/engine.js',
+            "UPDATE intentions SET status='COMPLETED',version=version+1 WHERE id=UUID_TO_BIN(?) AND status='ACTIVE'",
+            "UPDATE intentions SET status='CANCELLED',version=version+1 WHERE id=UUID_TO_BIN(?) AND status='ACTIVE'")
+          replace('src/services/environment-service.js',
+            'function hourOf(simulationTime){return new Date(simulationTime).getHours();}',
+            'function hourOf(simulationTime){return new Date(simulationTime).getUTCHours();}')
+
+          test=root/'test/schema-contract-regression.test.js'
+          test.write_text('''const test=require("node:test");\nconst assert=require("node:assert/strict");\nconst fs=require("node:fs");\nconst path=require("node:path");\nconst src=path.join(__dirname,"../src");\nconst read=name=>fs.readFileSync(path.join(src,name),"utf8");\n\ntest("plan_steps never persists the illegal BLOCKED status",()=>{const s=read("services/planning-service.js");assert.doesNotMatch(s,/status='BLOCKED'/);assert.match(s,/status='FAILED'/);});\n\ntest("goal queries do not use the impossible PENDING goal status",()=>{for(const f of ["services/memory-service.js","services/decision-service.js"]){const s=read(f);assert.doesNotMatch(s,/FROM goals[^;]{0,1500}status IN \\(\\'ACTIVE\\',\\'PENDING\\'\\)/s);}});\n\ntest("interrupted goal completion can recover ownership from the goal",()=>{assert.match(read("services/autonomy-service.js"),/FROM goals WHERE id=UUID_TO_BIN/);});\n''')
+          PY
+      - run: npm ci
+      - run: npm test
+      - name: Syntax check
+        shell: bash
+        run: find src test -name '*.js' -print0 | xargs -0 -n1 node --check
+      - name: Commit fixes and remove one-shot workflows
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          cd ..
+          git rm .github/workflows/db-contract-fix2.yml .github/workflows/db-contract-audit-fix.yml
+          git add asami-backend/src asami-backend/test/schema-contract-regression.test.js
+          git commit -m "fix: align backend state transitions with database contract"
+          git push origin HEAD:main
