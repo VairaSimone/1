@@ -40,6 +40,7 @@ export const api = {
   asami: (id: string) => request<Dashboard['entity']>(`/simulations/${id}/asami`),
   dashboard: (simulationId: string, entityId: string) => request<Dashboard>(`/simulations/${simulationId}/dashboard/${entityId}`),
   mind: (simulationId: string, entityId: string) => request<MindData>(`/simulations/${simulationId}/mind/${entityId}`),
+  causal: (simulationId: string, entityId: string, limit = 60) => request<MindData['causal']>(`/simulations/${simulationId}/causal/${entityId}?limit=${Math.max(1, Math.min(100, limit))}`),
   analysis: (simulationId: string, from?: string, to?: string, entityId?: string) => {
     const params = new URLSearchParams(); if (from) params.set('from', from); if (to) params.set('to', to); if (entityId) params.set('entityId', entityId)
     const query = params.toString(); return request<AnalysisData>(`/simulations/${simulationId}/analysis${query ? `?${query}` : ''}`)
