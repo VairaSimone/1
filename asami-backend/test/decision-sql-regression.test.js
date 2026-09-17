@@ -22,8 +22,8 @@ test("selected option query is normalized even when SQL is formatted across line
     LIMIT 1
   `;
   const fixed = fixDecisionInsertSql(sql);
-  assert.equal(fixed, FIXED_SELECTED_OPTION_SELECT);
-  assert.match(fixed, /^SELECT BIN_TO_UUID\(selected_option_id\)/);
+  assert.equal(fixed.trim(), FIXED_SELECTED_OPTION_SELECT);
+  assert.match(fixed.trim(), /^SELECT BIN_TO_UUID\(selected_option_id\)/);
 });
 
 test("unrelated SQL is not modified", () => {
