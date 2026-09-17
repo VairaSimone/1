@@ -21,7 +21,7 @@ test('causal action mapping connects experience to desire and values', () => {
 
 test('negative evidence targets the opposite belief confidence', () => {
   assert.equal(causal.beliefRevisionTarget(1, 0.8), 0.8);
-  assert.equal(causal.beliefRevisionTarget(-1, 0.8), 0.2);
+  assert.ok(Math.abs(causal.beliefRevisionTarget(-1, 0.8) - 0.2) < Number.EPSILON * 16);
 });
 
 test('causal relationships remain bounded and interpretable', () => {
