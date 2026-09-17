@@ -37,10 +37,7 @@ export default function App() {
     window.setTimeout(() => setNotice(null), 2800)
   }
 
-  if (newSimulation) {
-    return <div className="shell"><main className="main standalone"><NewSimulation onCreate={async (payload) => { await sim.createSimulation(payload); setNewSimulation(false); setView('overview') }} onCancel={() => setNewSimulation(false)} /></main></div>
-  }
-
+  if (newSimulation) return <div className="shell"><main className="main standalone"><NewSimulation onCreate={async (payload) => { await sim.createSimulation(payload); setNewSimulation(false); setView('overview') }} onCancel={() => setNewSimulation(false)} /></main></div>
   if (sim.loading && !sim.dashboard) return <div className="startup"><div className="startup-mark">✦</div><strong>ASAMI</strong><span>Connecting to simulation engine…</span><div className="startup-loader" /></div>
 
   return <div className={`shell ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`}>
@@ -52,10 +49,9 @@ export default function App() {
       {sim.error && !sim.dashboard && <div className="content"><ErrorState text={sim.error} retry={() => void sim.refresh()} /></div>}
       {!sim.dashboard && sim.simulation && <div className="content"><LoadingState text="Loading Asami state…" /></div>}
       {sim.dashboard && sim.simulation && <div className="content">
-        {view !== 'overview' && view !== 'analysis' && <PageTitle eyebrow={title[0]} title={title[1]} description={title[2]} action={<button className="ghost-button" onClick={() => void sim.refresh(true)}>Sync now</button>} />}
-        {view === 'analysis' && <PageTitle eyebrow={title[0]} title={title[1]} description={title[2]} action={<button className="ghost-button" onClick={() => void sim.refresh(true)}>Sync now</button>} />}
+        {view !== 'overview' && <PageTitle eyebrow={title[0]} title={title[1]} description={title[2]} action={<button className="ghost-button" onClick={() => void sim.refresh(true)}>Sync now</button>} />}
         {view === 'overview' && <Overview simulation={sim.simulation} dashboard={sim.dashboard} />}
-        {view === 'analysis' && <Analysis simulationId={sim.simulation.id} currentSimulationAt={sim.simulation.currentSimulationAt} onRefresh={() => void sim.refresh(true)} />}
+        {view === 'analysis' && <Analysis simulationId={sim.simulation.id} entityId={sim.asamiId || sim.dashboard.entity.id} currentSimulationAt={sim.simulation.currentSimulationAt} onRefresh={() => void sim.refresh(true)} />}
         {view === 'timeline' && <Timeline items={sim.timeline} events={sim.events} />}
         {view === 'memory' && <Memory memories={sim.memories} />}
         {view === 'relationships' && <Relationships relationships={sim.dashboard.relationships} />}
