@@ -90,4 +90,4 @@ La sola struttura aggiunta automaticamente dal backend è `gemini_usage`, usata 
 npm test
 ```
 
-<!-- second-audit-trigger -->
+<!-- second-audit-trigger-final -->
