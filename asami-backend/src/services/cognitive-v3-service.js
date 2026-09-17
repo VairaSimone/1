@@ -21,6 +21,13 @@ function selfBeliefForAction(actionType) {
   return { key: 'AGENCY', statement: 'My choices can change what happens next.' };
 }
 
+function beliefRevisionTarget(polarity, evidenceStrength) {
+  const evidence = clamp01(evidenceStrength);
+  return polarity >= 0 ? evidence : 1 - evidence;
+}
+
+function beliefRevisionRate(evidenceStrength) { return 0.20 + clamp01(evidenceStrength) * 0.18; }
+
 async function recordBeliefEvidence({ simulationId, entityId, simulationTime, beliefKey, statement, polarity = 1, evidenceStrength = 0.5, sourceType = 'EXPERIENCE', sourceRef = null, metadata = null }) {
   const id = uuid();
   await pool.query(`INSERT INTO belief_evidence(id,simulation_id,entity_id,belief_key,polarity,evidence_strength,source_type,source_ref,statement,created_simulation_at,metadata,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,?,UUID_TO_BIN(?),?,?,?,1)`, [id,simulationId,entityId,normalize(beliefKey),polarity >= 0 ? 1 : -1,clamp01(evidenceStrength),safeText(sourceType,60),sourceRef,safeText(statement,500),simulationTime,metadata ? JSON.stringify(metadata) : null]);
@@ -31,8 +38,8 @@ async function reviseSelfBelief({ simulationId, entityId, simulationTime, belief
   const key = normalize(beliefKey).slice(0,80);
   const evidence = clamp01(evidenceStrength);
   const [rows] = await pool.query(`SELECT BIN_TO_UUID(id) AS id,confidence,importance,version FROM self_beliefs WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND belief_key=? LIMIT 1`, [simulationId,entityId,key]);
-  const target = evidencePolarity >= 0 ? evidence : 1 - evidence;
-  const learningRate = 0.20 + evidence * 0.18;
+  const target = beliefRevisionTarget(evidencePolarity,evidence);
+  const learningRate = beliefRevisionRate(evidence);
   if (!rows.length) {
     const id = uuid();
     await pool.query(`INSERT INTO self_beliefs(id,simulation_id,entity_id,belief_key,statement,confidence,importance,source_type,source_ref,status,created_simulation_at,updated_simulation_at,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,?,?,UUID_TO_BIN(?),'ACTIVE',?,?,1)`, [id,simulationId,entityId,key,safeText(statement,500),clamp01(target),clamp01(importance),sourceType,sourceRef,simulationTime,simulationTime]);
@@ -104,12 +111,7 @@ async function evolveSelfModel({ simulationId, entityId, simulationTime, actionT
     const same = recent.filter(row => normalize(row.actionType) === action).slice(0, 12);
     const sameSuccess = same.filter(row => normalize(row.result?.outcome || row.status) === 'SUCCESS').length;
     const actionRate = same.length ? sameSuccess / same.length : clamp01(normalize(outcome)==='SUCCESS' ? 1 : 0.35);
-    capabilities.domains[action] = {
-      experience: same.length,
-      successRate: Number(actionRate.toFixed(3)),
-      confidence: clamp01(0.25 + Math.min(1, same.length / 10) * 0.55 + actionRate * 0.2),
-      lastPracticedAt: simulationTime,
-    };
+    capabilities.domains[action] = { experience: same.length, successRate: Number(actionRate.toFixed(3)), confidence: clamp01(0.25 + Math.min(1, same.length / 10) * 0.55 + actionRate * 0.2), lastPracticedAt: simulationTime };
     if (same.length >= 3 && actionRate < 0.35) {
       const label = `${action.toLowerCase().replaceAll('_',' ')} is still difficult for me`;
       if (!limitations.includes(label)) limitations.unshift(label);
@@ -118,10 +120,7 @@ async function evolveSelfModel({ simulationId, entityId, simulationTime, actionT
   }
   const topCapability = Object.entries(capabilities.domains).sort((a,b) => Number(b[1]?.confidence || 0) - Number(a[1]?.confidence || 0))[0];
   const topLimit = limitations[0];
-  const currentSelfView = topCapability
-    ? topLimit ? `I am becoming more capable at ${topCapability[0].toLowerCase().replaceAll('_',' ')}; ${topLimit}.`
-      : `I am becoming more capable at ${topCapability[0].toLowerCase().replaceAll('_',' ')} through experience.`
-    : 'I am still learning what I can reliably do.';
+  const currentSelfView = topCapability ? topLimit ? `I am becoming more capable at ${topCapability[0].toLowerCase().replaceAll('_',' ')}; ${topLimit}.` : `I am becoming more capable at ${topCapability[0].toLowerCase().replaceAll('_',' ')} through experience.` : 'I am still learning what I can reliably do.';
   const selfConcept = successRate >= 0.72 ? 'I learn through experience and tend to become more capable when I keep practicing.' : successRate <= 0.35 ? 'I learn through experience, including noticing what I cannot reliably do yet.' : self.self_concept;
   const [updated] = await pool.query(`UPDATE self_models SET self_concept=?,current_self_view=?,capabilities=?,limitations=?,updated_simulation_at=?,version=version+1 WHERE id=UUID_TO_BIN(?) AND version=?`, [selfConcept,currentSelfView,JSON.stringify(capabilities),JSON.stringify(limitations),simulationTime,self.id,self.version]);
   await pool.query(`INSERT INTO self_model_snapshots(id,simulation_id,entity_id,simulation_time,trigger_type,self_view,capabilities,limitations,metrics,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,?,?,?,?,1)`, [uuid(),simulationId,entityId,simulationTime,decisionId?'DECISION_OUTCOME':'EXPERIENCE',currentSelfView,JSON.stringify(capabilities),JSON.stringify(limitations),JSON.stringify({recentActions:known,successRate:Number(successRate.toFixed(3)),actionType:action,outcome:normalize(outcome)})]);
@@ -150,11 +149,7 @@ async function consolidateMemories(simulationId, entityId, simulationTime) {
     const sourceFrom = items[items.length - 1].simulationAt;
     const sourceTo = items[0].simulationAt;
     const confidence = clamp01(Math.min(0.95,0.42 + items.length * 0.06));
-    const summary = outcome === 'FAILURE'
-      ? `Repeated experience suggests that ${action.toLowerCase().replaceAll('_',' ')} has often failed in this context.`
-      : outcome === 'PARTIAL'
-        ? `Repeated experience suggests that ${action.toLowerCase().replaceAll('_',' ')} often produces only a partial result in this context.`
-        : `Repeated experience suggests that ${action.toLowerCase().replaceAll('_',' ')} is a reliable way to obtain the expected result in this context.`;
+    const summary = outcome === 'FAILURE' ? `Repeated experience suggests that ${action.toLowerCase().replaceAll('_',' ')} has often failed in this context.` : outcome === 'PARTIAL' ? `Repeated experience suggests that ${action.toLowerCase().replaceAll('_',' ')} often produces only a partial result in this context.` : `Repeated experience suggests that ${action.toLowerCase().replaceAll('_',' ')} is a reliable way to obtain the expected result in this context.`;
     const consolidationKey = `ACTION:${action}:OUTCOME:${outcome}`;
     const [existing] = await pool.query(`SELECT BIN_TO_UUID(id) AS id FROM memory_consolidations WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND consolidation_key=? LIMIT 1`, [simulationId,entityId,consolidationKey]);
     const metadata = JSON.stringify({ kind:'cognitive_consolidation', schemaVersion:3, consolidationKey, sourceCount:items.length, sourceFrom, sourceTo, actionType:action, outcome });
@@ -270,4 +265,4 @@ async function getEmergentMind(simulationId, entityId) {
   return { evolution:parseRows(evolution), evidence:parseRows(evidence), consolidations, worlds:parseRows(worlds), groups };
 }
 
-module.exports = { recordBeliefEvidence, reviseSelfBelief, decaySelfBeliefs, evolveSelfModel, consolidateMemories, evolveSocialGroup, branchCounterfactuals, resolveCounterfactualWorlds, processExperience, getEmergentMind };
+module.exports = { recordBeliefEvidence, reviseSelfBelief, decaySelfBeliefs, evolveSelfModel, consolidateMemories, evolveSocialGroup, branchCounterfactuals, resolveCounterfactualWorlds, processExperience, getEmergentMind, selfBeliefForAction, beliefRevisionTarget, beliefRevisionRate };
