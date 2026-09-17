@@ -3,16 +3,16 @@ import { Brain, Compass, HeartHandshake, Lightbulb, RefreshCw, Sparkles, Target,
 import { EmptyState, Panel } from '../components/Ui'
 import { api } from '../lib/api'
 import { formatSimTime, labelize, pct } from '../lib/format'
-import type { MindData } from '../types'
+import type { MindData, PromiseItem } from '../types'
 import './Mind.css'
 
-function Metric({ label, value }: { label: string; value: number }) {
-  return <div className="mind-metric"><span>{label}</span><strong>{pct(value)}</strong><div className="mind-meter"><i style={{ width: `${Math.max(0, Math.min(100, value * 100))}%` }} /></div></div>
-}
+type AttentionItem = { type?: string; title?: string; reason?: string; code?: string; intensity?: number }
+type ConflictItem = { left?: { code?: string; id?: string }; right?: { code?: string; id?: string }; intensity?: number }
+type CommitmentItem = (PromiseItem & { kind: string })
 
-function pretty(value: unknown) {
-  if (typeof value === 'string') return value
-  try { return JSON.stringify(value, null, 2) } catch { return String(value) }
+function Metric({ label, value }: { label: string; value: number }) {
+  const safe = Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 0
+  return <div className="mind-metric"><span>{label}</span><strong>{pct(safe)}</strong><div className="mind-meter"><i style={{ width: `${safe * 100}%` }} /></div></div>
 }
 
 export function Mind({ simulationId, entityId, onRefresh }: { simulationId: string; entityId: string; onRefresh?: () => void }) {
@@ -31,8 +31,18 @@ export function Mind({ simulationId, entityId, onRefresh }: { simulationId: stri
   if (error && !data) return <div className="mind-error"><TriangleAlert size={18} /><div><strong>Mind state non disponibile</strong><span>{error}</span></div><button className="ghost-button" onClick={() => void load()}><RefreshCw size={14} /> Riprova</button></div>
   if (!data) return <EmptyState title="Nessun dato cognitivo" text="Lo stato mentale di Asami non è ancora disponibile." />
 
-  const activeConflicts = data.state.conflicts || []
+  const attention = data.state.attention as AttentionItem[]
+  const activeConflicts = data.state.conflicts as ConflictItem[]
   const latestExpectation = data.expectations[0]
+  const commitments: CommitmentItem[] = [
+    ...data.promises.map(p => ({ ...p, kind: 'PROMISE' })),
+    ...data.social.obligations.map(o => ({
+      id: String(o.id ?? ''), title: String(o.title ?? 'Obligation'), description: o.description ? String(o.description) : null,
+      targetEntityId: o.targetEntityId ? String(o.targetEntityId) : null, dueSimulationAt: o.dueSimulationAt ? String(o.dueSimulationAt) : null,
+      status: String(o.status ?? 'OPEN'), importance: Number(o.priority ?? o.importance ?? 0.5), createdAt: String(o.createdAt ?? ''), kind: 'OBLIGATION'
+    }))
+  ]
+
   return <div className="mind-page">
     {error && <div className="mind-inline-error"><TriangleAlert size={15} /> {error}</div>}
     <div className="mind-top-grid">
@@ -45,7 +55,7 @@ export function Mind({ simulationId, entityId, onRefresh }: { simulationId: stri
       </Panel>
       <Panel title="Current attention" eyebrow="ATTENTION">
         <div className="mind-signal-list">
-          {data.state.attention.length ? data.state.attention.slice(0, 6).map((item, index) => <div className="mind-signal" key={`${String(item.type)}-${index}`}><Compass size={14} /><div><strong>{labelize(String(item.type || 'SIGNAL'))}</strong><span>{String(item.title || item.reason || item.code || 'Salient internal signal')}</span></div>{typeof item.intensity === 'number' && <b>{Math.round(item.intensity * 100)}%</b>}</div>) : <EmptyState title="Nessuna attenzione registrata" text="Il prossimo decision cycle produrrà un nuovo focus." />}
+          {attention.length ? attention.slice(0, 6).map((item, index) => <div className="mind-signal" key={`${String(item.type)}-${index}`}><Compass size={14} /><div><strong>{labelize(String(item.type || 'SIGNAL'))}</strong><span>{String(item.title || item.reason || item.code || 'Salient internal signal')}</span></div>{typeof item.intensity === 'number' && <b>{Math.round(item.intensity * 100)}%</b>}</div>) : <EmptyState title="Nessuna attenzione registrata" text="Il prossimo decision cycle produrrà un nuovo focus." />}
         </div>
       </Panel>
     </div>
@@ -55,7 +65,7 @@ export function Mind({ simulationId, entityId, onRefresh }: { simulationId: stri
         <div className="mind-metrics">{data.values.slice(0, 8).map(v => <Metric key={v.id} label={v.label} value={v.importance} />)}</div>
       </Panel>
       <Panel title="Long-term desires" eyebrow="WHAT I WANT">
-        <div className="mind-desire-list">{data.desires.length ? data.desires.map(d => <div className="mind-desire" key={d.id}><div><strong>{d.title}</strong><span>{d.description || '—'}</span></div><b>{Math.round(d.priority * 100)}%</b><div className="mind-progress"><i style={{ width: `${d.progress * 100}%` }} /></div></div>) : <EmptyState title="Nessun desiderio persistente" text="" />}</div>
+        <div className="mind-desire-list">{data.desires.length ? data.desires.map(d => <div className="mind-desire" key={d.id}><div><strong>{d.title}</strong><span>{d.description || '—'}</span></div><b>{Math.round(d.priority * 100)}%</b><div className="mind-progress"><i style={{ width: `${Math.max(0, Math.min(100, d.progress * 100))}%` }} /></div></div>) : <EmptyState title="Nessun desiderio persistente" text="" />}</div>
       </Panel>
       <Panel title="Self beliefs" eyebrow="WHAT I BELIEVE ABOUT MYSELF">
         <div className="mind-belief-list">{data.beliefs.map(b => <div className="mind-belief" key={b.id}><strong>{b.statement}</strong><span>{Math.round(b.confidence * 100)}% confidence · {labelize(b.sourceType)}</span></div>)}</div>
@@ -85,8 +95,8 @@ export function Mind({ simulationId, entityId, onRefresh }: { simulationId: stri
         <div className="mind-narrative">{data.narrative.map(chapter => <div key={chapter.id}><span>Chapter {chapter.chapterIndex}</span><strong>{chapter.title}</strong><p>{chapter.summary}</p><small>{formatSimTime(chapter.createdAt)}</small></div>)}</div>
       </Panel>
       <Panel title="Social mind" eyebrow="GROUPS · REPUTATION · OBLIGATIONS">
-        <div className="mind-social-summary"><div className="social-kpi"><HeartHandshake size={15} /><strong>{data.social.memberships.length}</strong><span>groups</span></div><div className="social-kpi"><HeartHandshake size={15} /><strong>{data.social.reputations.length}</strong><span>reputations</span></div><div className="social-kpi"><HeartHandshake size={15} /><strong>{data.social.obligations.length + data.promises.length}</strong><span>open commitments</span></div></div>
-        <div className="mind-commitments">{[...data.promises.map(p => ({ ...p, kind:'PROMISE' })), ...data.social.obligations.map(o => ({ ...o, kind:'OBLIGATION' }))].slice(0, 8).map((item, index) => <div key={`${String(item.id)}-${index}`}><span>{String(item.kind)}</span><strong>{String(item.title)}</strong><small>{String(item.dueSimulationAt || 'No deadline')}</small></div>)}</div>
+        <div className="mind-social-summary"><div className="social-kpi"><HeartHandshake size={15} /><strong>{data.social.memberships.length}</strong><span>groups</span></div><div className="social-kpi"><HeartHandshake size={15} /><strong>{data.social.reputations.length}</strong><span>reputations</span></div><div className="social-kpi"><HeartHandshake size={15} /><strong>{commitments.length}</strong><span>open commitments</span></div></div>
+        <div className="mind-commitments">{commitments.slice(0, 8).map((item, index) => <div key={`${item.id}-${index}`}><span>{item.kind}</span><strong>{item.title}</strong><small>{item.dueSimulationAt || 'No deadline'}</small></div>)}</div>
       </Panel>
     </div>
 
