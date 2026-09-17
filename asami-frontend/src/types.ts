@@ -1,32 +1,8 @@
 export type SimulationStatus = 'RUNNING' | 'PAUSED' | 'STOPPED' | 'INITIALIZING' | string
 
-export interface Simulation {
-  id: string
-  name: string
-  status: SimulationStatus
-  startedSimulationAt: string
-  currentSimulationAt: string
-  createdRealAt?: string
-  updatedRealAt?: string
-  version: number
-}
-
-export interface Clock {
-  simulationAnchorAt: string
-  realAnchorAt: string
-  speed: number
-}
-
-export interface Entity {
-  id: string
-  displayName: string
-  entityType: string
-  status: string
-  description?: string | null
-  attributes?: Record<string, unknown> | null
-  version: number
-}
-
+export interface Simulation { id: string; name: string; status: SimulationStatus; startedSimulationAt: string; currentSimulationAt: string; createdRealAt?: string; updatedRealAt?: string; version: number }
+export interface Clock { simulationAnchorAt: string; realAnchorAt: string; speed: number }
+export interface Entity { id: string; displayName: string; entityType: string; status: string; description?: string | null; attributes?: Record<string, unknown> | null; version: number }
 export interface Need { code: string; name: string; value: number; priorityWeight: number }
 export interface Emotion { code: string; name: string; intensity: number }
 export interface Trait { code: string; name: string; value: number }
@@ -46,19 +22,13 @@ export interface ChatResponse { conversationId: string; userMessageId: string; a
 export interface WsMessage { type: string; simulationId: string; occurredAt: string; payload: Record<string, unknown> }
 
 export type AnalysisRangePreset = '1h' | '6h' | '24h' | '7d' | 'all' | 'custom'
-
+export interface AnalysisPattern { id: string; severity: 'INFO' | 'WARNING' | 'CRITICAL'; title: string; detail: string; count: number; evidence?: Record<string, unknown> | null }
 export interface AnalysisData {
   range: { from: string; to: string }
-  kpis: {
-    ticks: { total: number; completed: number; failed: number; skipped: number; completionRate: number }
-    actions: { total: number; completed: number; failed: number; successRate: number; avgDurationSeconds: number | null; suspiciousDuration: number }
-    events: { total: number; important: number; avgImportance: number; maxImportance: number }
-    decisions: { total: number; failed: number }
-    memories: { total: number; failures: number }
-    integrity: { temporal: number }
-  }
+  kpis: { ticks: { total: number; completed: number; failed: number; skipped: number; completionRate: number }; actions: { total: number; completed: number; failed: number; successRate: number; avgDurationSeconds: number | null; suspiciousDuration: number }; events: { total: number; important: number; avgImportance: number; maxImportance: number }; decisions: { total: number; failed: number }; memories: { total: number; failures: number }; integrity: { temporal: number } }
   series: { at: string; events: number; actions: number; failedTicks: number }[]
   highlights: { at: string; kind: 'EVENT' | 'ACTION' | string; id: string; title: string; description: string; severity: 'INFO' | 'WARNING' | 'CRITICAL' }[]
-  anomalies: { id: string; severity: 'INFO' | 'WARNING' | 'CRITICAL'; title: string; detail: string; count: number }[]
+  anomalies: AnalysisPattern[]
+  patterns: AnalysisPattern[]
   breakdowns: { actions: { label: string; value: number }[]; events: { label: string; value: number }[]; decisions: { label: string; value: number }[] }
 }
