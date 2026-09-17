@@ -2,6 +2,7 @@ const http = require("http");
 const crypto = require("crypto");
 const express = require("express");
 const { WebSocketServer } = require("ws");
+require("./services/runtime-enhancements").install();
 const { env } = require("./config/env");
 const logger = require("./lib/logger");
 const { ping, close } = require("./db/pool");
