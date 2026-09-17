@@ -6,8 +6,12 @@ const mysql = require("mysql2/promise");
 const { env } = require("../config/env");
 const logger = require("../lib/logger");
 
-const SCHEMA_PATH = path.resolve(__dirname, "../../database/schema.sql.gz");
+const DATABASE_DIR = path.resolve(__dirname, "../../database");
+const SCHEMA_PARTS = Array.from({ length: 19 }, (_, index) =>
+  path.join(DATABASE_DIR, `canonical-schema.b64.${String(index + 1).padStart(2, "0")}`)
+);
 const EXPECTED_SCHEMA_SHA256 = "b702e7aea39ed8aa54fb75fa8db0949acbf7fb3370512c2f0e55ed06ae46747b";
+const EXPECTED_SCHEMA_GZIP_SHA256 = "8ce8d37aa78c6a1fba38a2fa333ba7553e927366fb545d92a879585dbc351174";
 const INIT_LOCK_NAME = "asami:schema-init";
 
 function quoteIdentifier(value) {
@@ -18,14 +22,23 @@ function quoteIdentifier(value) {
 }
 
 function loadSchemaSql() {
-  if (!fs.existsSync(SCHEMA_PATH)) {
-    throw new Error(`Database schema snapshot not found: ${SCHEMA_PATH}`);
+  const encoded = SCHEMA_PARTS.map((filePath) => {
+    if (!fs.existsSync(filePath)) {
+      throw new Error(`Database schema snapshot part not found: ${filePath}`);
+    }
+    return fs.readFileSync(filePath, "utf8").trim();
+  }).join("");
+
+  const compressed = Buffer.from(encoded, "base64");
+  const gzipSha256 = crypto.createHash("sha256").update(compressed).digest("hex");
+  if (gzipSha256 !== EXPECTED_SCHEMA_GZIP_SHA256) {
+    throw new Error(`Database schema gzip integrity check failed: expected ${EXPECTED_SCHEMA_GZIP_SHA256}, got ${gzipSha256}`);
   }
 
-  const dump = zlib.gunzipSync(fs.readFileSync(SCHEMA_PATH));
-  const actualSha256 = crypto.createHash("sha256").update(dump).digest("hex");
-  if (actualSha256 !== EXPECTED_SCHEMA_SHA256) {
-    throw new Error(`Database schema snapshot integrity check failed: expected ${EXPECTED_SCHEMA_SHA256}, got ${actualSha256}`);
+  const dump = zlib.gunzipSync(compressed);
+  const schemaSha256 = crypto.createHash("sha256").update(dump).digest("hex");
+  if (schemaSha256 !== EXPECTED_SCHEMA_SHA256) {
+    throw new Error(`Database schema integrity check failed: expected ${EXPECTED_SCHEMA_SHA256}, got ${schemaSha256}`);
   }
 
   const sql = dump.toString("utf8");
