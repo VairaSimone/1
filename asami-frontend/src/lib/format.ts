@@ -1,3 +1,6 @@
+const ASAMI_LOCALE = 'it-IT'
+export const ASAMI_TIME_ZONE = 'Europe/Rome'
+
 const ITALIAN_LABELS: Record<string, string> = {
   RUNNING: 'In esecuzione',
   PAUSED: 'In pausa',
@@ -169,8 +172,10 @@ export function formatDate(value?: string | Date | null, options?: Intl.DateTime
   if (!value) return '—'
   const date = value instanceof Date ? value : new Date(value)
   if (Number.isNaN(date.getTime())) return '—'
-  return new Intl.DateTimeFormat('it-IT', options || {
+  return new Intl.DateTimeFormat(ASAMI_LOCALE, {
     day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit',
+    ...options,
+    timeZone: ASAMI_TIME_ZONE,
   }).format(date)
 }
 
@@ -178,8 +183,9 @@ export function formatSimTime(value?: string | Date | null) {
   if (!value) return '—'
   const date = value instanceof Date ? value : new Date(value)
   if (Number.isNaN(date.getTime())) return '—'
-  return new Intl.DateTimeFormat('it-IT', {
+  return new Intl.DateTimeFormat(ASAMI_LOCALE, {
     weekday: 'short', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', second: '2-digit',
+    timeZone: ASAMI_TIME_ZONE,
   }).format(date)
 }
 

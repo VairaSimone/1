@@ -6,6 +6,7 @@ const Env = z.object({
   PORT: z.coerce.number().int().positive().default(3000),
   HOST: z.string().default("0.0.0.0"),
   LOG_LEVEL: z.string().default("info"),
+  TIME_ZONE: z.string().default("Europe/Rome"),
   DB_HOST: z.string().default("127.0.0.1"),
   DB_PORT: z.coerce.number().int().positive().default(3306),
   DB_USER: z.string().default("root"),
@@ -45,4 +46,5 @@ const Env = z.object({
   CORS_ORIGIN: z.string().default("*")
 });
 const env=Env.parse(process.env);
+process.env.TZ = env.TIME_ZONE;
 module.exports={env};
