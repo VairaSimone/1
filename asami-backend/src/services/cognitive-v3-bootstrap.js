@@ -11,6 +11,7 @@ let originalMakeDecision = null;
 let originalCompleteAction = null;
 
 const processedActionIds = new Map();
+const cognitiveQueues = new Map();
 const MAX_PROCESSED_ACTION_IDS = 10000;
 
 function normalize(value) { return String(value ?? '').trim().toUpperCase(); }
@@ -24,6 +25,18 @@ function claimAction(actionId) {
     if (oldest) processedActionIds.delete(oldest);
   }
   return true;
+}
+
+function enqueueCognitiveExperience(entityId, task) {
+  const previous = cognitiveQueues.get(entityId) || Promise.resolve();
+  const next = previous
+    .catch(() => undefined)
+    .then(task)
+    .finally(() => {
+      if (cognitiveQueues.get(entityId) === next) cognitiveQueues.delete(entityId);
+    });
+  cognitiveQueues.set(entityId, next);
+  return next;
 }
 
 async function install() {
@@ -74,11 +87,15 @@ async function install() {
         }
 
         const cognitiveInput = { simulationId,entityId,simulationTime,actionType,outcome,actionId,decisionId,targetEntityId };
-        void Promise.all([
-          emergent.processExperience(cognitiveInput),
-          causal.processExperience(cognitiveInput),
-        ]).catch(err => {
-          logger.warn({ err: err.message, simulationId, entityId, actionId, actionType, outcome },'Cognitive v3 post-action learning failed');
+        void enqueueCognitiveExperience(entityId, async () => {
+          try {
+            await Promise.all([
+              emergent.processExperience(cognitiveInput),
+              causal.processExperience(cognitiveInput),
+            ]);
+          } catch (err) {
+            logger.warn({ err: err.message, simulationId, entityId, actionId, actionType, outcome },'Cognitive v3 post-action learning failed');
+          }
         });
       }
     } catch (err) {
