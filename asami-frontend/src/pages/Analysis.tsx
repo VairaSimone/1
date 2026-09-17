@@ -1,0 +1,126 @@
+import { useEffect, useMemo, useState } from 'react'
+import { Activity, AlertTriangle, BarChart3, Brain, CheckCircle2, Clock3, Database, Gauge, Search, ShieldAlert, Sparkles, Timer, XCircle } from 'lucide-react'
+import { EmptyState, Panel } from '../components/Ui'
+import { formatSimTime, labelize, pct } from '../lib/format'
+import type { AnalysisData, AnalysisRangePreset } from '../types'
+import { api } from '../lib/api'
+import './Analysis.css'
+
+const presets: { id: AnalysisRangePreset; label: string; hours?: number }[] = [
+  { id: '1h', label: '1 ora', hours: 1 },
+  { id: '6h', label: '6 ore', hours: 6 },
+  { id: '24h', label: '24 ore', hours: 24 },
+  { id: '7d', label: '7 giorni', hours: 24 * 7 },
+  { id: 'all', label: 'Tutto' },
+]
+
+function isoLocal(date: Date) {
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`
+}
+
+function formatDuration(seconds: number | null) {
+  if (seconds === null || !Number.isFinite(seconds)) return '—'
+  if (seconds < 60) return `${Math.round(seconds)}s`
+  if (seconds < 3600) return `${Math.round(seconds / 60)}m`
+  return `${(seconds / 3600).toFixed(1)}h`
+}
+
+function severityClass(severity: AnalysisData['anomalies'][number]['severity']) {
+  return severity === 'CRITICAL' ? 'critical' : severity === 'WARNING' ? 'warning' : 'info'
+}
+
+function MiniBars({ items }: { items: { label: string; value: number }[] }) {
+  const max = Math.max(1, ...items.map((x) => x.value))
+  return <div className="analysis-bars">{items.slice(0, 8).map((item) => <div className="analysis-bar-row" key={item.label}><div className="analysis-bar-label"><span>{labelize(item.label)}</span><strong>{item.value}</strong></div><div className="analysis-bar-track"><div className="analysis-bar-fill" style={{ width: `${(item.value / max) * 100}%` }} /></div></div>)}</div>
+}
+
+function ActivityChart({ series }: { series: AnalysisData['series'] }) {
+  if (!series.length) return <EmptyState title="Nessuna attività nel periodo" text="Allarga l'intervallo temporale o lascia correre la simulazione." />
+  const width = 760
+  const height = 230
+  const padX = 28
+  const padY = 22
+  const max = Math.max(1, ...series.map((p) => Math.max(p.events, p.actions, p.failedTicks)))
+  const x = (i: number) => padX + (i / Math.max(1, series.length - 1)) * (width - padX * 2)
+  const y = (value: number) => height - padY - (value / max) * (height - padY * 2)
+  const line = (key: 'events' | 'actions' | 'failedTicks') => series.map((p, i) => `${i === 0 ? 'M' : 'L'} ${x(i).toFixed(1)} ${y(p[key]).toFixed(1)}`).join(' ')
+  return <div className="analysis-chart-wrap"><svg className="analysis-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Attività simulazione nel tempo"><line x1={padX} x2={width - padX} y1={height - padY} y2={height - padY} className="chart-axis" /><path d={line('events')} className="chart-line events-line" /><path d={line('actions')} className="chart-line actions-line" /><path d={line('failedTicks')} className="chart-line failures-line" />{series.map((p, i) => <circle key={p.at} cx={x(i)} cy={y(p.events)} r="2.6" className="chart-dot" />)}</svg><div className="chart-legend"><span><i className="legend-dot events" /> Eventi</span><span><i className="legend-dot actions" /> Azioni</span><span><i className="legend-dot failures" /> Tick falliti</span></div><div className="chart-labels"><span>{formatSimTime(series[0].at)}</span><span>{formatSimTime(series[series.length - 1].at)}</span></div></div>
+}
+
+export function Analysis({ simulationId, currentSimulationAt, onRefresh }: { simulationId: string; currentSimulationAt: string; onRefresh?: () => void }) {
+  const [preset, setPreset] = useState<AnalysisRangePreset>('24h')
+  const [from, setFrom] = useState('')
+  const [to, setTo] = useState('')
+  const [data, setData] = useState<AnalysisData | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+
+  const applyPreset = (next: AnalysisRangePreset) => {
+    setPreset(next)
+    if (next === 'all') { setFrom(''); setTo(''); return }
+    const hours = presets.find((p) => p.id === next)?.hours || 24
+    const end = new Date(currentSimulationAt)
+    const start = new Date(end.getTime() - hours * 3600000)
+    setFrom(isoLocal(start)); setTo(isoLocal(end))
+  }
+
+  useEffect(() => { applyPreset('24h') }, [currentSimulationAt])
+
+  useEffect(() => {
+    let disposed = false
+    setLoading(true); setError(null)
+    const timer = window.setTimeout(() => {
+      api.analysis(simulationId, from || undefined, to || undefined).then((next) => { if (!disposed) setData(next) }).catch((e) => { if (!disposed) setError(e instanceof Error ? e.message : 'Impossibile analizzare la simulazione.') }).finally(() => { if (!disposed) setLoading(false) })
+    }, 60)
+    return () => { disposed = true; window.clearTimeout(timer) }
+  }, [simulationId, from, to])
+
+  const headline = useMemo(() => {
+    if (!data) return null
+    if (data.anomalies.some((x) => x.severity === 'CRITICAL')) return { cls: 'critical', icon: <XCircle size={18} />, text: 'Sono presenti anomalie che meritano attenzione.' }
+    if (data.anomalies.some((x) => x.severity === 'WARNING')) return { cls: 'warning', icon: <AlertTriangle size={18} />, text: 'La simulazione è attiva, ma ci sono segnali da controllare.' }
+    return { cls: 'ok', icon: <CheckCircle2 size={18} />, text: 'Nessuna anomalia significativa rilevata nel periodo.' }
+  }, [data])
+
+  return <div className="analysis-page">
+    <div className="analysis-toolbar">
+      <div className="range-tabs">{presets.map((p) => <button key={p.id} className={preset === p.id ? 'active' : ''} onClick={() => applyPreset(p.id)}>{p.label}</button>)}</div>
+      <div className="range-custom"><Clock3 size={14} /><input type="datetime-local" value={from} onChange={(e) => { setPreset('custom'); setFrom(e.target.value) }} /><span>→</span><input type="datetime-local" value={to} onChange={(e) => { setPreset('custom'); setTo(e.target.value) }} /><button className="ghost-button" onClick={() => onRefresh?.()}><Search size={14} /> Aggiorna</button></div>
+    </div>
+
+    {loading && <div className="analysis-loading"><Gauge size={18} className="spin" /> Analisi del periodo…</div>}
+    {error && <div className="analysis-alert critical"><ShieldAlert size={18} /><div><strong>Analisi non disponibile</strong><span>{error}</span></div></div>}
+
+    {data && <>
+      {headline && <div className={`analysis-alert ${headline.cls}`}>{headline.icon}<div><strong>{headline.text}</strong><span>{formatSimTime(data.range.from)} → {formatSimTime(data.range.to)}</span></div><span className="analysis-alert-count">{data.anomalies.length} anomalie</span></div>}
+
+      <div className="analysis-kpis">
+        <div className="analysis-kpi"><div className="kpi-icon"><Timer size={17} /></div><span>Tick elaborati</span><strong>{data.kpis.ticks.total}</strong><small>{data.kpis.ticks.failed} falliti · {data.kpis.ticks.skipped} saltati</small></div>
+        <div className="analysis-kpi"><div className="kpi-icon"><Activity size={17} /></div><span>Azioni</span><strong>{data.kpis.actions.total}</strong><small>{data.kpis.actions.successRate}% completate positivamente</small></div>
+        <div className="analysis-kpi"><div className="kpi-icon"><Sparkles size={17} /></div><span>Eventi</span><strong>{data.kpis.events.total}</strong><small>{data.kpis.events.important} ad alta importanza</small></div>
+        <div className="analysis-kpi"><div className="kpi-icon"><Brain size={17} /></div><span>Decisioni</span><strong>{data.kpis.decisions.total}</strong><small>{data.kpis.decisions.failed} con esito problematico</small></div>
+        <div className="analysis-kpi"><div className="kpi-icon"><Database size={17} /></div><span>Memorie create</span><strong>{data.kpis.memories.total}</strong><small>{data.kpis.memories.failures} legate a fallimenti</small></div>
+      </div>
+
+      <Panel title="Activity over time" eyebrow="TEMPORAL PROFILE"><ActivityChart series={data.series} /></Panel>
+
+      <div className="analysis-grid">
+        <Panel title="Cosa è successo" eyebrow="CHRONOLOGY" className="analysis-span-2"><div className="analysis-feed">{data.highlights.length ? data.highlights.map((item) => <div className="analysis-feed-row" key={`${item.kind}-${item.id}`}><div className={`feed-icon ${item.severity.toLowerCase()}`}>{item.kind === 'ACTION' ? <Activity size={14} /> : <Sparkles size={14} />}</div><div className="feed-main"><div className="feed-meta"><span>{formatSimTime(item.at)}</span><b>{labelize(item.kind)}</b></div><strong>{item.title}</strong><span>{item.description}</span></div><span className={`feed-tag ${item.severity.toLowerCase()}`}>{labelize(item.severity)}</span></div>) : <EmptyState title="Nessun evento notevole" text="Nel periodo selezionato non ci sono eventi o azioni degni di nota." />}</div></Panel>
+        <Panel title="Integrità dati" eyebrow="ANOMALY DETECTOR"><div className="anomaly-stack">{data.anomalies.length ? data.anomalies.map((item) => <div className={`anomaly-row ${severityClass(item.severity)}`} key={item.id}><div className="anomaly-mark">{item.severity === 'CRITICAL' ? <XCircle size={15} /> : <AlertTriangle size={15} />}</div><div><strong>{item.title}</strong><span>{item.detail}</span></div><b>{item.count}</b></div>) : <div className="all-clear"><CheckCircle2 size={20} /><strong>Data consistente nel periodo analizzato</strong><span>Non sono stati rilevati stati impossibili, valori fuori intervallo o sequenze temporali sospette.</span></div>}</div></Panel>
+      </div>
+
+      <div className="analysis-grid three">
+        <Panel title="Azioni" eyebrow="BEHAVIOUR"><MiniBars items={data.breakdowns.actions} /></Panel>
+        <Panel title="Eventi" eyebrow="WORLD"><MiniBars items={data.breakdowns.events} /></Panel>
+        <Panel title="Decisioni" eyebrow="COGNITION"><MiniBars items={data.breakdowns.decisions} /></Panel>
+      </div>
+
+      <div className="analysis-grid three">
+        <Panel title="Qualità delle azioni" eyebrow="OUTCOMES"><div className="outcome-grid"><div><strong>{data.kpis.actions.completed}</strong><span>completate</span></div><div><strong>{data.kpis.actions.failed}</strong><span>fallite</span></div><div><strong>{formatDuration(data.kpis.actions.avgDurationSeconds)}</strong><span>durata media</span></div></div></Panel>
+        <Panel title="Eventi importanti" eyebrow="SIGNALS"><div className="signal-stack"><div><span>Importanza media</span><strong>{pct(data.kpis.events.avgImportance)}</strong></div><div><span>Massima importanza</span><strong>{pct(data.kpis.events.maxImportance)}</strong></div><div><span>Eventi con causa</span><strong>{data.kpis.events.withCause}</strong></div></div></Panel>
+        <Panel title="Controllo temporale" eyebrow="CONSISTENCY"><div className="signal-stack"><div><span>Tick completati</span><strong>{data.kpis.ticks.completionRate}%</strong></div><div><span>Durate sospette</span><strong>{data.kpis.actions.suspiciousDuration}</strong></div><div><span>Sequenze temporali anomale</span><strong>{data.kpis.integrity.temporal}</strong></div></div></Panel>
+      </div>
+    </>}
+  </div>
+}
