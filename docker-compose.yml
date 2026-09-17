@@ -44,33 +44,13 @@ services:
     depends_on:
       asami-backend:
         condition: service_started
+    ports:
+      - "127.0.0.1:8080:80"
     networks:
       - app
-      - proxy
-
-  caddy:
-    image: caddy:2-alpine
-    restart: unless-stopped
-    environment:
-      ASAMI_DOMAIN: ${ASAMI_DOMAIN:?ASAMI_DOMAIN must be set}
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - asami_caddy_data:/data
-      - asami_caddy_config:/config
-    depends_on:
-      asami-frontend:
-        condition: service_started
-    networks:
-      - proxy
 
 volumes:
   asami_mysql_data:
-  asami_caddy_data:
-  asami_caddy_config:
 
 networks:
   app:
-  proxy:
