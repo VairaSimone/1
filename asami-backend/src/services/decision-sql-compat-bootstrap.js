@@ -33,8 +33,9 @@ function install() {
   const { pool } = require("../db/pool");
   const originalQuery = pool.query.bind(pool);
   pool.query = (sql, values) => {
+    const normalizedValues = normalizeQueryValues(sql, values);
     const fixedSql = fixDecisionInsertSql(sql);
-    return originalQuery(fixedSql, normalizeQueryValues(fixedSql, values));
+    return originalQuery(fixedSql, normalizedValues);
   };
   installed = true;
 }
