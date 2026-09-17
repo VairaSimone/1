@@ -5,7 +5,13 @@ const mysql = require("mysql2/promise");
 const { env } = require("../config/env");
 const logger = require("../lib/logger");
 
-const SCHEMA_PATH = path.resolve(__dirname, "../../database/schema.sql.gz");
+const SCHEMA_PARTS = [
+  "schema.sql.gz.b64.001",
+  "schema.sql.gz.b64.002",
+  "schema.sql.gz.b64.003",
+  "schema.sql.gz.b64.004",
+  "schema.sql.gz.b64.005"
+].map((name) => path.resolve(__dirname, "../../database", name));
 
 function quoteIdentifier(value) {
   if (!/^[A-Za-z0-9_$-]+$/.test(value)) {
@@ -15,16 +21,20 @@ function quoteIdentifier(value) {
 }
 
 function buildSchemaSql() {
-  if (!fs.existsSync(SCHEMA_PATH)) {
-    throw new Error(`Database schema snapshot not found: ${SCHEMA_PATH}`);
-  }
-  const compressed = fs.readFileSync(SCHEMA_PATH);
-  const dump = zlib.gunzipSync(compressed).toString("utf8");
+  const encoded = SCHEMA_PARTS.map((filePath) => {
+    if (!fs.existsSync(filePath)) {
+      throw new Error(`Database schema snapshot part not found: ${filePath}`);
+    }
+    return fs.readFileSync(filePath, "utf8").trim();
+  }).join("");
+
+  const dump = zlib.gunzipSync(Buffer.from(encoded, "base64")).toString("utf8");
   const databaseName = quoteIdentifier(env.DB_NAME);
   const createPattern = /CREATE DATABASE(\s+IF NOT EXISTS\s+)`asami`/;
   if (!createPattern.test(dump) || !/^USE `asami`;/m.test(dump)) {
     throw new Error("Invalid Asami schema snapshot: expected CREATE DATABASE/USE for `asami`");
   }
+
   return dump
     .replace(createPattern, (_, spacing) => `CREATE DATABASE${spacing}${databaseName}`)
     .replace(/^USE `asami`;/m, `USE ${databaseName};`);
@@ -49,11 +59,11 @@ async function ensureDatabase() {
     if (rows.length > 0) return false;
 
     await connection.query(buildSchemaSql());
-    logger.info({ database: env.DB_NAME, schema: SCHEMA_PATH }, "database created from schema snapshot");
+    logger.info({ database: env.DB_NAME }, "database created from schema snapshot");
     return true;
   } finally {
     await connection.end();
   }
 }
 
-module.exports = { ensureDatabase, SCHEMA_PATH };
+module.exports = { ensureDatabase };
