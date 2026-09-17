@@ -1,6 +1,7 @@
 const express = require('express');
 const { uuid } = require('../api/validation');
 const { getMind, getIdentity, getSocialMind, getLatestCognitiveState } = require('./cognitive-v2-service');
+const { getEmergentMind } = require('./cognitive-v3-service');
 const { pool } = require('../db/pool');
 
 function buildCognitiveRouter() {
@@ -9,19 +10,23 @@ function buildCognitiveRouter() {
   router.get('/simulations/:simulationId/mind/:entityId', async (req, res) => {
     const simulationId = uuid.parse(req.params.simulationId);
     const entityId = uuid.parse(req.params.entityId);
-    const mind = await getMind(simulationId, entityId);
-    res.json(mind);
+    const [mind, emergent] = await Promise.all([
+      getMind(simulationId, entityId),
+      getEmergentMind(simulationId, entityId),
+    ]);
+    res.json({ ...mind, emergent });
   });
 
   router.get('/simulations/:simulationId/cognitive/:entityId', async (req, res) => {
     const simulationId = uuid.parse(req.params.simulationId);
     const entityId = uuid.parse(req.params.entityId);
-    const [identity, state, social] = await Promise.all([
+    const [identity, state, social, emergent] = await Promise.all([
       getIdentity(simulationId, entityId),
       getLatestCognitiveState(simulationId, entityId),
       getSocialMind(simulationId, entityId),
+      getEmergentMind(simulationId, entityId),
     ]);
-    res.json({ identity, state, social });
+    res.json({ identity, state, social, emergent });
   });
 
   router.get('/simulations/:simulationId/promises/:entityId', async (req, res) => {
