@@ -199,3 +199,21 @@ export interface WsMessage {
   occurredAt: string
   payload: Record<string, unknown>
 }
+
+export type AnalysisRangePreset = '1h' | '6h' | '24h' | '7d' | 'all' | 'custom'
+
+export interface AnalysisData {
+  range: { from: string; to: string }
+  kpis: {
+    ticks: { total: number; completed: number; failed: number; skipped: number; completionRate: number }
+    actions: { total: number; completed: number; failed: number; successRate: number; avgDurationSeconds: number | null; suspiciousDuration: number }
+    events: { total: number; important: number; avgImportance: number; maxImportance: number; withCause: number }
+    decisions: { total: number; failed: number }
+    memories: { total: number; failures: number }
+    integrity: { temporal: number }
+  }
+  series: { at: string; events: number; actions: number; failedTicks: number }[]
+  highlights: { at: string; kind: 'EVENT' | 'ACTION' | string; id: string; title: string; description: string; severity: 'INFO' | 'WARNING' | 'CRITICAL' }[]
+  anomalies: { id: string; severity: 'INFO' | 'WARNING' | 'CRITICAL'; title: string; detail: string; count: number }[]
+  breakdowns: { actions: { label: string; value: number }[]; events: { label: string; value: number }[]; decisions: { label: string; value: number }[] }
+}
