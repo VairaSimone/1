@@ -1,0 +1,117 @@
+name: Asami second DB contract audit
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: asami-backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: asami-backend/package-lock.json
+
+      - name: Apply verified second-pass fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          root = Path('.')
+
+          def replace_exact(path, old, new, expected=1):
+              p = root / path
+              text = p.read_text()
+              count = text.count(old)
+              if count != expected:
+                  raise SystemExit(f'{path}: expected {expected} occurrences, found {count} for {old!r}')
+              p.write_text(text.replace(old, new))
+
+          # Goal provenance was lost when autonomous actions were created:
+          # actions.source_goal_id is the column used by analysis to attribute attempts to goals.
+          replace_exact(
+              'src/services/action-service.js',
+              'async function startAction({simulationId,entityId,decisionId,intentionId=null,actionType,simulationTime,targetEntityId=null,targetLocationId=null,relationshipIntent="NONE"})',
+              'async function startAction({simulationId,entityId,decisionId,intentionId=null,goalId=null,actionType,simulationTime,targetEntityId=null,targetLocationId=null,relationshipIntent="NONE"})',
+          )
+          replace_exact(
+              'src/services/action-service.js',
+              'INSERT INTO actions(id,simulation_id,entity_id,decision_id,action_type,source_type,source_intention_id,started_simulation_at,status,target,parameters,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,'"'"'AUTONOMOUS'"'"',UUID_TO_BIN(?),?,'"'"'ACTIVE'"'"',?,?,1)',
+              'INSERT INTO actions(id,simulation_id,entity_id,decision_id,action_type,source_type,source_goal_id,source_intention_id,started_simulation_at,status,target,parameters,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,'"'"'AUTONOMOUS'"'"',UUID_TO_BIN(?),UUID_TO_BIN(?),?,'"'"'ACTIVE'"'"',?,?,1)',
+          )
+          replace_exact(
+              'src/services/action-service.js',
+              '[actionId,simulationId,entityId,decisionId,actionType,intentionId,simulationTime,targetLocationId?JSON.stringify({locationId:targetLocationId}):null,JSON.stringify({targetEntityId,targetLocationId,relationshipIntent,durationMinutes:duration,expectedCompletionSimulationAt:expectedCompletion.toISOString(),movement:move?{movementId:move.movementId,originLocationId:origin,destinationLocationId:destination,distanceMeters:move.distanceMeters,speedKmh:move.speedKmh,expectedArrivalSimulationAt:move.expectedArrival.toISOString()}:null})]',
+              '[actionId,simulationId,entityId,decisionId,actionType,goalId,intentionId,simulationTime,targetLocationId?JSON.stringify({locationId:targetLocationId}):null,JSON.stringify({targetEntityId,targetLocationId,relationshipIntent,durationMinutes:duration,expectedCompletionSimulationAt:expectedCompletion.toISOString(),movement:move?{movementId:move.movementId,originLocationId:origin,destinationLocationId:destination,distanceMeters:move.distanceMeters,speedKmh:move.speedKmh,expectedArrivalSimulationAt:move.expectedArrival.toISOString()}:null})]',
+          )
+          replace_exact(
+              'src/services/autonomy-service.js',
+              'startAction({simulationId,entityId,decisionId:decision.decisionId,intentionId,actionType:decision.actionType,simulationTime,targetEntityId:decision.targetEntityId,targetLocationId:decision.targetLocationId,relationshipIntent:',
+              'startAction({simulationId,entityId,decisionId:decision.decisionId,intentionId,goalId:goalState.goal?.id||null,actionType:decision.actionType,simulationTime,targetEntityId:decision.targetEntityId,targetLocationId:decision.targetLocationId,relationshipIntent:',
+          )
+
+          # Gemini-generated state effects may contain stale/cross-simulation entity ids.
+          # The DB has composite same-simulation FKs, so validate those ids before writing.
+          personality = root / 'src/services/personality-service.js'
+          text = personality.read_text()
+          helper = '''async function resolveEntityIdInSimulation(simulationId,entityId){if(!entityId)return null;const[rows]=await pool.query(`SELECT BIN_TO_UUID(id) AS id FROM entities WHERE simulation_id=UUID_TO_BIN(?) AND id=UUID_TO_BIN(?) LIMIT 1`,[simulationId,entityId]);return rows[0]?.id||null;}\n'''
+          marker = 'function normalizeKey(value,max=100){return String(value||"").trim().toUpperCase().replace(/\\s+/g,"_").slice(0,max);}\n'
+          if helper not in text:
+              if marker not in text:
+                  raise SystemExit('personality-service.js: normalizeKey marker not found')
+              text = text.replace(marker, marker + helper, 1)
+
+          old = 'const targetType=normalizeKey(item?.targetType||item?.topic||\'TOPIC\',50),targetEntityId=item?.targetEntityId||null,value=clampSigned(item?.value??item?.preferenceValue,1,0),strength=clamp01(item?.strength,.5),confidence=clamp01(item?.confidence,.5);if(!targetType)return null;'
+          new = 'const targetType=normalizeKey(item?.targetType||item?.topic||\'TOPIC\',50),rawTargetEntityId=item?.targetEntityId||null,targetEntityId=await resolveEntityIdInSimulation(simulationId,rawTargetEntityId),value=clampSigned(item?.value??item?.preferenceValue,1,0),strength=clamp01(item?.strength,.5),confidence=clamp01(item?.confidence,.5);if(!targetType||rawTargetEntityId&&!targetEntityId)return null;'
+          replace_count = text.count(old)
+          if replace_count != 1:
+              raise SystemExit(f'personality-service.js: preference contract target block expected once, found {replace_count}')
+          text = text.replace(old,new)
+
+          old = 'const[rows]=await pool.query(`SELECT BIN_TO_UUID(id) AS id,version,object_value,confidence,importance,status FROM beliefs WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND predicate=? AND ((subject_entity_id=UUID_TO_BIN(?)) OR (subject_entity_id IS NULL AND ? IS NULL)) ORDER BY updated_simulation_at DESC LIMIT 1`,[simulationId,entityId,predicate,subjectEntityId,subjectEntityId]);'
+          new = 'const rawSubjectEntityId=item?.subjectEntityId||null,subjectEntityId=await resolveEntityIdInSimulation(simulationId,rawSubjectEntityId);if(rawSubjectEntityId&&!subjectEntityId)return null;const[rows]=await pool.query(`SELECT BIN_TO_UUID(id) AS id,version,object_value,confidence,importance,status FROM beliefs WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND predicate=? AND ((subject_entity_id=UUID_TO_BIN(?)) OR (subject_entity_id IS NULL AND ? IS NULL)) ORDER BY updated_simulation_at DESC LIMIT 1`,[simulationId,entityId,predicate,subjectEntityId,subjectEntityId]);'
+          if text.count(old) != 1:
+              raise SystemExit('personality-service.js: belief subject block not found exactly once')
+          text = text.replace(old,new)
+
+          old = 'const content=safeText(item?.content,1000);if(!content)return null;const knowledgeType=normalizeKey(item?.knowledgeType||item?.type||\'CONVERSATION\',50),predicate=safeText(item?.predicate,150)||null,subjectEntityId=item?.subjectEntityId||entityId,objectEntityId=item?.objectEntityId||null,confidence=clamp01(item?.confidence,.6),importance=clamp01(item?.importance,.55);'
+          new = 'const content=safeText(item?.content,1000);if(!content)return null;const knowledgeType=normalizeKey(item?.knowledgeType||item?.type||\'CONVERSATION\',50),predicate=safeText(item?.predicate,150)||null,rawSubjectEntityId=item?.subjectEntityId||entityId,rawObjectEntityId=item?.objectEntityId||null,subjectEntityId=await resolveEntityIdInSimulation(simulationId,rawSubjectEntityId),objectEntityId=await resolveEntityIdInSimulation(simulationId,rawObjectEntityId),confidence=clamp01(item?.confidence,.6),importance=clamp01(item?.importance,.55);if(!subjectEntityId)return null;'
+          if text.count(old) != 1:
+              raise SystemExit('personality-service.js: knowledge entity block not found exactly once')
+          text = text.replace(old,new)
+          personality.write_text(text)
+
+          test = root / 'test/schema-contract-second-pass.test.js'
+          test.write_text('''const test=require("node:test");\nconst assert=require("node:assert/strict");\nconst fs=require("node:fs");\nconst path=require("node:path");\nconst src=path.join(__dirname,"../src");\nconst read=name=>fs.readFileSync(path.join(src,name),"utf8");\n\ntest("autonomous actions preserve goal provenance in source_goal_id",()=>{\n  const action=read("services/action-service.js");\n  const autonomy=read("services/autonomy-service.js");\n  assert.match(action,/source_goal_id/);\n  assert.match(autonomy,/goalId:goalState\.goal\?\.id\\|\\|null/);\n});\n\ntest("generated entity references are validated against the active simulation before DB writes",()=>{\n  const personality=read("services/personality-service.js");\n  assert.match(personality,/resolveEntityIdInSimulation/);\n  assert.match(personality,/simulation_id=UUID_TO_BIN\\(\\?\\)/);\n});\n''')
+          PY
+
+      - name: Install backend dependencies
+        run: npm ci
+      - name: Run backend tests
+        run: npm test
+      - name: Syntax check backend JavaScript
+        shell: bash
+        run: find src test -name '*.js' -print0 | xargs -0 -n1 node --check
+
+      - name: Commit second-pass fixes and remove workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add asami-backend/src asami-backend/test/schema-contract-second-pass.test.js
+          git rm .github/workflows/db-contract-fix4.yml
+          git commit -m "fix: preserve goal provenance and validate simulation references"
+          git push origin HEAD:main
