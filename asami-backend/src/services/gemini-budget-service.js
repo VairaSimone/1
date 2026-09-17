@@ -94,20 +94,13 @@ async function reserve({ prompt, outputTokenCeiling, kind }) {
     for (const [type, key] of [["DAY", day], ["MONTH", month]]) {
       await conn.query(`INSERT INTO gemini_usage(period_type,period_key) VALUES(?,?) ON DUPLICATE KEY UPDATE period_key=VALUES(period_key)`, [type, key]);
     }
-    const [[dayRow]] = await conn.query(`SELECT reserved_usd,estimated_usd,requests,TIMESTAMPDIFF(MICROSECOND, updated_real_at, CURRENT_TIMESTAMP(3)) / 1000 AS elapsed_ms FROM gemini_usage WHERE period_type='DAY' AND period_key=? FOR UPDATE`, [day]);
+    const [[dayRow]] = await conn.query(`SELECT reserved_usd,estimated_usd,requests FROM gemini_usage WHERE period_type='DAY' AND period_key=? FOR UPDATE`, [day]);
     const [[monthRow]] = await conn.query(`SELECT reserved_usd,estimated_usd,requests FROM gemini_usage WHERE period_type='MONTH' AND period_key=? FOR UPDATE`, [month]);
-    const minSpacingMs = 12_500;
-    const elapsedMs = Math.max(0, Number(dayRow.elapsed_ms || 0));
-    if (elapsedMs > 0 && elapsedMs < minSpacingMs) {
-      const retryAfterMs = Math.ceil(minSpacingMs - elapsedMs);
-      await conn.rollback();
-      return { allowed: false, reason: "RATE_LIMIT_PACED", retryAfterMs, estimatedUsd };
-    }
     const dailyLimit = Number(env.GEMINI_DAILY_BUDGET_USD);
     const monthlyLimit = Number(env.GEMINI_MONTHLY_BUDGET_USD);
     const pacedDailyLimit = Math.min(dailyLimit, dailyPacedLimitUsd(now));
-    const dailyRequests = Math.min(Number(env.GEMINI_DAILY_MAX_REQUESTS), 18);
-    const monthlyRequests = Math.min(Number(env.GEMINI_MONTHLY_MAX_REQUESTS), 500);
+    const dailyRequests = Number(env.GEMINI_DAILY_MAX_REQUESTS);
+    const monthlyRequests = Number(env.GEMINI_MONTHLY_MAX_REQUESTS);
     const dailyCommitted = Number(dayRow.estimated_usd) + Number(dayRow.reserved_usd);
     const monthlyCommitted = Number(monthRow.estimated_usd) + Number(monthRow.reserved_usd);
     const canSpend = dailyCommitted + estimatedUsd <= pacedDailyLimit + 1e-9 && monthlyCommitted + estimatedUsd <= monthlyLimit + 1e-9 && Number(dayRow.requests) < dailyRequests && Number(monthRow.requests) < monthlyRequests;
