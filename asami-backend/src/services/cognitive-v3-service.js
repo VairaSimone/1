@@ -68,12 +68,13 @@ async function updateIdentityValues(simulationId, entityId, simulationTime, acti
   };
   const codes = map[action] || [];
   if (!codes.length) return;
-  const success = normalize(outcome) === 'SUCCESS' ? 1 : normalize(outcome) === 'PARTIAL' ? 0.45 : -1;
+  const outcomeValue = normalize(outcome);
+  const evidence = outcomeValue === 'SUCCESS' ? 1 : outcomeValue === 'PARTIAL' ? 0.45 : -1;
   for (const code of codes) {
     const [rows] = await pool.query(`SELECT BIN_TO_UUID(id) AS id,importance,confidence,version FROM identity_values WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND code=? LIMIT 1`, [simulationId,entityId,normalize(code)]);
     if (!rows.length) continue;
     const row = rows[0];
-    const delta = success * 0.007;
+    const delta = evidence * 0.007;
     const nextImportance = clamp01(Number(row.importance) + delta, Number(row.importance));
     const nextConfidence = clamp01(Number(row.confidence) + Math.abs(delta) * 0.5, Number(row.confidence));
     if (Math.abs(nextImportance - Number(row.importance)) < 0.000001) continue;
@@ -95,7 +96,8 @@ async function evolveSelfModel({ simulationId, entityId, simulationTime, actionT
   if (!selfRows.length) return { skipped: true };
   const self = selfRows[0];
   const capabilities = parseJson(self.capabilities,{ adaptive: true, domains: {} });
-  const limitations = Array.isArray(parseJson(self.limitations,[])) ? parseJson(self.limitations,[]) : [];
+  const rawLimitations = parseJson(self.limitations,[]);
+  const limitations = Array.isArray(rawLimitations) ? rawLimitations : [];
   if (!capabilities.domains || Array.isArray(capabilities.domains)) capabilities.domains = {};
   const action = normalize(actionType);
   if (action) {
@@ -158,7 +160,7 @@ async function consolidateMemories(simulationId, entityId, simulationTime) {
     const metadata = JSON.stringify({ kind:'cognitive_consolidation', schemaVersion:3, consolidationKey, sourceCount:items.length, sourceFrom, sourceTo, actionType:action, outcome });
     if (!existing.length) {
       const memoryId = uuid();
-      await pool.query(`INSERT INTO memories(id,simulation_id,entity_id,memory_type,content,importance,strength,confidence,emotional_intensity,source_event_id,source_activity_id,location_id,created_simulation_at,status,metadata,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),'SEMANTIC',?,?,?, ?,?,?,NULL,NULL,?,'ACTIVE',?,1)`, [memoryId,simulationId,entityId,summary,0.72,0.82,confidence,0.28,null,sourceTo,metadata]);
+      await pool.query(`INSERT INTO memories(id,simulation_id,entity_id,memory_type,content,importance,strength,confidence,emotional_intensity,source_event_id,source_activity_id,location_id,created_simulation_at,status,metadata,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),'SEMANTIC',?,?,?,?,?,?,?,?,?,'ACTIVE',?,1)`, [memoryId,simulationId,entityId,summary,0.72,0.82,confidence,0.28,null,null,null,sourceTo,metadata]);
       await pool.query(`INSERT INTO memory_consolidations(id,simulation_id,entity_id,consolidation_key,memory_type,source_count,source_from,source_to,summary,confidence,created_simulation_at,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,'SEMANTIC',?,?,?,?,?,?,1)`, [uuid(),simulationId,entityId,consolidationKey,items.length,sourceFrom,sourceTo,summary,confidence,simulationTime]);
       consolidated.push({ consolidationKey, sourceCount: items.length, summary, confidence });
     } else {
@@ -169,7 +171,7 @@ async function consolidateMemories(simulationId, entityId, simulationTime) {
 }
 
 async function getRelationshipCandidates(simulationId, entityId) {
-  const [rows] = await pool.query(`SELECT DISTINCT BIN_TO_UUID(CASE WHEN r.source_entity_id=UUID_TO_BIN(?) THEN r.target_entity_id ELSE r.source_entity_id END) AS otherEntityId, e.display_name AS displayName, ((r.trust_score+r.affection_score+r.respect_score+r.familiarity_score+r.closeness_score)/5) AS affinity,r.trust_score AS trust,r.affection_score AS affection,r.familiarity_score AS familiarity,r.closeness_score AS closeness FROM relationships r JOIN entities e ON e.id=CASE WHEN r.source_entity_id=UUID_TO_BIN(?) THEN r.target_entity_id ELSE r.source_entity_id END WHERE r.simulation_id=UUID_TO_BIN(?) AND (r.source_entity_id=UUID_TO_BIN(?) OR r.target_entity_id=UUID_TO_BIN(?)) AND r.status='ACTIVE' AND e.status='ACTIVE' ORDER BY affinity DESC LIMIT 8`, [entityId,entityId,simulationId,entityId,entityId]);
+  const [rows] = await pool.query(`SELECT DISTINCT BIN_TO_UUID(CASE WHEN r.source_entity_id=UUID_TO_BIN(?) THEN r.target_entity_id ELSE r.source_entity_id END) AS otherEntityId,e.display_name AS displayName,((r.trust_score+r.affection_score+r.respect_score+r.familiarity_score+r.closeness_score)/5) AS affinity,r.trust_score AS trust,r.affection_score AS affection,r.familiarity_score AS familiarity,r.closeness_score AS closeness FROM relationships r JOIN entities e ON e.id=CASE WHEN r.source_entity_id=UUID_TO_BIN(?) THEN r.target_entity_id ELSE r.source_entity_id END WHERE r.simulation_id=UUID_TO_BIN(?) AND (r.source_entity_id=UUID_TO_BIN(?) OR r.target_entity_id=UUID_TO_BIN(?)) AND r.status='ACTIVE' AND e.status='ACTIVE' ORDER BY affinity DESC LIMIT 8`, [entityId,entityId,simulationId,entityId,entityId]);
   return rows.filter(row => row.otherEntityId !== entityId);
 }
 
@@ -203,11 +205,10 @@ async function branchCounterfactuals({ simulationId, entityId, simulationTime, d
   const baseline = { needs:Object.fromEntries(needRows.map(row => [normalize(row.code),Number(row.value)])), at:simulationTime };
   const [rows] = await pool.query(`SELECT alternative_action AS alternativeAction,predicted_outcome AS predictedOutcome,predicted_utility AS predictedUtility,regret_score AS regretScore FROM counterfactuals WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND decision_id=UUID_TO_BIN(?) ORDER BY predicted_utility DESC LIMIT 6`, [simulationId,entityId,decisionId]);
   const [[expectation]] = await pool.query(`SELECT prediction AS predictedOutcome,expected_utility AS predictedUtility FROM cognitive_expectations WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND decision_id=UUID_TO_BIN(?) LIMIT 1`, [simulationId,entityId,decisionId]);
-  const worlds = [];
   const selected = { alternativeAction:actionType, predictedOutcome:expectation?.predictedOutcome || {}, predictedUtility:Number(expectation?.predictedUtility || 0.5) };
-  const all = [selected,...rows];
-  for (const candidate of all) {
-    const worldKey = `${normalize(candidate.alternativeAction || 'UNKNOWN')}`;
+  const worlds = [];
+  for (const candidate of [selected,...rows]) {
+    const worldKey = normalize(candidate.alternativeAction || 'UNKNOWN');
     const [existing] = await pool.query(`SELECT BIN_TO_UUID(id) AS id FROM counterfactual_worlds WHERE simulation_id=UUID_TO_BIN(?) AND decision_id=UUID_TO_BIN(?) AND world_key=? LIMIT 1`, [simulationId,decisionId,worldKey]);
     const predictedState = parseJson(candidate.predictedOutcome,{}) || {};
     if (existing.length) {
@@ -245,7 +246,12 @@ async function processExperience({ simulationId, entityId, simulationTime, actio
     const evolution = await evolveSelfModel({simulationId,entityId,simulationTime,actionType,outcome,decisionId});
     const consolidation = await consolidateMemories(simulationId,entityId,simulationTime);
     const group = ['TALKING','HELPING','TEACHING','APOLOGIZING','GIVING','RECEIVING','ATTENDING_EVENT'].includes(normalize(actionType)) ? await evolveSocialGroup({simulationId,entityId,simulationTime}) : null;
-    await resolveCounterfactualWorlds({simulationId,entityId,decisionId,actionType,outcome,simulationTime,regretScore:0});
+    let regretScore = 0;
+    if (decisionId) {
+      const [[expectation]] = await pool.query(`SELECT regret_score AS regretScore FROM cognitive_expectations WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND decision_id=UUID_TO_BIN(?) LIMIT 1`, [simulationId,entityId,decisionId]);
+      regretScore = Number(expectation?.regretScore || 0);
+    }
+    await resolveCounterfactualWorlds({simulationId,entityId,decisionId,actionType,outcome,simulationTime,regretScore});
     return { evidenceId, evolution, consolidation, group };
   } catch (err) {
     return { error: err.message || 'emergent cognition failed' };
@@ -253,16 +259,15 @@ async function processExperience({ simulationId, entityId, simulationTime, actio
 }
 
 async function getEmergentMind(simulationId, entityId) {
-  const [[evolutionRows],[evidence],[snapshots],[consolidations],[worlds],[groups]] = await Promise.all([
+  const [[evolution],[evidence],[consolidations],[worlds],[groups]] = await Promise.all([
     pool.query(`SELECT BIN_TO_UUID(id) AS id,simulation_time AS simulationTime,trigger_type AS triggerType,self_view AS selfView,capabilities,limitations,metrics FROM self_model_snapshots WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) ORDER BY simulation_time DESC LIMIT 8`, [simulationId,entityId]),
     pool.query(`SELECT BIN_TO_UUID(id) AS id,belief_key AS beliefKey,polarity,evidence_strength AS evidenceStrength,source_type AS sourceType,statement,created_simulation_at AS createdAt,metadata FROM belief_evidence WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) ORDER BY created_simulation_at DESC LIMIT 14`, [simulationId,entityId]),
-    pool.query(`SELECT BIN_TO_UUID(id) AS id,simulation_time AS simulationTime,trigger_type AS triggerType,self_view AS selfView,metrics FROM self_model_snapshots WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) ORDER BY simulation_time DESC LIMIT 8`, [simulationId,entityId]),
     pool.query(`SELECT BIN_TO_UUID(id) AS id,consolidation_key AS consolidationKey,source_count AS sourceCount,source_from AS sourceFrom,source_to AS sourceTo,summary,confidence,created_simulation_at AS createdAt FROM memory_consolidations WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) ORDER BY created_simulation_at DESC LIMIT 8`, [simulationId,entityId]),
-    pool.query(`SELECT BIN_TO_UUID(id) AS id,decision_id AS decisionId,world_key AS worldKey,selected,predicted_state AS predictedState,predicted_utility AS predictedUtility,actual_outcome AS actualOutcome,regret_score AS regretScore,status,created_simulation_at AS createdAt,resolved_simulation_at AS resolvedAt FROM counterfactual_worlds WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) ORDER BY created_simulation_at DESC LIMIT 12`, [simulationId,entityId]),
+    pool.query(`SELECT BIN_TO_UUID(id) AS id,BIN_TO_UUID(decision_id) AS decisionId,world_key AS worldKey,selected,predicted_state AS predictedState,predicted_utility AS predictedUtility,actual_outcome AS actualOutcome,regret_score AS regretScore,status,created_simulation_at AS createdAt,resolved_simulation_at AS resolvedAt FROM counterfactual_worlds WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) ORDER BY created_simulation_at DESC LIMIT 12`, [simulationId,entityId]),
     pool.query(`SELECT BIN_TO_UUID(sg.id) AS id,sg.name,sg.group_type AS groupType,sg.status,sgm.role,sgm.joined_simulation_at AS joinedAt FROM social_groups sg JOIN social_group_members sgm ON sgm.group_id=sg.id AND sgm.entity_id=UUID_TO_BIN(?) AND sgm.status='ACTIVE' WHERE sg.simulation_id=UUID_TO_BIN(?) ORDER BY sg.updated_simulation_at DESC LIMIT 8`, [entityId,simulationId]),
   ]);
   const parseRows = rows => rows.map(row => { for (const key of ['capabilities','limitations','metrics','metadata','predictedState']) if (row[key] !== undefined) row[key] = parseJson(row[key], row[key]); return row; });
-  return { evolution:parseRows(evolutionRows), evidence:parseRows(evidence), snapshots:parseRows(snapshots), consolidations, worlds:parseRows(worlds), groups };
+  return { evolution:parseRows(evolution), evidence:parseRows(evidence), consolidations, worlds:parseRows(worlds), groups };
 }
 
 module.exports = { recordBeliefEvidence, reviseSelfBelief, decaySelfBeliefs, evolveSelfModel, consolidateMemories, evolveSocialGroup, branchCounterfactuals, resolveCounterfactualWorlds, processExperience, getEmergentMind };
