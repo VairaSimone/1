@@ -112,6 +112,7 @@ async function getDashboard(simulationId, entityId) {
       SELECT BIN_TO_UUID(id) AS id, action_type AS actionType, status, target, parameters,
              started_simulation_at AS startedAt, completed_simulation_at AS completedAt
       FROM actions WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?)
+        AND status='ACTIVE'
       ORDER BY started_simulation_at DESC LIMIT 1
     `, [simulationId, entityId])
   ]);
