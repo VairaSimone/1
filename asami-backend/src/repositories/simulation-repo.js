@@ -184,6 +184,15 @@ async function setStatus(id, status) {
 
 async function changeSpeed(id, speed, simulationTime) {
   return withTransaction(async conn => {
+    const [sims] = await conn.query(`
+      SELECT current_simulation_at AS currentSimulationAt,status,version
+      FROM simulations
+      WHERE id=UUID_TO_BIN(?)
+      LIMIT 1 FOR UPDATE
+    `,[id]);
+    if(!sims.length) throw Object.assign(new Error("Simulation not found"),{code:"NOT_FOUND"});
+    if(sims[0].status!=="RUNNING") throw Object.assign(new Error("Simulation is not running"),{code:"SIMULATION_NOT_RUNNING"});
+
     const [current] = await conn.query(`
       SELECT id, simulation_anchor_at, real_anchor_at, speed, status
       FROM simulation_clock_segments
@@ -194,8 +203,10 @@ async function changeSpeed(id, speed, simulationTime) {
 
     const c = current[0];
     const requestedTime = new Date(simulationTime);
+    const storedTime = new Date(sims[0].currentSimulationAt);
     const anchorTime = new Date(c.simulation_anchor_at);
-    const endSimulationTime = requestedTime < anchorTime ? anchorTime : requestedTime;
+    const candidates = [storedTime,anchorTime,requestedTime].filter(date=>Number.isFinite(date.getTime()));
+    const endSimulationTime = new Date(Math.max(...candidates.map(date=>date.getTime())));
 
     await conn.query(`
       UPDATE simulation_clock_segments
@@ -203,12 +214,18 @@ async function changeSpeed(id, speed, simulationTime) {
       WHERE id=?
     `, [endSimulationTime, c.id]);
 
+    await conn.query(`
+      UPDATE simulations
+      SET current_simulation_at=?,version=version+1
+      WHERE id=UUID_TO_BIN(?) AND version=? AND status='RUNNING'
+    `,[endSimulationTime,id,sims[0].version]);
+
     const segmentId = uuid();
     await conn.query(`
       INSERT INTO simulation_clock_segments
         (id,simulation_id,real_anchor_at,simulation_anchor_at,speed,status,created_real_at)
       VALUES (UUID_TO_BIN(?),UUID_TO_BIN(?),UTC_TIMESTAMP(3),?,?,'ACTIVE',UTC_TIMESTAMP(3))
-    `, [segmentId, id, simulationTime, speed]);
+    `, [segmentId, id, endSimulationTime, speed]);
     return getSimulation(id, conn);
   });
 }
@@ -299,6 +316,5 @@ async function createSnapshot(id, simulationTime, state, snapshotVersion = 1) {
 module.exports = {
   listSimulations, getSimulation, createSimulation, setStatus, changeSpeed,
   getActiveClock, updateCurrentTimeOptimistic, advanceAndCreateTick, createTick, finishTick,
-  completeTick: finishTick,
-  createSnapshot
+  completeTick: finishTick, createSnapshot
 };
