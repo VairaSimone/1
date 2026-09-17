@@ -10,6 +10,8 @@ services:
   asami-frontend:
     build: .
     restart: unless-stopped
+    environment:
+      ASAMI_FRONTEND_PASSWORD: ${ASAMI_FRONTEND_PASSWORD:?ASAMI_FRONTEND_PASSWORD must be set}
     ports:
       - "80:80"
     depends_on:
