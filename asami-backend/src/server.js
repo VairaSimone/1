@@ -8,6 +8,7 @@ require("./services/behavioral-policy-bootstrap").install();
 require("./services/behavioral-integrity-bootstrap").install();
 require("./services/development-duration-bootstrap").install();
 require("./services/decision-sql-compat-bootstrap").install();
+require("./services/action-runtime-bootstrap").install();
 const { env } = require("./config/env");
 const logger = require("./lib/logger");
 const { ping, close } = require("./db/pool");
