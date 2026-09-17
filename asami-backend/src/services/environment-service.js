@@ -4,7 +4,7 @@ const { replenishResource } = require("./physical-world-service");
 
 function parseJson(value,fallback={}){if(value===null||value===undefined)return fallback;if(typeof value==='object')return value;try{return JSON.parse(value);}catch{return fallback;}}
 function clamp(v,min=0,max=1){return Math.max(min,Math.min(max,Number(v)||0));}
-function hourOf(simulationTime){return new Date(simulationTime).getHours();}
+function hourOf(simulationTime){return new Date(simulationTime).getUTCHours();}
 function daylight(hour){if(hour<6)return .08;if(hour<8)return .35;if(hour<18)return 1;if(hour<21)return .45;return .12;}
 const WEATHER={CLEAR:{temperature:20,humidity:.5,visibility:1},CLOUDY:{temperature:17,humidity:.62,visibility:.85},RAIN:{temperature:14,humidity:.9,visibility:.65},STORM:{temperature:12,humidity:.95,visibility:.4},HEAT:{temperature:32,humidity:.4,visibility:.9},COLD:{temperature:7,humidity:.55,visibility:.85}};
 const BASE_BY_TYPE={PARK:{noise:.18,activity:.45},NATURE:{noise:.08,activity:.2},SQUARE:{noise:.55,activity:.65},CAFE:{noise:.5,activity:.75},SHOP:{noise:.42,activity:.58},LIBRARY:{noise:.06,activity:.25},SCHOOL:{noise:.2,activity:.48},COMMUNITY:{noise:.22,activity:.4},GYM:{noise:.5,activity:.55},CLINIC:{noise:.12,activity:.3},WORKSHOP:{noise:.28,activity:.35},HOME:{noise:.08,activity:.15}};

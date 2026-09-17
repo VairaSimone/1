@@ -69,7 +69,7 @@ async function deriveRecallContext(simulationId, entityId, baseContext = {}) {
   const context = { ...(baseContext || {}) };
   if (context.simulationTime && context.goalIds && context.locationId && context.candidateActionTypes) return context;
   const [[goalRows], [locationRows], [actionRows]] = await Promise.all([
-    pool.query(`SELECT BIN_TO_UUID(id) AS id FROM goals WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND status IN ('ACTIVE','PENDING') ORDER BY priority DESC LIMIT 8`, [simulationId, entityId]),
+    pool.query(`SELECT BIN_TO_UUID(id) AS id FROM goals WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND status IN ('DRAFT','ACTIVE','PAUSED') ORDER BY priority DESC LIMIT 8`, [simulationId, entityId]),
     pool.query(`SELECT BIN_TO_UUID(elc.location_id) AS locationId,l.location_type AS locationType FROM entity_locations_current elc JOIN locations l ON l.entity_id=elc.location_id AND l.simulation_id=elc.simulation_id WHERE elc.simulation_id=UUID_TO_BIN(?) AND elc.entity_id=UUID_TO_BIN(?) LIMIT 1`, [simulationId, entityId]),
     pool.query(`SELECT action_type AS actionType FROM actions WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) ORDER BY started_simulation_at DESC LIMIT 6`, [simulationId, entityId])
   ]);
