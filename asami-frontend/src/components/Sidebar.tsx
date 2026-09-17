@@ -15,21 +15,21 @@ interface Props {
 
 export function Sidebar({ simulations, simulation, view, setView, onSimulationChange, onNewSimulation }: Props) {
   const nav = [
-    ['overview', LayoutDashboard, 'Control room'],
-    ['analysis', Activity, 'Analysis'],
-    ['timeline', History, 'Timeline'],
-    ['memory', BrainCircuit, 'Memory'],
-    ['mind', Brain, 'Asami’s mind'],
-    ['relationships', HeartHandshake, 'Relationships'],
-    ['development', Sparkles, 'Development'],
-    ['chat', MessageCircle, 'Chat with Asami'],
+    ['overview', LayoutDashboard, 'Panoramica'],
+    ['analysis', Activity, 'Analisi'],
+    ['timeline', History, 'Cronologia'],
+    ['memory', BrainCircuit, 'Memoria'],
+    ['mind', Brain, 'Mente di Asami'],
+    ['relationships', HeartHandshake, 'Relazioni'],
+    ['development', Sparkles, 'Sviluppo'],
+    ['chat', MessageCircle, 'Parla con Asami'],
   ] as const
 
   return (
     <aside className="sidebar">
       <Brand />
       <div className="sim-picker">
-        <div className="eyebrow">SIMULATION</div>
+        <div className="eyebrow">SIMULAZIONE</div>
         <select value={simulation?.id || ''} onChange={(e) => onSimulationChange(e.target.value)} aria-label="Seleziona simulazione">
           {simulations.length === 0 && <option value="">Nessuna simulazione</option>}
           {simulations.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
@@ -44,10 +44,10 @@ export function Sidebar({ simulations, simulation, view, setView, onSimulationCh
         ))}
       </nav>
       <div className="sidebar-footer">
-        <div className="mini-stat"><Database size={15} /><span>MySQL source of truth</span></div>
+        <div className="mini-stat"><Database size={15} /><span>MySQL come fonte dati</span></div>
         <div className="mini-stat"><Clock3 size={15} /><span>{simulation ? formatSimTime(simulation.currentSimulationAt) : '—'}</span></div>
-        <div className="mini-stat"><Users size={15} /><span>Autonomy engine</span></div>
-        <div className="version-chip">Frontend 1.1 · Cognitive v2</div>
+        <div className="mini-stat"><Users size={15} /><span>Motore di autonomia</span></div>
+        <div className="version-chip">Frontend 1.1 · Cognizione v2</div>
       </div>
     </aside>
   )
