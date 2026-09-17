@@ -75,7 +75,7 @@ function getInterruptionReason(activeActionType, needs, perception) {
 async function interruptActiveAction({ simulationId, entityId, active, simulationTime, interruption, needChanges = [], perception = null }) {
   const actionId = active.id, actionType = String(active.actionType || "ACTION").toUpperCase(), eventId = active.metadata?.eventId || null;
   const result = { eventId, actionType, outcome: "PARTIAL", success: false, failureReason: "ACTION_INTERRUPTED", interrupted: true, interruption, targetEntityId: active.metadata?.targetEntityId || null, targetLocationId: active.metadata?.targetLocationId || null, relationshipIntent: active.metadata?.relationshipIntent || "NONE" };
-  const [updated] = await pool.query(`UPDATE actions SET status='COMPLETED',completed_simulation_at=?,result=? WHERE id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?) AND status='ACTIVE'`, [simulationTime, JSON.stringify(result), actionId, entityId, simulationId]);
+  const [updated] = await pool.query(`UPDATE actions SET status='INTERRUPTED',completed_simulation_at=?,result=? WHERE id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?) AND status='ACTIVE'`, [simulationTime, JSON.stringify(result), actionId, entityId, simulationId]);
   if (!updated.affectedRows) return false;
   const movementId = active.metadata?.movement?.movementId || null;
   if (movementId) await pool.query(`UPDATE movements SET status='INTERRUPTED',actual_arrival_simulation_at=NULL,reason='autonomous route interrupted by critical state',version=version+1 WHERE id=UUID_TO_BIN(?) AND status='ACTIVE'`, [simulationTime, movementId]);
@@ -129,8 +129,8 @@ class SimulationEngine {
       const clock = await simRepo.getActiveClock(sim.id); if (!clock) return;
       const nextTime = new Date(new Date(clock.simulationAnchorAt).getTime() + (Date.now() - new Date(clock.realAnchorAt).getTime()) * Number(clock.speed));
       const previousTime = new Date(sim.currentSimulationAt || clock.simulationAnchorAt); if (nextTime <= previousTime) return;
-      const advanced = await simRepo.updateCurrentTimeOptimistic(sim.id, nextTime, sim.version); if (!advanced) return;
-      context.simulationTime = nextTime.toISOString(); phase = "tick.create"; tickId = await simRepo.createTick(sim.id, nextTime, "AUTONOMOUS", env.ENGINE_VERSION);
+      tickId = await simRepo.advanceAndCreateTick(sim.id, nextTime, sim.version, "AUTONOMOUS", env.ENGINE_VERSION); if (!tickId) return;
+      context.simulationTime = nextTime.toISOString(); phase = "tick.create";
       try {
         const elapsedMinutes = Math.min(360, Math.max(0, (nextTime - previousTime) / 60000));
         const lastMaintenance = this.worldMaintenanceAt.get(sim.id); const maintenanceDue = lastMaintenance === undefined || nextTime.getTime() - lastMaintenance >= 3600000;
@@ -149,7 +149,7 @@ class SimulationEngine {
             phase = "entity.interruption"; const interruption = !wasCompleted ? getInterruptionReason(active.actionType, await readNeeds(entityId), perception) : null;
             if (interruption) {
               const interrupted = await interruptActiveAction({ simulationId: sim.id, entityId, active, simulationTime: updateTime, interruption, needChanges, perception });
-              if (interrupted) { phase = "entity.publish"; this.hub.publish(sim.id, "entity.state", { entityId, action: { ...active, status: "COMPLETED", interrupted: true }, status: "INTERRUPTED", interruption, needChanges }); continue; }
+              if (interrupted) { phase = "entity.publish"; this.hub.publish(sim.id, "entity.state", { entityId, action: { ...active, status: "INTERRUPTED", interrupted: true }, status: "INTERRUPTED", interruption, needChanges }); continue; }
             }
             if (wasCompleted) {
               phase = "entity.action.complete";

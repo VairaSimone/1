@@ -205,6 +205,35 @@ async function getActiveClock(id, conn = pool) {
   return rows[0] || null;
 }
 
+async function advanceAndCreateTick(id, nowSimulation, version, tickType, engineVersion) {
+  return withTransaction(async conn => {
+    const [rows] = await conn.query(`
+      SELECT status,version
+      FROM simulations
+      WHERE id=UUID_TO_BIN(?)
+      LIMIT 1
+      FOR UPDATE
+    `, [id]);
+    if (!rows.length || rows[0].status !== "RUNNING" || Number(rows[0].version) !== Number(version)) return null;
+
+    const [updated] = await conn.query(`
+      UPDATE simulations
+      SET current_simulation_at=?, version=version+1
+      WHERE id=UUID_TO_BIN(?) AND version=? AND status='RUNNING'
+    `, [nowSimulation, id, version]);
+    if (updated.affectedRows !== 1) return null;
+
+    const tickId = uuid();
+    await conn.query(`
+      INSERT INTO simulation_ticks
+        (id,simulation_id,simulation_time,real_started_at,tick_type,status,engine_version)
+      VALUES (UUID_TO_BIN(?),UUID_TO_BIN(?),?,UTC_TIMESTAMP(3),?,'RUNNING',?)
+    `, [tickId, id, nowSimulation, tickType, engineVersion]);
+
+    return tickId;
+  });
+}
+
 async function updateCurrentTimeOptimistic(id, nowSimulation, version) {
   const [r] = await pool.query(`
     UPDATE simulations
@@ -252,7 +281,7 @@ async function createSnapshot(id, simulationTime, state, snapshotVersion = 1) {
 
 module.exports = {
   listSimulations, getSimulation, createSimulation, setStatus, changeSpeed,
-  getActiveClock, updateCurrentTimeOptimistic, createTick, finishTick,
+  getActiveClock, updateCurrentTimeOptimistic, advanceAndCreateTick, createTick, finishTick,
   completeTick: finishTick,
   createSnapshot
 };
