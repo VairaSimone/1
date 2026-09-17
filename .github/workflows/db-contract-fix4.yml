@@ -27,7 +27,6 @@ jobs:
           set -euo pipefail
           python3 - <<'PY'
           from pathlib import Path
-          import re
 
           root = Path('.')
 
@@ -39,8 +38,7 @@ jobs:
                   raise SystemExit(f'{path}: expected {expected} occurrences, found {count} for {old!r}')
               p.write_text(text.replace(old, new))
 
-          # Goal provenance was lost when autonomous actions were created:
-          # actions.source_goal_id is the column used by analysis to attribute attempts to goals.
+          # Preserve autonomous action -> goal provenance. analysis-service uses source_goal_id.
           replace_exact(
               'src/services/action-service.js',
               'async function startAction({simulationId,entityId,decisionId,intentionId=null,actionType,simulationTime,targetEntityId=null,targetLocationId=null,relationshipIntent="NONE"})',
@@ -48,8 +46,8 @@ jobs:
           )
           replace_exact(
               'src/services/action-service.js',
-              'INSERT INTO actions(id,simulation_id,entity_id,decision_id,action_type,source_type,source_intention_id,started_simulation_at,status,target,parameters,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,'"'"'AUTONOMOUS'"'"',UUID_TO_BIN(?),?,'"'"'ACTIVE'"'"',?,?,1)',
-              'INSERT INTO actions(id,simulation_id,entity_id,decision_id,action_type,source_type,source_goal_id,source_intention_id,started_simulation_at,status,target,parameters,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,'"'"'AUTONOMOUS'"'"',UUID_TO_BIN(?),UUID_TO_BIN(?),?,'"'"'ACTIVE'"'"',?,?,1)',
+              'INSERT INTO actions(id,simulation_id,entity_id,decision_id,action_type,source_type,source_intention_id,started_simulation_at,status,target,parameters,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,\'AUTONOMOUS\',UUID_TO_BIN(?),?,\'ACTIVE\',?,?,1)',
+              'INSERT INTO actions(id,simulation_id,entity_id,decision_id,action_type,source_type,source_goal_id,source_intention_id,started_simulation_at,status,target,parameters,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,\'AUTONOMOUS\',UUID_TO_BIN(?),UUID_TO_BIN(?),?,\'ACTIVE\',?,?,1)',
           )
           replace_exact(
               'src/services/action-service.js',
@@ -62,39 +60,31 @@ jobs:
               'startAction({simulationId,entityId,decisionId:decision.decisionId,intentionId,goalId:goalState.goal?.id||null,actionType:decision.actionType,simulationTime,targetEntityId:decision.targetEntityId,targetLocationId:decision.targetLocationId,relationshipIntent:',
           )
 
-          # Gemini-generated state effects may contain stale/cross-simulation entity ids.
-          # The DB has composite same-simulation FKs, so validate those ids before writing.
+          # Validate AI-generated entity references against the current simulation before writing.
           personality = root / 'src/services/personality-service.js'
           text = personality.read_text()
-          helper = '''async function resolveEntityIdInSimulation(simulationId,entityId){if(!entityId)return null;const[rows]=await pool.query(`SELECT BIN_TO_UUID(id) AS id FROM entities WHERE simulation_id=UUID_TO_BIN(?) AND id=UUID_TO_BIN(?) LIMIT 1`,[simulationId,entityId]);return rows[0]?.id||null;}\n'''
-          marker = 'function normalizeKey(value,max=100){return String(value||"").trim().toUpperCase().replace(/\\s+/g,"_").slice(0,max);}\n'
+          helper = 'async function resolveEntityIdInSimulation(simulationId,entityId){if(!entityId)return null;const[rows]=await pool.query(`SELECT BIN_TO_UUID(id) AS id FROM entities WHERE simulation_id=UUID_TO_BIN(?) AND id=UUID_TO_BIN(?) LIMIT 1`,[simulationId,entityId]);return rows[0]?.id||null;}\n'
+          marker = 'function normalizeKey(value, max = 50) {\n  return safeText(value, max).toUpperCase().replace(/\\s+/g, \'_\');\n}\n'
           if helper not in text:
               if marker not in text:
                   raise SystemExit('personality-service.js: normalizeKey marker not found')
               text = text.replace(marker, marker + helper, 1)
 
-          old = 'const targetType=normalizeKey(item?.targetType||item?.topic||\'TOPIC\',50),targetEntityId=item?.targetEntityId||null,value=clampSigned(item?.value??item?.preferenceValue,1,0),strength=clamp01(item?.strength,.5),confidence=clamp01(item?.confidence,.5);if(!targetType)return null;'
-          new = 'const targetType=normalizeKey(item?.targetType||item?.topic||\'TOPIC\',50),rawTargetEntityId=item?.targetEntityId||null,targetEntityId=await resolveEntityIdInSimulation(simulationId,rawTargetEntityId),value=clampSigned(item?.value??item?.preferenceValue,1,0),strength=clamp01(item?.strength,.5),confidence=clamp01(item?.confidence,.5);if(!targetType||rawTargetEntityId&&!targetEntityId)return null;'
-          replace_count = text.count(old)
-          if replace_count != 1:
-              raise SystemExit(f'personality-service.js: preference contract target block expected once, found {replace_count}')
-          text = text.replace(old,new)
+          old = "const targetType=normalizeKey(item?.targetType||item?.topic||'TOPIC',50),targetEntityId=item?.targetEntityId||null,value=clampSigned(item?.value??item?.preferenceValue,1,0),strength=clamp01(item?.strength,.5),confidence=clamp01(item?.confidence,.5);if(!targetType)return null;"
+          new = "const targetType=normalizeKey(item?.targetType||item?.topic||'TOPIC',50),rawTargetEntityId=item?.targetEntityId||null,targetEntityId=await resolveEntityIdInSimulation(simulationId,rawTargetEntityId),value=clampSigned(item?.value??item?.preferenceValue,1,0),strength=clamp01(item?.strength,.5),confidence=clamp01(item?.confidence,.5);if(!targetType||rawTargetEntityId&&!targetEntityId)return null;"
+          replace_exact('src/services/personality-service.js', old, new)
 
-          old = 'const[rows]=await pool.query(`SELECT BIN_TO_UUID(id) AS id,version,object_value,confidence,importance,status FROM beliefs WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND predicate=? AND ((subject_entity_id=UUID_TO_BIN(?)) OR (subject_entity_id IS NULL AND ? IS NULL)) ORDER BY updated_simulation_at DESC LIMIT 1`,[simulationId,entityId,predicate,subjectEntityId,subjectEntityId]);'
-          new = 'const rawSubjectEntityId=item?.subjectEntityId||null,subjectEntityId=await resolveEntityIdInSimulation(simulationId,rawSubjectEntityId);if(rawSubjectEntityId&&!subjectEntityId)return null;const[rows]=await pool.query(`SELECT BIN_TO_UUID(id) AS id,version,object_value,confidence,importance,status FROM beliefs WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND predicate=? AND ((subject_entity_id=UUID_TO_BIN(?)) OR (subject_entity_id IS NULL AND ? IS NULL)) ORDER BY updated_simulation_at DESC LIMIT 1`,[simulationId,entityId,predicate,subjectEntityId,subjectEntityId]);'
-          if text.count(old) != 1:
-              raise SystemExit('personality-service.js: belief subject block not found exactly once')
-          text = text.replace(old,new)
+          old = 'const predicate=safeText(item?.predicate,150);if(!predicate)return null;const subjectEntityId=item?.subjectEntityId||null,objectValue=item?.objectValue??item?.value??null;if(objectValue===null||objectValue===undefined)return null;'
+          new = 'const predicate=safeText(item?.predicate,150);if(!predicate)return null;const rawSubjectEntityId=item?.subjectEntityId||null,subjectEntityId=await resolveEntityIdInSimulation(simulationId,rawSubjectEntityId),objectValue=item?.objectValue??item?.value??null;if(rawSubjectEntityId&&!subjectEntityId||objectValue===null||objectValue===undefined)return null;'
+          replace_exact('src/services/personality-service.js', old, new)
 
-          old = 'const content=safeText(item?.content,1000);if(!content)return null;const knowledgeType=normalizeKey(item?.knowledgeType||item?.type||\'CONVERSATION\',50),predicate=safeText(item?.predicate,150)||null,subjectEntityId=item?.subjectEntityId||entityId,objectEntityId=item?.objectEntityId||null,confidence=clamp01(item?.confidence,.6),importance=clamp01(item?.importance,.55);'
-          new = 'const content=safeText(item?.content,1000);if(!content)return null;const knowledgeType=normalizeKey(item?.knowledgeType||item?.type||\'CONVERSATION\',50),predicate=safeText(item?.predicate,150)||null,rawSubjectEntityId=item?.subjectEntityId||entityId,rawObjectEntityId=item?.objectEntityId||null,subjectEntityId=await resolveEntityIdInSimulation(simulationId,rawSubjectEntityId),objectEntityId=await resolveEntityIdInSimulation(simulationId,rawObjectEntityId),confidence=clamp01(item?.confidence,.6),importance=clamp01(item?.importance,.55);if(!subjectEntityId)return null;'
-          if text.count(old) != 1:
-              raise SystemExit('personality-service.js: knowledge entity block not found exactly once')
-          text = text.replace(old,new)
+          old = "const content=safeText(item?.content,1000);if(!content)return null;const knowledgeType=normalizeKey(item?.knowledgeType||item?.type||'CONVERSATION',50),predicate=safeText(item?.predicate,150)||null,subjectEntityId=item?.subjectEntityId||entityId,objectEntityId=item?.objectEntityId||null,confidence=clamp01(item?.confidence,.6),importance=clamp01(item?.importance,.55);"
+          new = "const content=safeText(item?.content,1000);if(!content)return null;const knowledgeType=normalizeKey(item?.knowledgeType||item?.type||'CONVERSATION',50),predicate=safeText(item?.predicate,150)||null,rawSubjectEntityId=item?.subjectEntityId||entityId,rawObjectEntityId=item?.objectEntityId||null,subjectEntityId=await resolveEntityIdInSimulation(simulationId,rawSubjectEntityId),objectEntityId=await resolveEntityIdInSimulation(simulationId,rawObjectEntityId),confidence=clamp01(item?.confidence,.6),importance=clamp01(item?.importance,.55);if(!subjectEntityId)return null;"
+          replace_exact('src/services/personality-service.js', old, new)
           personality.write_text(text)
 
           test = root / 'test/schema-contract-second-pass.test.js'
-          test.write_text('''const test=require("node:test");\nconst assert=require("node:assert/strict");\nconst fs=require("node:fs");\nconst path=require("node:path");\nconst src=path.join(__dirname,"../src");\nconst read=name=>fs.readFileSync(path.join(src,name),"utf8");\n\ntest("autonomous actions preserve goal provenance in source_goal_id",()=>{\n  const action=read("services/action-service.js");\n  const autonomy=read("services/autonomy-service.js");\n  assert.match(action,/source_goal_id/);\n  assert.match(autonomy,/goalId:goalState\.goal\?\.id\\|\\|null/);\n});\n\ntest("generated entity references are validated against the active simulation before DB writes",()=>{\n  const personality=read("services/personality-service.js");\n  assert.match(personality,/resolveEntityIdInSimulation/);\n  assert.match(personality,/simulation_id=UUID_TO_BIN\\(\\?\\)/);\n});\n''')
+          test.write_text('''const test=require("node:test");\nconst assert=require("node:assert/strict");\nconst fs=require("node:fs");\nconst path=require("node:path");\nconst src=path.join(__dirname,"../src");\nconst read=name=>fs.readFileSync(path.join(src,name),"utf8");\n\ntest("autonomous actions preserve goal provenance in source_goal_id",()=>{\n  const action=read("services/action-service.js");\n  const autonomy=read("services/autonomy-service.js");\n  assert.match(action,/source_goal_id/);\n  assert.match(autonomy,/goalId:goalState\\.goal\\?\\.id\\|\\|null/);\n});\n\ntest("generated entity references are validated against the active simulation before DB writes",()=>{\n  const personality=read("services/personality-service.js");\n  assert.match(personality,/resolveEntityIdInSimulation/);\n  assert.match(personality,/simulation_id=UUID_TO_BIN\\(\\?\\)/);\n});\n''')
           PY
 
       - name: Install backend dependencies
