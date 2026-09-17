@@ -8,7 +8,10 @@ RUN npm run build
 
 # Serve it with Nginx.
 FROM nginx:alpine
+RUN apk add --no-cache openssl
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /app/dist /usr/share/nginx/html
+COPY docker-entrypoint.sh /usr/local/bin/asami-entrypoint.sh
+RUN chmod +x /usr/local/bin/asami-entrypoint.sh
 EXPOSE 80
-CMD ["nginx", "-g", "daemon off;"]
+ENTRYPOINT ["/usr/local/bin/asami-entrypoint.sh"]
