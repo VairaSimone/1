@@ -47,7 +47,7 @@ test("binary UUID simulation_id is normalized before relationship history insert
 test("16-byte UUID buffers are converted to canonical UUID strings", () => {
   const uuidBuffer = Buffer.from("80625c7c722940ab8ab3da566c8c7b00", "hex");
   assert.equal(binaryUuidToString(uuidBuffer), "80625c7c-7229-40ab-8ab3-da566c8c7b00");
-  assert.equal(binaryUuidToString(Buffer.from("abc", "utf8")), Buffer.from("abc", "utf8"));
+  assert.deepEqual(binaryUuidToString(Buffer.from("abc", "utf8")), Buffer.from("abc", "utf8"));
 });
 
 test("unrelated SQL is not modified", () => {
