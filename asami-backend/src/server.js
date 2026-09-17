@@ -10,6 +10,7 @@ require("./services/development-duration-bootstrap").install();
 require("./services/decision-sql-compat-bootstrap").install();
 require("./services/action-runtime-bootstrap").install();
 require("./services/behavior-fix-bootstrap").install();
+require("./services/cognitive-causal-api-guard").install();
 const { env } = require("./config/env");
 const logger = require("./lib/logger");
 const { ensureDatabase } = require("./db/database-init");
