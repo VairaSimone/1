@@ -22,7 +22,7 @@ export function Chat({ messages, asami, senderId, onSenderId, onSend }: { messag
     setSending(true)
     setError(null)
     try { await onSend(draft.trim()); setDraft('') }
-    catch (e) { setError(e instanceof Error ? e.message : 'Invio fallito.') }
+    catch (e) { setError(e instanceof Error ? e.message : 'Invio non riuscito.') }
     finally { setSending(false) }
   }
 
@@ -30,7 +30,7 @@ export function Chat({ messages, asami, senderId, onSenderId, onSend }: { messag
     <div className="chat-header">
       <div className="chat-avatar"><WandSparkles size={21} /></div>
       <div>
-        <div className="eyebrow">DIRECT COMMUNICATION</div>
+        <div className="eyebrow">COMUNICAZIONE DIRETTA</div>
         <h2>Parla con {asami.displayName}</h2>
         <span>Stai parlando con Asami: la sua memoria, il suo stato, i suoi obiettivi, le sue relazioni e il suo modo di comunicare possono cambiare nel tempo.</span>
       </div>
@@ -48,7 +48,7 @@ export function Chat({ messages, asami, senderId, onSenderId, onSend }: { messag
             <span>{formatSimTime(m.simulationAt)}</span>
           </div>
         </div>
-      }) : <EmptyState icon={<Bot size={21} />} title="Conversazione vuota" text="Scrivi a Asami quando hai configurato un sender entity valido." />}
+      }) : <EmptyState icon={<Bot size={21} />} title="Conversazione vuota" text="Scrivi ad Asami quando hai configurato un mittente valido." />}
     </div>
 
     <div className="chat-composer">
@@ -58,7 +58,8 @@ export function Chat({ messages, asami, senderId, onSenderId, onSend }: { messag
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void submit() } }}
-          placeholder="Scrivi qualcosa a Asami…"
+          placeholder="Scrivi qualcosa ad Asami…"
+          aria-label="Messaggio"
           rows={2}
         />
         <button className="send-button" disabled={!canSend} onClick={() => void submit()}>
