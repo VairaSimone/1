@@ -63,6 +63,15 @@
 .anomaly-row strong { font-size:11px; }
 .anomaly-row span { color:var(--muted); font-size:10px; line-height:1.45; }
 .anomaly-row > b { font-size:13px; }
+.pattern-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; }
+.pattern-card { min-width:0; padding:13px; border:1px solid var(--border); border-radius:12px; background:var(--soft); display:flex; flex-direction:column; gap:6px; }
+.pattern-card.warning, .pattern-card.critical { border-color:color-mix(in srgb, var(--warning) 34%, var(--border)); }
+.pattern-card.critical { border-color:color-mix(in srgb, var(--danger) 38%, var(--border)); }
+.pattern-card-top { display:flex; justify-content:space-between; align-items:center; color:var(--muted); }
+.pattern-card.warning .pattern-card-top, .pattern-card.critical .pattern-card-top { color:var(--danger); }
+.pattern-card-top b { font-size:12px; }
+.pattern-card > strong { font-size:12px; line-height:1.35; }
+.pattern-card > span { color:var(--muted); font-size:10px; line-height:1.5; }
 .all-clear { min-height:165px; display:flex; align-items:center; justify-content:center; flex-direction:column; text-align:center; gap:7px; color:var(--muted); }
 .all-clear svg { color:var(--success); }
 .all-clear strong { color:var(--text); font-size:12px; }
@@ -75,4 +84,4 @@
 .signal-stack > div:last-child { border-bottom:0; }
 .signal-stack strong { font-size:15px; }
 @media (max-width: 1100px) { .analysis-kpis { grid-template-columns:repeat(3,minmax(0,1fr)); } .analysis-grid.three { grid-template-columns:1fr; } }
-@media (max-width: 780px) { .analysis-toolbar { align-items:stretch; } .range-custom { flex-wrap:wrap; } .range-custom input { min-width:0; flex:1; } .analysis-kpis, .analysis-grid { grid-template-columns:1fr; } .analysis-span-2 { grid-column:auto; } }
+@media (max-width: 780px) { .analysis-toolbar { align-items:stretch; } .range-custom { flex-wrap:wrap; } .range-custom input { min-width:0; flex:1; } .analysis-kpis, .analysis-grid, .pattern-grid { grid-template-columns:1fr; } .analysis-span-2 { grid-column:auto; } }
