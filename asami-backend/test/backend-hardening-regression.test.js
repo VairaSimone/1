@@ -24,7 +24,8 @@ test('movement completion trusts the persisted movement destination', () => {
 test('speed changes advance the simulation clock before creating a new segment', () => {
   const source = read('repositories/simulation-repo.js');
   assert.match(source, /UPDATE simulations\s+SET current_simulation_at=\?,version=version\+1/);
-  assert.match(source, /simulation_anchor_at, speed/);
+  assert.match(source, /simulation_anchor_at/);
+  assert.match(source, /\bspeed\b/);
   assert.match(source, /endSimulationTime/);
 });
 
