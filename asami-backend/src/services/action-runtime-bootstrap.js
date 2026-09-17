@@ -43,13 +43,13 @@ async function getCurrentLocation(simulationId, entityId) {
   return rows[0]?.locationId || null;
 }
 
-async function resolveMovementTarget(args) {
+async function resolveMovementRoute(args) {
   if (!MOVE_ACTIONS.has(String(args?.actionType || "").toUpperCase()) || !args?.targetLocationId) return null;
   const originId = await getCurrentLocation(args.simulationId, args.entityId);
   if (!originId || String(originId) === String(args.targetLocationId)) return null;
   const route = actionService.shortestRoute(await loadLocations(args.simulationId), originId, args.targetLocationId);
-  if (!route?.path?.[1] || String(route.path[1]) === String(args.targetLocationId)) return null;
-  return { nextHop: route.path[1], finalTarget: args.targetLocationId, routePath: route.path };
+  if (!route?.path?.length || String(route.path[0]) !== String(originId) || String(route.path.at(-1)) !== String(args.targetLocationId)) return null;
+  return { finalTarget: args.targetLocationId, routePath: route.path, distanceMeters: route.distanceMeters };
 }
 
 function install() {
@@ -57,21 +57,20 @@ function install() {
   const originalStartAction = actionService.startAction;
   if (typeof originalStartAction !== "function") throw new Error("action-service.startAction is unavailable");
 
-  actionService.startAction = async function multiHopStartAction(args = {}) {
-    const movement = await resolveMovementTarget(args);
-    if (!movement) return originalStartAction(args);
-
-    const result = await originalStartAction({ ...args, targetLocationId: movement.nextHop });
-    if (result?.actionId) {
+  actionService.startAction = async function autonomousMovementStartAction(args = {}) {
+    const movement = await resolveMovementRoute(args);
+    const result = await originalStartAction(args);
+    if (movement && result?.actionId) {
       await pool.query(`
         UPDATE actions
         SET parameters=JSON_SET(
           COALESCE(parameters, JSON_OBJECT()),
           '$.finalTargetLocationId', ?,
-          '$.routePath', JSON_EXTRACT(?, '$')
+          '$.routePath', JSON_EXTRACT(?, '$'),
+          '$.routeDistanceMeters', ?
         )
         WHERE id=UUID_TO_BIN(?)
-      `, [movement.finalTarget, JSON.stringify(movement.routePath), result.actionId]);
+      `, [movement.finalTarget, JSON.stringify(movement.routePath), Number(movement.distanceMeters) || 0, result.actionId]);
     }
     return result;
   };
@@ -79,4 +78,4 @@ function install() {
   installed = true;
 }
 
-module.exports = { install };
+module.exports = { install, resolveMovementRoute };
