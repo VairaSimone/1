@@ -98,7 +98,9 @@ function buildRouter({hub,gemini}){
     res.json(dashboard);
   });
   router.get("/simulations/:simulationId/analysis",async(req,res)=>{
-    res.json(await analyzeSimulation(uuid.parse(req.params.simulationId),{from:req.query.from,to:req.query.to}));
+    const simulationId=uuid.parse(req.params.simulationId);
+    const entityId=req.query.entityId?uuid.parse(req.query.entityId):undefined;
+    res.json(await analyzeSimulation(simulationId,{from:req.query.from,to:req.query.to,entityId}));
   });
   router.get("/simulations/:simulationId/timeline",async(req,res)=>{
     const simulationId=uuid.parse(req.params.simulationId);
