@@ -10,7 +10,21 @@ let installed = false;
 let originalMakeDecision = null;
 let originalCompleteAction = null;
 
+const processedActionIds = new Map();
+const MAX_PROCESSED_ACTION_IDS = 10000;
+
 function normalize(value) { return String(value ?? '').trim().toUpperCase(); }
+
+function claimAction(actionId) {
+  if (!actionId) return true;
+  if (processedActionIds.has(actionId)) return false;
+  processedActionIds.set(actionId, Date.now());
+  if (processedActionIds.size > MAX_PROCESSED_ACTION_IDS) {
+    const oldest = processedActionIds.keys().next().value;
+    if (oldest) processedActionIds.delete(oldest);
+  }
+  return true;
+}
 
 async function install() {
   if (installed) return;
@@ -49,15 +63,23 @@ async function install() {
       const actionId = input.actionId || result?.actionId || result?.id || null;
       let decisionId = input.decisionId || result?.decisionId || null;
       let targetEntityId = result?.targetEntityId || input.targetEntityId || null;
-      if (!decisionId && actionId && simulationId && entityId) {
-        const { pool } = require('../db/pool');
-        const [rows] = await pool.query(`SELECT BIN_TO_UUID(decision_id) AS decisionId,JSON_UNQUOTE(JSON_EXTRACT(parameters,'$.targetEntityId')) AS targetEntityId FROM actions WHERE id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) LIMIT 1`, [actionId,simulationId,entityId]);
-        decisionId = rows[0]?.decisionId || null;
-        targetEntityId = targetEntityId || rows[0]?.targetEntityId || null;
-      }
-      if (simulationId && entityId && simulationTime && actionType && outcome) {
-        void emergent.processExperience({ simulationId,entityId,simulationTime,actionType,outcome,actionId,decisionId,targetEntityId });
-        void causal.processExperience({ simulationId,entityId,simulationTime,actionType,outcome,actionId,decisionId,targetEntityId });
+      const shouldProcess = result?.completed !== false && simulationId && entityId && simulationTime && actionType && outcome && claimAction(actionId);
+
+      if (shouldProcess) {
+        if (!decisionId && actionId) {
+          const { pool } = require('../db/pool');
+          const [rows] = await pool.query(`SELECT BIN_TO_UUID(decision_id) AS decisionId,JSON_UNQUOTE(JSON_EXTRACT(parameters,'$.targetEntityId')) AS targetEntityId FROM actions WHERE id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) LIMIT 1`, [actionId,simulationId,entityId]);
+          decisionId = rows[0]?.decisionId || null;
+          targetEntityId = targetEntityId || rows[0]?.targetEntityId || null;
+        }
+
+        const cognitiveInput = { simulationId,entityId,simulationTime,actionType,outcome,actionId,decisionId,targetEntityId };
+        void Promise.all([
+          emergent.processExperience(cognitiveInput),
+          causal.processExperience(cognitiveInput),
+        ]).catch(err => {
+          logger.warn({ err: err.message, simulationId, entityId, actionId, actionType, outcome },'Cognitive v3 post-action learning failed');
+        });
       }
     } catch (err) {
       logger.warn({ err: err.message },'Cognitive v3 post-action learning skipped');
