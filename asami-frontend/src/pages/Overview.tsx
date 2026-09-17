@@ -14,34 +14,34 @@ export function Overview({ simulation, dashboard }: { simulation: Simulation; da
   return <>
     <div className="hero-card">
       <div className="hero-orb"><Sparkles size={32} /></div>
-      <div className="hero-copy"><div className="eyebrow">AUTONOMOUS ENTITY · PERSON</div><h2>{dashboard.entity.displayName}</h2><p>{dashboard.entity.description || 'Autonomous simulated person.'}</p><div className="hero-meta"><StatusPill value={dashboard.entity.status} /><span>Simulation time · {formatSimTime(simulation.currentSimulationAt)}</span></div></div>
-      <div className="hero-action"><div className="eyebrow">NOW</div><strong>{action ? labelize(action.actionType) : 'Observing'}</strong><span>{action?.status ? labelize(action.status) : 'Waiting for next engine tick'}</span></div>
+      <div className="hero-copy"><div className="eyebrow">ENTITÀ AUTONOMA · PERSONA</div><h2>{dashboard.entity.displayName}</h2><p>{dashboard.entity.description || 'Persona simulata autonoma.'}</p><div className="hero-meta"><StatusPill value={dashboard.entity.status} /><span>Tempo simulato · {formatSimTime(simulation.currentSimulationAt)}</span></div></div>
+      <div className="hero-action"><div className="eyebrow">ADESSO</div><strong>{action ? labelize(action.actionType) : 'Osservazione'}</strong><span>{action?.status ? labelize(action.status) : 'In attesa del prossimo ciclo del motore'}</span></div>
     </div>
 
     <div className="metric-grid">
-      <div className="metric-card"><div className="metric-icon"><HeartPulse size={18} /></div><div><span>Need dominante</span><strong>{topNeed ? labelize(topNeed.name) : '—'}</strong><small>{topNeed ? `${pct(topNeed.value)} pressure` : 'No data'}</small></div></div>
-      <div className="metric-card"><div className="metric-icon"><Brain size={18} /></div><div><span>Emozione dominante</span><strong>{topEmotion ? labelize(topEmotion.name) : '—'}</strong><small>{topEmotion ? pct(topEmotion.intensity) : 'No data'}</small></div></div>
-      <div className="metric-card"><div className="metric-icon"><Target size={18} /></div><div><span>Intenzione / goal</span><strong>{topGoal?.title || 'Nessun goal attivo'}</strong><small>{topGoal ? `${pct(topGoal.progress)} progress · P${topGoal.priority}` : 'The engine will create one'}</small></div></div>
-      <div className="metric-card"><div className="metric-icon"><Zap size={18} /></div><div><span>Clock speed</span><strong>× realtime</strong><small>{simulation.status} · v{simulation.version}</small></div></div>
+      <div className="metric-card"><div className="metric-icon"><HeartPulse size={18} /></div><div><span>Bisogno dominante</span><strong>{topNeed ? labelize(topNeed.name) : '—'}</strong><small>{topNeed ? `${pct(topNeed.value)} di pressione` : 'Nessun dato'}</small></div></div>
+      <div className="metric-card"><div className="metric-icon"><Brain size={18} /></div><div><span>Emozione dominante</span><strong>{topEmotion ? labelize(topEmotion.name) : '—'}</strong><small>{topEmotion ? pct(topEmotion.intensity) : 'Nessun dato'}</small></div></div>
+      <div className="metric-card"><div className="metric-icon"><Target size={18} /></div><div><span>Intenzione / obiettivo</span><strong>{topGoal?.title || 'Nessun obiettivo attivo'}</strong><small>{topGoal ? `${pct(topGoal.progress)} di avanzamento · P${topGoal.priority}` : 'Il motore ne creerà uno quando necessario'}</small></div></div>
+      <div className="metric-card"><div className="metric-icon"><Zap size={18} /></div><div><span>Velocità del tempo</span><strong>× tempo reale</strong><small>{labelize(simulation.status)} · v{simulation.version}</small></div></div>
     </div>
 
     <div className="overview-grid">
-      <Panel title="Needs pressure" eyebrow="INTERNAL STATE">
-        <div className="list-stack">{dashboard.needs.map((n) => <ProgressBar key={n.code} value={n.value} label={n.name} />)}</div>
+      <Panel title="Pressione dei bisogni" eyebrow="STATO INTERNO">
+        <div className="list-stack">{dashboard.needs.map((n) => <ProgressBar key={n.code} value={n.value} label={labelize(n.name)} />)}</div>
       </Panel>
-      <Panel title="Emotional field" eyebrow="EMOTIONS">
+      <Panel title="Campo emotivo" eyebrow="EMOZIONI">
         <div className="emotion-grid">{dashboard.emotions.map((e) => <div className="emotion-tile" key={e.code}><div className="emotion-top"><span>{labelize(e.name)}</span><strong>{pct(e.intensity)}</strong></div><ProgressBar value={e.intensity} compact /></div>)}</div>
       </Panel>
-      <Panel title="Personality trajectory" eyebrow="DEVELOPMENT SIGNALS" right={<span className="tiny-muted">Current traits</span>}>
+      <Panel title="Traiettoria della personalità" eyebrow="SEGNALI DI SVILUPPO" right={<span className="tiny-muted">Tratti attuali</span>}>
         <div className="score-stack">{strongestTraits.map((t) => <Score key={t.code} label={t.name} value={t.value} />)}</div>
       </Panel>
-      <Panel title="Where / what" eyebrow="WORLD STATE">
-        {loc ? <div className="location-card"><div className="location-icon"><MapPin size={18} /></div><div><strong>{labelize(loc.locationType)}</strong><span>{loc.addressData ? formatValue(loc.addressData) : 'Location linked to entity'}</span><small>Since {formatSimTime(loc.sinceSimulationAt)}</small></div></div> : <EmptyState icon={<MapPin size={20} />} title="No location yet" text="The current schema has no location for Asami." />}
+      <Panel title="Dove / cosa" eyebrow="STATO DEL MONDO">
+        {loc ? <div className="location-card"><div className="location-icon"><MapPin size={18} /></div><div><strong>{labelize(loc.locationType)}</strong><span>{loc.addressData ? formatValue(loc.addressData) : 'Posizione collegata ad Asami'}</span><small>Da {formatSimTime(loc.sinceSimulationAt)}</small></div></div> : <EmptyState icon={<MapPin size={20} />} title="Nessuna posizione" text="Lo schema attuale non contiene ancora una posizione per Asami." />}
       </Panel>
     </div>
 
-    <Panel title="Goals" eyebrow="INTENTIONS">
-      {dashboard.goals.length ? <div className="goal-table">{dashboard.goals.map((g) => <div className="goal-row" key={g.id}><div><strong>{g.title}</strong><span>{g.description || formatValue(g.motivation) || labelize(g.goalType)}</span></div><div className="goal-progress"><ProgressBar value={g.progress} compact /><small>{pct(g.progress)}</small></div><StatusPill value={g.status} /></div>)}</div> : <EmptyState icon={<Target size={20} />} title="No goals" text="Goals are generated by the autonomy engine from current needs." />}
+    <Panel title="Obiettivi" eyebrow="INTENZIONI">
+      {dashboard.goals.length ? <div className="goal-table">{dashboard.goals.map((g) => <div className="goal-row" key={g.id}><div><strong>{g.title}</strong><span>{g.description || formatValue(g.motivation) || labelize(g.goalType)}</span></div><div className="goal-progress"><ProgressBar value={g.progress} compact /><small>{pct(g.progress)}</small></div><StatusPill value={g.status} /></div>)}</div> : <EmptyState icon={<Target size={20} />} title="Nessun obiettivo" text="Gli obiettivi vengono generati dal motore di autonomia a partire dai bisogni attuali." />}
     </Panel>
   </>
 }
