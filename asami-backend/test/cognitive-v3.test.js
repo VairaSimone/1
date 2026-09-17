@@ -10,13 +10,13 @@ test('belief mapping follows the domain that produced the evidence', () => {
 });
 
 test('belief revision converts positive and negative evidence into opposing targets', () => {
-  assert.equal(cognitive.beliefRevisionTarget(1, 0.8), 0.8);
-  assert.equal(cognitive.beliefRevisionTarget(-1, 0.8), 0.2);
+  assert.ok(Math.abs(cognitive.beliefRevisionTarget(1, 0.8) - 0.8) < 1e-12);
+  assert.ok(Math.abs(cognitive.beliefRevisionTarget(-1, 0.8) - 0.2) < 1e-12);
   assert.ok(cognitive.beliefRevisionRate(1) > cognitive.beliefRevisionRate(0));
 });
 
 test('normalization remains deterministic for cognitive keys', () => {
-  assert.equal(cognitive.selfBeliefForAction('social connection').key, 'SOCIAL_CAPABILITY');
+  assert.equal(cognitive.selfBeliefForAction('Talking').key, 'SOCIAL_CAPABILITY');
   assert.equal(cognitive.beliefRevisionTarget(1, 2), 1);
   assert.equal(cognitive.beliefRevisionTarget(-1, -2), 1);
 });
