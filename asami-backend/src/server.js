@@ -17,6 +17,7 @@ const { ping, close } = require("./db/pool");
 const { bootstrapCoreDefinitions } = require("./services/bootstrap-service");
 const { buildCognitiveRouter } = require("./services/cognitive-v2-router");
 const cognitiveV2 = require("./services/cognitive-v2-bootstrap");
+const cognitiveV3 = require("./services/cognitive-v3-bootstrap");
 const { RealtimeHub } = require("./realtime/hub");
 const { GeminiService } = require("./ai/gemini");
 const { SimulationEngine } = require("./simulation/engine");
@@ -30,6 +31,7 @@ async function main(){
   const gemini=new GeminiService();
   await gemini.init();
   await cognitiveV2.install({gemini});
+  await cognitiveV3.install();
   const hub=new RealtimeHub();
   const app=express();
   app.disable("x-powered-by");
