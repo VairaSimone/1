@@ -28,7 +28,7 @@ export function Mind({ simulationId, entityId, onRefresh }: { simulationId: stri
   useEffect(() => { void load() }, [simulationId, entityId])
 
   if (loading && !data) return <div className="mind-loading"><Brain size={20} className="spin" /> Ricostruzione dello stato cognitivo…</div>
-  if (error && !data) return <div className="mind-error"><TriangleAlert size={18} /><div><strong>Mind state non disponibile</strong><span>{error}</span></div><button className="ghost-button" onClick={() => void load()}><RefreshCw size={14} /> Riprova</button></div>
+  if (error && !data) return <div className="mind-error"><TriangleAlert size={18} /><div><strong>Stato mentale non disponibile</strong><span>{error}</span></div><button className="ghost-button" onClick={() => void load()}><RefreshCw size={14} /> Riprova</button></div>
   if (!data) return <EmptyState title="Nessun dato cognitivo" text="Lo stato mentale di Asami non è ancora disponibile." />
 
   const attention = data.state.attention as AttentionItem[]
@@ -37,7 +37,7 @@ export function Mind({ simulationId, entityId, onRefresh }: { simulationId: stri
   const commitments: CommitmentItem[] = [
     ...data.promises.map(p => ({ ...p, kind: 'PROMISE' })),
     ...data.social.obligations.map(o => ({
-      id: String(o.id ?? ''), title: String(o.title ?? 'Obligation'), description: o.description ? String(o.description) : null,
+      id: String(o.id ?? ''), title: String(o.title ?? 'Obbligo'), description: o.description ? String(o.description) : null,
       targetEntityId: o.targetEntityId ? String(o.targetEntityId) : null, dueSimulationAt: o.dueSimulationAt ? String(o.dueSimulationAt) : null,
       status: String(o.status ?? 'OPEN'), importance: Number(o.priority ?? o.importance ?? 0.5), createdAt: String(o.createdAt ?? ''), kind: 'OBLIGATION'
     }))
@@ -49,93 +49,93 @@ export function Mind({ simulationId, entityId, onRefresh }: { simulationId: stri
   return <div className="mind-page">
     {error && <div className="mind-inline-error"><TriangleAlert size={15} /> {error}</div>}
     <div className="mind-top-grid">
-      <Panel title="Self model" eyebrow="IDENTITY">
+      <Panel title="Modello del sé" eyebrow="IDENTITÀ">
         <div className="mind-identity">
-          <div><span>Identity</span><strong>{data.self?.identitySummary || '—'}</strong></div>
-          <div><span>Self concept</span><p>{data.self?.selfConcept || '—'}</p></div>
-          <div><span>Current self view</span><p>{data.self?.currentSelfView || '—'}</p></div>
+          <div><span>Identità</span><strong>{data.self?.identitySummary || '—'}</strong></div>
+          <div><span>Concetto di sé</span><p>{data.self?.selfConcept || '—'}</p></div>
+          <div><span>Percezione attuale di sé</span><p>{data.self?.currentSelfView || '—'}</p></div>
         </div>
       </Panel>
-      <Panel title="Current attention" eyebrow="ATTENTION">
+      <Panel title="Attenzione attuale" eyebrow="ATTENZIONE">
         <div className="mind-signal-list">
-          {attention.length ? attention.slice(0, 6).map((item, index) => <div className="mind-signal" key={`${String(item.type)}-${index}`}><Compass size={14} /><div><strong>{labelize(String(item.type || 'SIGNAL'))}</strong><span>{String(item.title || item.reason || item.code || 'Salient internal signal')}</span></div>{typeof item.intensity === 'number' && <b>{Math.round(item.intensity * 100)}%</b>}</div>) : <EmptyState title="Nessuna attenzione registrata" text="Il prossimo decision cycle produrrà un nuovo focus." />}
+          {attention.length ? attention.slice(0, 6).map((item, index) => <div className="mind-signal" key={`${String(item.type)}-${index}`}><Compass size={14} /><div><strong>{labelize(String(item.type || 'SIGNAL'))}</strong><span>{String(item.title || item.reason || item.code || 'Segnale interno rilevante')}</span></div>{typeof item.intensity === 'number' && <b>{Math.round(item.intensity * 100)}%</b>}</div>) : <EmptyState title="Nessuna attenzione registrata" text="Il prossimo ciclo decisionale produrrà un nuovo focus." />}
         </div>
       </Panel>
     </div>
 
     <div className="mind-grid three">
-      <Panel title="Values" eyebrow="WHAT MATTERS">
+      <Panel title="Valori" eyebrow="CIÒ CHE CONTA">
         <div className="mind-metrics">{data.values.slice(0, 8).map(v => <Metric key={v.id} label={v.label} value={v.importance} />)}</div>
       </Panel>
-      <Panel title="Long-term desires" eyebrow="WHAT I WANT">
+      <Panel title="Desideri a lungo termine" eyebrow="CIÒ CHE VOGLIO">
         <div className="mind-desire-list">{data.desires.length ? data.desires.map(d => <div className="mind-desire" key={d.id}><div><strong>{d.title}</strong><span>{d.description || '—'}</span></div><b>{Math.round(d.priority * 100)}%</b><div className="mind-progress"><i style={{ width: `${Math.max(0, Math.min(100, d.progress * 100))}%` }} /></div></div>) : <EmptyState title="Nessun desiderio persistente" text="" />}</div>
       </Panel>
-      <Panel title="Self beliefs" eyebrow="WHAT I BELIEVE ABOUT MYSELF">
-        <div className="mind-belief-list">{data.beliefs.map(b => <div className="mind-belief" key={b.id}><strong>{b.statement}</strong><span>{Math.round(b.confidence * 100)}% confidence · {labelize(b.sourceType)}</span></div>)}</div>
+      <Panel title="Convinzioni su di sé" eyebrow="CIÒ CHE PENSO DI ME">
+        <div className="mind-belief-list">{data.beliefs.map(b => <div className="mind-belief" key={b.id}><strong>{b.statement}</strong><span>{Math.round(b.confidence * 100)}% di affidabilità · {labelize(b.sourceType)}</span></div>)}</div>
       </Panel>
     </div>
 
     <div className="mind-grid two">
-      <Panel title="Interpretation" eyebrow="HOW I READ THE SITUATION">
+      <Panel title="Interpretazione" eyebrow="COME LEGGO LA SITUAZIONE">
         <div className="mind-interpretations">{data.state.interpretation.length ? data.state.interpretation.map((item, index) => <div key={index}><Lightbulb size={15} /><div><strong>{labelize(String(item.type || 'INTERPRETATION'))}</strong><span>{String(item.statement || '—')}</span></div>{typeof item.confidence === 'number' && <b>{Math.round(item.confidence * 100)}%</b>}</div>) : <EmptyState title="Nessuna interpretazione recente" text="" />}</div>
       </Panel>
-      <Panel title="Internal conflicts" eyebrow="COMPETING MOTIVES">
-        <div className="mind-conflicts">{activeConflicts.length ? activeConflicts.map((c, index) => <div className="mind-conflict" key={index}><Sparkles size={15} /><div><strong>{String(c.left?.code || c.left?.id || 'Driver')} ↔ {String(c.right?.code || c.right?.id || 'Driver')}</strong><span>Intensity {Math.round(Number(c.intensity || 0) * 100)}%</span></div></div>) : <EmptyState title="Nessun conflitto forte" text="I motivi attivi non sono abbastanza vicini da creare una collisione significativa." />}</div>
+      <Panel title="Conflitti interni" eyebrow="MOTIVAZIONI IN CONFLITTO">
+        <div className="mind-conflicts">{activeConflicts.length ? activeConflicts.map((c, index) => <div className="mind-conflict" key={index}><Sparkles size={15} /><div><strong>{String(c.left?.code || c.left?.id || 'Motivazione')} ↔ {String(c.right?.code || c.right?.id || 'Motivazione')}</strong><span>Intensità {Math.round(Number(c.intensity || 0) * 100)}%</span></div></div>) : <EmptyState title="Nessun conflitto forte" text="Le motivazioni attive non sono abbastanza vicine da creare una collisione significativa." />}</div>
       </Panel>
     </div>
 
     <div className="mind-grid two">
-      <Panel title="Expectation → outcome" eyebrow="PREDICTION ERROR">
-        {latestExpectation ? <div className="mind-expectation"><div className="expectation-head"><span>{labelize(latestExpectation.actionType)}</span><b>{latestExpectation.status}</b></div><div className="expectation-values"><Metric label="Expected utility" value={latestExpectation.expectedUtility} /><Metric label="Expected success" value={latestExpectation.expectedSuccessProbability} /></div><div className="mind-outcome-row"><div><span>Prediction error</span><strong>{latestExpectation.predictionError === null ? 'open' : latestExpectation.predictionError.toFixed(3)}</strong></div><div><span>Regret</span><strong>{latestExpectation.regretScore === null ? 'open' : latestExpectation.regretScore.toFixed(3)}</strong></div></div></div> : <EmptyState title="Nessuna previsione risolta" text="Le prossime decisioni produrranno expectation e prediction error persistenti." />}
+      <Panel title="Aspettativa → esito" eyebrow="ERRORE DI PREVISIONE">
+        {latestExpectation ? <div className="mind-expectation"><div className="expectation-head"><span>{labelize(latestExpectation.actionType)}</span><b>{labelize(latestExpectation.status)}</b></div><div className="expectation-values"><Metric label="Utilità prevista" value={latestExpectation.expectedUtility} /><Metric label="Probabilità di successo prevista" value={latestExpectation.expectedSuccessProbability} /></div><div className="mind-outcome-row"><div><span>Errore di previsione</span><strong>{latestExpectation.predictionError === null ? 'aperto' : latestExpectation.predictionError.toFixed(3)}</strong></div><div><span>Rammarico</span><strong>{latestExpectation.regretScore === null ? 'aperto' : latestExpectation.regretScore.toFixed(3)}</strong></div></div></div> : <EmptyState title="Nessuna previsione risolta" text="Le prossime decisioni produrranno aspettative ed errori di previsione persistenti." />}
       </Panel>
-      <Panel title="Counterfactuals" eyebrow="WHAT ELSE COULD I HAVE DONE">
-        <div className="mind-counterfactuals">{data.counterfactuals.length ? data.counterfactuals.slice(0, 6).map(c => <div className="mind-counterfactual" key={c.id}><Target size={14} /><div><strong>{labelize(c.alternativeAction)}</strong><span>Predicted utility {c.predictedUtility.toFixed(2)}</span></div><b>regret {c.regretScore.toFixed(2)}</b></div>) : <EmptyState title="Nessun controfattuale" text="Il sistema salva alternative rilevanti quando Asami prende una decisione." />}</div>
+      <Panel title="Controfattuali" eyebrow="COS'ALTRO AVREI POTUTO FARE">
+        <div className="mind-counterfactuals">{data.counterfactuals.length ? data.counterfactuals.slice(0, 6).map(c => <div className="mind-counterfactual" key={c.id}><Target size={14} /><div><strong>{labelize(c.alternativeAction)}</strong><span>Utilità prevista {c.predictedUtility.toFixed(2)}</span></div><b>rammarico {c.regretScore.toFixed(2)}</b></div>) : <EmptyState title="Nessun controfattuale" text="Il sistema salva alternative rilevanti quando Asami prende una decisione." />}</div>
       </Panel>
     </div>
 
     <div className="mind-grid two">
-      <Panel title="Causal mind" eyebrow="EXPERIENCE → MEMORY → BELIEF → DESIRE → VALUE">
+      <Panel title="Mente causale" eyebrow="ESPERIENZA → MEMORIA → CONVINZIONE → DESIDERIO → VALORE">
         {causalActivations.length ? <div className="mind-causal-list">{causalActivations.slice(0, 8).map(item => <div className="mind-causal" key={item.id}><GitBranch size={14} /><div><strong>{labelize(item.sourceType)} · {labelize(item.sourceKey)}</strong><span>→ {labelize(item.targetType)} · {labelize(item.targetKey)}</span></div><b>{item.activation >= 0 ? '+' : '−'}{Math.abs(item.activation).toFixed(2)}</b></div>)}</div> : <EmptyState title="Nessuna catena causale" text="Quando le esperienze vengono propagate, qui comparirà il percorso che ha cambiato la mente di Asami." />}
-        <div className="mind-causal-footer"><span>{causalActivations.length} recent activations · {causalLinks.length} learned links</span></div>
+        <div className="mind-causal-footer"><span>{causalActivations.length} attivazioni recenti · {causalLinks.length} collegamenti appresi</span></div>
       </Panel>
-      <Panel title="Causal trajectory" eyebrow="HOW CHANGE PERSISTS">
+      <Panel title="Traiettoria causale" eyebrow="COME IL CAMBIAMENTO PERSISTE">
         <div className="mind-causal-explain">
-          <div><span>Latest cause</span><strong>{causalActivations[0] ? `${labelize(causalActivations[0].sourceType)} → ${labelize(causalActivations[0].targetType)}` : '—'}</strong></div>
-          <div><span>Deepest propagation</span><strong>{causalActivations.length ? `${Math.max(...causalActivations.map(a => Number(a.depth || 0)))} levels` : '—'}</strong></div>
-          <div><span>Most reinforced link</span><strong>{causalLinks[0] ? `${labelize(causalLinks[0].sourceKey)} → ${labelize(causalLinks[0].targetKey)}` : '—'}</strong></div>
+          <div><span>Ultima causa</span><strong>{causalActivations[0] ? `${labelize(causalActivations[0].sourceType)} → ${labelize(causalActivations[0].targetType)}` : '—'}</strong></div>
+          <div><span>Propagazione più profonda</span><strong>{causalActivations.length ? `${Math.max(...causalActivations.map(a => Number(a.depth || 0)))} livelli` : '—'}</strong></div>
+          <div><span>Collegamento più rinforzato</span><strong>{causalLinks[0] ? `${labelize(causalLinks[0].sourceKey)} → ${labelize(causalLinks[0].targetKey)}` : '—'}</strong></div>
         </div>
       </Panel>
     </div>
 
     <div className="mind-grid two">
-      <Panel title="Self evolution" eyebrow="EXPERIENCE → SELF MODEL">
-        {latestEvolution ? <div className="mind-narrative"><div><span>{labelize(latestEvolution.triggerType)}</span><strong>{latestEvolution.selfView}</strong><small>{formatSimTime(latestEvolution.simulationTime)}</small></div><div><span>Recent success rate</span><strong>{typeof latestEvolution.metrics?.successRate === 'number' ? pct(latestEvolution.metrics.successRate) : '—'}</strong></div></div> : <EmptyState title="Nessuna evoluzione registrata" text="Le esperienze significative aggiorneranno progressivamente il self model." />}
+      <Panel title="Evoluzione del sé" eyebrow="ESPERIENZA → MODELLO DEL SÉ">
+        {latestEvolution ? <div className="mind-narrative"><div><span>{labelize(latestEvolution.triggerType)}</span><strong>{latestEvolution.selfView}</strong><small>{formatSimTime(latestEvolution.simulationTime)}</small></div><div><span>Tasso di successo recente</span><strong>{typeof latestEvolution.metrics?.successRate === 'number' ? pct(latestEvolution.metrics.successRate) : '—'}</strong></div></div> : <EmptyState title="Nessuna evoluzione registrata" text="Le esperienze significative aggiorneranno progressivamente il modello del sé." />}
       </Panel>
-      <Panel title="Learning evidence" eyebrow="BELIEF REVISION">
-        <div className="mind-belief-list">{data.emergent.evidence.length ? data.emergent.evidence.slice(0, 6).map(item => <div className="mind-belief" key={item.id}><strong>{labelize(item.beliefKey)}</strong><span>{item.polarity > 0 ? '+' : '−'} evidence · {Math.round(item.evidenceStrength * 100)}% · {labelize(item.sourceType)}</span><small>{item.statement || 'Experience updated this belief.'}</small></div>) : <EmptyState title="Nessuna evidenza" text="Le azioni completate inizieranno a lasciare tracce epistemiche." />}</div>
-      </Panel>
-    </div>
-
-    <div className="mind-grid two">
-      <Panel title="Memory consolidation" eyebrow="EPISODIC → SEMANTIC">
-        <div className="mind-narrative">{data.emergent.consolidations.length ? data.emergent.consolidations.map(item => <div key={item.id}><span>{item.sourceCount} experiences</span><strong>{item.summary}</strong><small>{formatSimTime(item.createdAt)}</small></div>) : <EmptyState title="Nessuna regola consolidata" text="Le esperienze ripetute verranno trasformate in conoscenza più stabile." />}</div>
-      </Panel>
-      <Panel title="Counterfactual worlds" eyebrow="BRANCHED FUTURES">
-        <div className="mind-counterfactuals">{data.emergent.worlds.length ? data.emergent.worlds.slice(0, 6).map(world => <div className="mind-counterfactual" key={world.id}><Target size={14} /><div><strong>{labelize(world.worldKey)}</strong><span>{world.status} · utility {world.predictedUtility.toFixed(2)}</span></div><b>{world.selected ? 'chosen' : `regret ${world.regretScore.toFixed(2)}`}</b></div>) : <EmptyState title="Nessun branch" text="Ogni decisione importante può lasciare una traccia delle alternative non scelte." />}</div>
+      <Panel title="Evidenze di apprendimento" eyebrow="REVISIONE DELLE CONVINZIONI">
+        <div className="mind-belief-list">{data.emergent.evidence.length ? data.emergent.evidence.slice(0, 6).map(item => <div className="mind-belief" key={item.id}><strong>{labelize(item.beliefKey)}</strong><span>{item.polarity > 0 ? '+' : '−'} evidenza · {Math.round(item.evidenceStrength * 100)}% · {labelize(item.sourceType)}</span><small>{item.statement || 'Un\'esperienza ha aggiornato questa convinzione.'}</small></div>) : <EmptyState title="Nessuna evidenza" text="Le azioni completate inizieranno a lasciare tracce sulle convinzioni." />}</div>
       </Panel>
     </div>
 
     <div className="mind-grid two">
-      <Panel title="Autobiographical narrative" eyebrow="LIFE STORY">
-        <div className="mind-narrative">{data.narrative.map(chapter => <div key={chapter.id}><span>Chapter {chapter.chapterIndex}</span><strong>{chapter.title}</strong><p>{chapter.summary}</p><small>{formatSimTime(chapter.createdAt)}</small></div>)}</div>
+      <Panel title="Consolidamento della memoria" eyebrow="EPISODICO → SEMANTICO">
+        <div className="mind-narrative">{data.emergent.consolidations.length ? data.emergent.consolidations.map(item => <div key={item.id}><span>{item.sourceCount} esperienze</span><strong>{item.summary}</strong><small>{formatSimTime(item.createdAt)}</small></div>) : <EmptyState title="Nessuna regola consolidata" text="Le esperienze ripetute verranno trasformate in conoscenza più stabile." />}</div>
       </Panel>
-      <Panel title="Social mind" eyebrow="GROUPS · REPUTATION · OBLIGATIONS">
-        <div className="mind-social-summary"><div className="social-kpi"><HeartHandshake size={15} /><strong>{data.social.memberships.length}</strong><span>groups</span></div><div className="social-kpi"><HeartHandshake size={15} /><strong>{data.social.reputations.length}</strong><span>reputations</span></div><div className="social-kpi"><HeartHandshake size={15} /><strong>{commitments.length}</strong><span>open commitments</span></div></div>
+      <Panel title="Mondi controfattuali" eyebrow="FUTURI ALTERNATIVI">
+        <div className="mind-counterfactuals">{data.emergent.worlds.length ? data.emergent.worlds.slice(0, 6).map(world => <div className="mind-counterfactual" key={world.id}><Target size={14} /><div><strong>{labelize(world.worldKey)}</strong><span>{labelize(world.status)} · utilità {world.predictedUtility.toFixed(2)}</span></div><b>{world.selected ? 'scelto' : `rammarico ${world.regretScore.toFixed(2)}`}</b></div>) : <EmptyState title="Nessun ramo alternativo" text="Ogni decisione importante può lasciare una traccia delle alternative non scelte." />}</div>
+      </Panel>
+    </div>
+
+    <div className="mind-grid two">
+      <Panel title="Narrativa autobiografica" eyebrow="STORIA DI VITA">
+        <div className="mind-narrative">{data.narrative.map(chapter => <div key={chapter.id}><span>Capitolo {chapter.chapterIndex}</span><strong>{chapter.title}</strong><p>{chapter.summary}</p><small>{formatSimTime(chapter.createdAt)}</small></div>)}</div>
+      </Panel>
+      <Panel title="Mente sociale" eyebrow="GRUPPI · REPUTAZIONE · OBBLIGHI">
+        <div className="mind-social-summary"><div className="social-kpi"><HeartHandshake size={15} /><strong>{data.social.memberships.length}</strong><span>gruppi</span></div><div className="social-kpi"><HeartHandshake size={15} /><strong>{data.social.reputations.length}</strong><span>reputazioni</span></div><div className="social-kpi"><HeartHandshake size={15} /><strong>{commitments.length}</strong><span>impegni aperti</span></div></div>
         {data.emergent.groups.length > 0 && <div className="mind-commitments">{data.emergent.groups.map(group => <div key={group.id}><span>{labelize(group.groupType)}</span><strong>{group.name}</strong><small>{labelize(group.role || 'MEMBER')}</small></div>)}</div>}
-        <div className="mind-commitments">{commitments.slice(0, 8).map((item, index) => <div key={`${item.id}-${index}`}><span>{item.kind}</span><strong>{item.title}</strong><small>{item.dueSimulationAt || 'No deadline'}</small></div>)}</div>
+        <div className="mind-commitments">{commitments.slice(0, 8).map((item, index) => <div key={`${item.id}-${index}`}><span>{labelize(item.kind)}</span><strong>{item.title}</strong><small>{item.dueSimulationAt || 'Nessuna scadenza'}</small></div>)}</div>
       </Panel>
     </div>
 
-    <div className="mind-footer"><span>Latest cognitive state: {data.state.simulationTime ? formatSimTime(data.state.simulationTime) : '—'}</span><button className="ghost-button" onClick={() => void load()}><RefreshCw size={14} /> Refresh mind</button></div>
+    <div className="mind-footer"><span>Ultimo stato cognitivo: {data.state.simulationTime ? formatSimTime(data.state.simulationTime) : '—'}</span><button className="ghost-button" onClick={() => void load()}><RefreshCw size={14} /> Aggiorna mente</button></div>
   </div>
 }
