@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from 'react'
-import { Activity, AlertTriangle, BarChart3, Brain, CheckCircle2, Clock3, Database, Gauge, Search, ShieldAlert, Sparkles, Timer, XCircle } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { Activity, AlertTriangle, Brain, CheckCircle2, Clock3, Database, Gauge, Search, ShieldAlert, Sparkles, Timer, XCircle } from 'lucide-react'
 import { EmptyState, Panel } from '../components/Ui'
 import { formatSimTime, labelize, pct } from '../lib/format'
 import type { AnalysisData, AnalysisRangePreset } from '../types'
@@ -55,6 +55,7 @@ export function Analysis({ simulationId, currentSimulationAt, onRefresh }: { sim
   const [data, setData] = useState<AnalysisData | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const initialized = useRef(false)
 
   const applyPreset = (next: AnalysisRangePreset) => {
     setPreset(next)
@@ -65,7 +66,11 @@ export function Analysis({ simulationId, currentSimulationAt, onRefresh }: { sim
     setFrom(isoLocal(start)); setTo(isoLocal(end))
   }
 
-  useEffect(() => { applyPreset('24h') }, [currentSimulationAt])
+  useEffect(() => {
+    if (initialized.current) return
+    initialized.current = true
+    applyPreset('24h')
+  }, [])
 
   useEffect(() => {
     let disposed = false
