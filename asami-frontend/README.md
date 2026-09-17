@@ -30,12 +30,23 @@ Il dev server parte normalmente su `http://localhost:5173` e inoltra `/api` e `/
 
 ## Produzione
 
+La build Docker usa Nginx e protegge il frontend con HTTP Basic Authentication. La password viene letta **solo a runtime** tramite `ASAMI_FRONTEND_PASSWORD`: non usare `VITE_ASAMI_FRONTEND_PASSWORD`, perché le variabili `VITE_*` finiscono nel bundle client.
+
+Con il compose di esempio:
+
+```bash
+export ASAMI_FRONTEND_PASSWORD='la-tua-password'
+docker compose up -d --build
+```
+
+Il browser mostrerà la richiesta di username e password quando accedi al frontend. Lo username predefinito è `asami`.
+
 ```bash
 npm run build
 npm run preview
 ```
 
-La cartella `dist/` generata da `npm run build` è statica e può essere servita da Nginx, Caddy, Cloudflare Pages o qualsiasi static web server.
+La cartella `dist/` generata da `npm run build` è statica e, senza Nginx o un altro reverse proxy con autenticazione, non include questa protezione.
 
 ## Variabili ambiente
 
