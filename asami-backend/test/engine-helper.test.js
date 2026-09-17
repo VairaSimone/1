@@ -28,3 +28,13 @@ test("simulation clock and tick creation share one transaction",()=>{
   assert.match(section,/UPDATE simulations/);
   assert.match(section,/INSERT INTO simulation_ticks/);
 });
+
+test("interrupted movement update binds only movementId",()=>{
+  const source=fs.readFileSync(path.join(__dirname,"../src/simulation/engine.js"),"utf8");
+  const start=source.indexOf("async function interruptActiveAction");
+  const end=source.indexOf("class SimulationEngine",start);
+  const section=source.slice(start,end);
+  assert.match(section,/UPDATE movements SET status='INTERRUPTED'.*WHERE id=UUID_TO_BIN\(\?\).*status='ACTIVE'/);
+  assert.match(section,/status='ACTIVE'\`, \[movementId\]\)/);
+  assert.doesNotMatch(section,/status='ACTIVE'\`, \[simulationTime, movementId\]\)/);
+});

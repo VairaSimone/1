@@ -78,7 +78,7 @@ async function interruptActiveAction({ simulationId, entityId, active, simulatio
   const [updated] = await pool.query(`UPDATE actions SET status='INTERRUPTED',completed_simulation_at=?,result=? WHERE id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?) AND status='ACTIVE'`, [simulationTime, JSON.stringify(result), actionId, entityId, simulationId]);
   if (!updated.affectedRows) return false;
   const movementId = active.metadata?.movement?.movementId || null;
-  if (movementId) await pool.query(`UPDATE movements SET status='INTERRUPTED',actual_arrival_simulation_at=NULL,reason='autonomous route interrupted by critical state',version=version+1 WHERE id=UUID_TO_BIN(?) AND status='ACTIVE'`, [simulationTime, movementId]);
+  if (movementId) await pool.query(`UPDATE movements SET status='INTERRUPTED',actual_arrival_simulation_at=NULL,reason='autonomous route interrupted by critical state',version=version+1 WHERE id=UUID_TO_BIN(?) AND status='ACTIVE'`, [movementId]);
   if (active.intentionId) await pool.query(`UPDATE intentions SET status='CANCELLED',version=version+1 WHERE id=UUID_TO_BIN(?) AND status='ACTIVE'`, [active.intentionId]);
   if (active.decisionId) await pool.query(`UPDATE decisions SET status='EXECUTED',actual_outcome=? WHERE id=UUID_TO_BIN(?) AND status IN ('EVALUATED','CREATED')`, [JSON.stringify({ actionId, eventId, outcome: "PARTIAL", success: false, failureReason: "ACTION_INTERRUPTED", interrupted: true, interruption }), active.decisionId]);
 
