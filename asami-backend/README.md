@@ -89,3 +89,7 @@ La sola struttura aggiunta automaticamente dal backend è `gemini_usage`, usata 
 ```bash
 npm test
 ```
+
+## Database contract audit
+
+Il backend viene mantenuto allineato ai vincoli e agli stati definiti nel dump MySQL di Asami.
