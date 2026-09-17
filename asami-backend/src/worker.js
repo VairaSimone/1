@@ -1,10 +1,12 @@
 const logger=require("./lib/logger");
+const { ensureDatabase }=require("./db/database-init");
 const { ping,close }=require("./db/pool");
 const { GeminiService }=require("./ai/gemini");
 const { RealtimeHub }=require("./realtime/hub");
 const { SimulationEngine }=require("./simulation/engine");
 
 async function main(){
+  await ensureDatabase();
   await ping();
   const gemini=new GeminiService(); await gemini.init();
   const engine=new SimulationEngine({gemini,hub:new RealtimeHub()});
