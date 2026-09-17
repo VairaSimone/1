@@ -1,4 +1,0 @@
-{$ASAMI_DOMAIN} {
-    encode zstd gzip
-    reverse_proxy asami-frontend:80
-}
