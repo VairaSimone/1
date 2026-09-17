@@ -83,7 +83,7 @@ async function updateIdentityValues(simulationId, entityId, simulationTime, acti
     const row = rows[0];
     const delta = evidence * 0.007;
     const nextImportance = clamp01(Number(row.importance) + delta, Number(row.importance));
-    const nextConfidence = clamp01(Number(row.confidence) + Math.abs(delta) * 0.5, Number(row.confidence));
+    const nextConfidence = clamp01(Number(row.confidence) + delta * 0.5, Number(row.confidence));
     if (Math.abs(nextImportance - Number(row.importance)) < 0.000001) continue;
     await pool.query(`UPDATE identity_values SET importance=?,confidence=?,salience=?,origin='EXPERIENCE',updated_simulation_at=?,version=version+1 WHERE id=UUID_TO_BIN(?) AND version=?`, [nextImportance,nextConfidence,clamp01(0.4 + Math.abs(delta) * 8),simulationTime,row.id,row.version]);
   }
@@ -157,7 +157,7 @@ async function consolidateMemories(simulationId, entityId, simulationTime) {
       const memoryId = uuid();
       await pool.query(`INSERT INTO memories(id,simulation_id,entity_id,memory_type,content,importance,strength,confidence,emotional_intensity,source_event_id,source_activity_id,location_id,created_simulation_at,status,metadata,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),'SEMANTIC',?,?,?,?,?,?,?,?,?,'ACTIVE',?,1)`, [memoryId,simulationId,entityId,summary,0.72,0.82,confidence,0.28,null,null,null,sourceTo,metadata]);
       await pool.query(`INSERT INTO memory_consolidations(id,simulation_id,entity_id,consolidation_key,memory_type,source_count,source_from,source_to,summary,confidence,created_simulation_at,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,'SEMANTIC',?,?,?,?,?,?,1)`, [uuid(),simulationId,entityId,consolidationKey,items.length,sourceFrom,sourceTo,summary,confidence,simulationTime]);
-      consolidated.push({ consolidationKey, sourceCount: items.length, summary, confidence });
+      consolidated.push({ consolidationKey, sourceCount:items.length, summary, confidence });
     } else {
       await pool.query(`UPDATE memory_consolidations SET source_count=?,source_from=?,source_to=?,summary=?,confidence=?,created_simulation_at=?,version=version+1 WHERE id=UUID_TO_BIN(?)`, [items.length,sourceFrom,sourceTo,summary,confidence,simulationTime,existing[0].id]);
     }
@@ -233,7 +233,7 @@ async function processExperience({ simulationId, entityId, simulationTime, actio
     await decaySelfBeliefs(simulationId,entityId,simulationTime);
     const belief = selfBeliefForAction(actionType);
     const normalizedOutcome = normalize(outcome);
-    const polarity = normalizedOutcome === 'SUCCESS' ? 1 : normalizedOutcome === 'PARTIAL' ? 1 : -1;
+    const polarity = normalizedOutcome === 'SUCCESS' || normalizedOutcome === 'PARTIAL' ? 1 : -1;
     const strength = normalizedOutcome === 'SUCCESS' ? 0.88 : normalizedOutcome === 'PARTIAL' ? 0.58 : 0.82;
     const evidenceId = await recordBeliefEvidence({simulationId,entityId,simulationTime,beliefKey:belief.key,statement:belief.statement,polarity,evidenceStrength:strength,sourceType:'ACTION_OUTCOME',sourceRef:actionId,metadata:{actionType:normalize(actionType),outcome:normalizedOutcome,targetEntityId}});
     await reviseSelfBelief({simulationId,entityId,simulationTime,beliefKey:belief.key,statement:belief.statement,evidencePolarity:polarity,evidenceStrength:strength,sourceType:'ACTION_OUTCOME',sourceRef:actionId,importance:0.72});
