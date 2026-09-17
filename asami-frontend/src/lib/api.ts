@@ -1,4 +1,5 @@
 import type {
+  AnalysisData,
   ChatMessage,
   ChatResponse,
   Clock,
@@ -85,6 +86,13 @@ export const api = {
   }),
   asami: (id: string) => request<Dashboard['entity']>(`/simulations/${id}/asami`),
   dashboard: (simulationId: string, entityId: string) => request<Dashboard>(`/simulations/${simulationId}/dashboard/${entityId}`),
+  analysis: (simulationId: string, from?: string, to?: string) => {
+    const params = new URLSearchParams()
+    if (from) params.set('from', from)
+    if (to) params.set('to', to)
+    const query = params.toString()
+    return request<AnalysisData>(`/simulations/${simulationId}/analysis${query ? `?${query}` : ''}`)
+  },
   timeline: (simulationId: string, entityId: string, limit = 200) => request<TimelineItem[]>(`/simulations/${simulationId}/timeline?entityId=${encodeURIComponent(entityId)}&limit=${limit}`),
   events: (simulationId: string, limit = 100) => request<EventItem[]>(`/simulations/${simulationId}/events?limit=${limit}`),
   actions: (simulationId: string, entityId?: string, limit = 100) => request<unknown[]>(`/simulations/${simulationId}/actions?${new URLSearchParams({ ...(entityId ? { entityId } : {}), limit: String(limit) })}`),
