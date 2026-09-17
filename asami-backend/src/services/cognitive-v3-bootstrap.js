@@ -1,7 +1,9 @@
 const decisionService = require('./decision-service');
 const actionService = require('./action-service');
 const { install: installSchema } = require('./cognitive-v3-schema');
+const { install: installCausalSchema } = require('./cognitive-causal-schema');
 const emergent = require('./cognitive-v3-service');
+const causal = require('./cognitive-causal-service');
 const logger = require('../lib/logger');
 
 let installed = false;
@@ -13,6 +15,7 @@ function normalize(value) { return String(value ?? '').trim().toUpperCase(); }
 async function install() {
   if (installed) return;
   await installSchema();
+  await installCausalSchema();
   if (installed) return;
 
   originalMakeDecision = decisionService.makeDecision;
@@ -45,13 +48,16 @@ async function install() {
       const outcome = result?.outcome || result?.result?.outcome || input.outcome;
       const actionId = input.actionId || result?.actionId || result?.id || null;
       let decisionId = input.decisionId || result?.decisionId || null;
+      let targetEntityId = result?.targetEntityId || input.targetEntityId || null;
       if (!decisionId && actionId && simulationId && entityId) {
         const { pool } = require('../db/pool');
-        const [rows] = await pool.query(`SELECT BIN_TO_UUID(decision_id) AS decisionId FROM actions WHERE id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) LIMIT 1`, [actionId,simulationId,entityId]);
+        const [rows] = await pool.query(`SELECT BIN_TO_UUID(decision_id) AS decisionId,JSON_UNQUOTE(JSON_EXTRACT(parameters,'$.targetEntityId')) AS targetEntityId FROM actions WHERE id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) LIMIT 1`, [actionId,simulationId,entityId]);
         decisionId = rows[0]?.decisionId || null;
+        targetEntityId = targetEntityId || rows[0]?.targetEntityId || null;
       }
       if (simulationId && entityId && simulationTime && actionType && outcome) {
-        void emergent.processExperience({ simulationId,entityId,simulationTime,actionType,outcome,actionId,decisionId,targetEntityId:result?.targetEntityId || input.targetEntityId || null });
+        void emergent.processExperience({ simulationId,entityId,simulationTime,actionType,outcome,actionId,decisionId,targetEntityId });
+        void causal.processExperience({ simulationId,entityId,simulationTime,actionType,outcome,actionId,decisionId,targetEntityId });
       }
     } catch (err) {
       logger.warn({ err: err.message },'Cognitive v3 post-action learning skipped');
@@ -60,7 +66,7 @@ async function install() {
   };
 
   installed = true;
-  logger.info('Cognitive v3 bootstrap installed');
+  logger.info('Cognitive v3 + causal mind bootstrap installed');
 }
 
 module.exports = { install };
