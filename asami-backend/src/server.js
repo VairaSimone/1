@@ -6,6 +6,7 @@ require("./services/runtime-enhancements").install();
 require("./services/memory-normalization-bootstrap").install();
 require("./services/behavioral-policy-bootstrap").install();
 require("./services/behavioral-integrity-bootstrap").install();
+require("./services/development-duration-bootstrap").install();
 const { env } = require("./config/env");
 const logger = require("./lib/logger");
 const { ping, close } = require("./db/pool");
