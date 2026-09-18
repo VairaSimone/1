@@ -61,7 +61,8 @@ async function updateConversationAfterTurn({simulationId,conversationId,simulati
   const commitments=[...(state.commitments||[])];
   if(intent?.type==="QUESTION"||intent?.type==="SEEK_ADVICE"){
     if(topic&&!openQuestions.includes(topic))openQuestions.unshift(topic);
-    if(topic&&!unresolved.includes(topic))unresolved.unshift(topic);
+    const oldIndex=unresolved.indexOf(topic);
+    if(oldIndex>=0)unresolved.splice(oldIndex,1);
   }else if(topic){
     const i=unresolved.indexOf(topic);
     if(i>=0)unresolved.splice(i,1);
@@ -469,7 +470,9 @@ async function initiateConversation({simulationId,asamiEntityId,simulationTime,g
   if(innerState.desireToContinue<.60||!thresholdReached)return null;
 
   const intent={type:"PROACTIVE_CONTACT",reason:"autonomous_social_initiative"};
-  const topic=conversation.state.currentTopic||null;
+  const currentTopic=conversation.state.currentTopic||null;
+  const repeatedTopic=Array.isArray(conversation.state.sharedTopics)&&conversation.state.sharedTopics.some(item=>String(item?.topic||"")===String(currentTopic||"")&&Number(item?.count||0)>=3);
+  const topic=repeatedTopic?null:currentTopic;
   const proactiveReason={
     type:primaryReason,
     socialNeed:social,
