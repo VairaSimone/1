@@ -55,7 +55,7 @@ export default function App() {
       {!sim.dashboard && sim.simulation && <div className="content"><LoadingState text="Caricamento dello stato di Asami…" /></div>}
       {sim.dashboard && sim.simulation && <div className="content">
         {view !== 'overview' && <PageTitle eyebrow={title[0]} title={title[1]} description={title[2]} action={<button className="ghost-button" onClick={() => void sim.refresh(true)}>Sincronizza</button>} />}
-        {view === 'overview' && <Overview simulation={sim.simulation} dashboard={sim.dashboard} />}
+        {view === 'overview' && <Overview simulation={sim.simulation} dashboard={sim.dashboard} clockSpeed={sim.clockSpeed} />}
         {view === 'analysis' && <Analysis simulationId={sim.simulation.id} entityId={sim.asamiId || sim.dashboard.entity.id} currentSimulationAt={sim.simulation.currentSimulationAt} onRefresh={() => void sim.refresh(true)} />}
         {view === 'timeline' && <Timeline items={sim.timeline} events={sim.events} />}
         {view === 'memory' && <Memory memories={sim.memories} />}

@@ -32,9 +32,28 @@ const WORLD2_ACTIVITIES = [
   ['COOKING','Cooking','PRACTICAL'],['DRAWING','Drawing','CREATIVE'],['WRITING','Writing','CREATIVE'],['LISTENING_MUSIC','Listening to music','LEISURE'],['USING_DEVICE','Using a device','LEISURE'],['CLEANING','Cleaning','PRACTICAL'],['BATHING','Bathing','BIOLOGICAL'],['CREATING','Creating','CREATIVE'],['SHOPPING','Shopping','PRACTICAL'],['HELPING','Helping','SOCIAL'],['TEACHING','Teaching','EDUCATION'],['LEARNING','Learning','EDUCATION'],['ARGUING','Arguing','SOCIAL'],['APOLOGIZING','Apologizing','SOCIAL'],['GIVING','Giving','SOCIAL'],['RECEIVING','Receiving','SOCIAL'],['ATTENDING_EVENT','Attending an event','SOCIAL'],
 ];
 
+async function ensureNormsForSimulation(simulationId, db = pool) {
+  if (!simulationId) return 0;
+  for (const [code,title,description,importance,violationCost] of NORMS) {
+    await db.query(
+      `INSERT INTO social_norms
+        (id,simulation_id,code,title,description,importance,violation_cost,active,version)
+       VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,?,?,1,1)
+       ON DUPLICATE KEY UPDATE
+         title=VALUES(title),
+         description=VALUES(description),
+         importance=VALUES(importance),
+         violation_cost=VALUES(violation_cost),
+         active=1`,
+      [uuid(),simulationId,code,title,description,importance,violationCost]
+    );
+  }
+  return NORMS.length;
+}
+
 async function ensureNorms() {
   const [simulations] = await pool.query(`SELECT BIN_TO_UUID(id) AS id FROM simulations`);
-  for (const sim of simulations) for (const [code,title,description,importance,violationCost] of NORMS) await pool.query(`INSERT INTO social_norms(id,simulation_id,code,title,description,importance,violation_cost,active,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,?,?,1,1) ON DUPLICATE KEY UPDATE title=VALUES(title),description=VALUES(description),importance=VALUES(importance),violation_cost=VALUES(violation_cost),active=1`,[uuid(),sim.id,code,title,description,importance,violationCost]);
+  for (const sim of simulations) await ensureNormsForSimulation(sim.id);
 }
 
 async function ensureWorld2Activities() {
@@ -57,4 +76,4 @@ function install() {
   })().catch(err=>{installed=false;logger.error(logger.contextError({phase:'cognitive-v2-schema'},err,'Cognitive v2 schema migration failed'));throw err;});
 }
 
-module.exports={install};
+module.exports={install,ensureNormsForSimulation};

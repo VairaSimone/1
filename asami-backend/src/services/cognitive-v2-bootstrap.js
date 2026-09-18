@@ -5,18 +5,21 @@ const chatService = require('./chat-service');
 const { ACTIONS } = require('./decision-rules');
 const {
   install: installSchema,
+  ensureNormsForSimulation,
 } = require('./cognitive-v2-schema');
 const cognitive = require('./cognitive-v2-service');
 const { upsertBelief } = require('./personality-service');
 const { applyEmotions, getTraits, persistNeedTransition } = require('./state-service');
 const logger = require('../lib/logger');
 const cognitiveQueue = require('./cognitive-queue');
+const simulationRepo = require('../repositories/simulation-repo');
 
 let installed = false;
 let originalBuildDecisionContext = null;
 let originalMakeDecision = null;
 let originalCompleteAction = null;
 let originalSendMessage = null;
+let originalCreateSimulation = null;
 
 const WORLD2_ACTIONS = [
   'COOKING','DRAWING','WRITING','LISTENING_MUSIC','USING_DEVICE','CLEANING','BATHING',
@@ -246,6 +249,21 @@ function install({ gemini } = {}) {
   installed = true;
   return (async () => {
     await ensureV2TablesAndIdentity();
+
+    originalCreateSimulation = simulationRepo.createSimulation;
+    simulationRepo.createSimulation = async function wrappedCreateSimulation(...args) {
+      const result = await originalCreateSimulation.apply(this, args);
+      const simulationId = result?.simulation?.id;
+      if (simulationId) {
+        try {
+          const seededNorms = await ensureNormsForSimulation(simulationId);
+          logger.info({ simulationId, seededNorms }, 'Social norms seeded for new simulation');
+        } catch (err) {
+          logger.error({ simulationId, err }, 'Could not seed social norms for new simulation');
+        }
+      }
+      return result;
+    };
     for (const action of WORLD2_ACTIONS) if (!ACTIONS.includes(action)) ACTIONS.push(action);
     installGeminiCognitiveContext(gemini);
 
