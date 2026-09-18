@@ -36,7 +36,7 @@ Il server HTTP e il worker della simulazione partono nello stesso processo.
 
 ## Gemini e controllo costi
 
-Il default tecnico del backend usa un intervallo di **360 minuti** tra deliberazioni autonome ordinarie, con trigger ad alta priorità che possono anticipare la consultazione. Il budget viene comunque controllato anche a livello di richieste e costo stimato.
+Il default tecnico del backend usa un intervallo minimo di **60 minuti** tra deliberazioni autonome ordinarie, con trigger ad alta priorità che possono anticipare la consultazione. Il budget viene comunque controllato anche a livello di richieste e costo stimato.
 
 ```dotenv
 GEMINI_ENABLED=true
@@ -45,7 +45,7 @@ GEMINI_DAILY_BUDGET_USD=0.35
 GEMINI_MONTHLY_BUDGET_USD=10
 GEMINI_DAILY_MAX_REQUESTS=100
 GEMINI_MONTHLY_MAX_REQUESTS=2500
-GEMINI_AUTONOMY_MIN_INTERVAL_MINUTES=360
+GEMINI_AUTONOMY_MIN_INTERVAL_MINUTES=60
 ```
 
 Il backend crea automaticamente la tabella `gemini_usage` al primo avvio. Il consumo viene registrato con i token riportati dall'API Gemini, compresi i token di reasoning, e una richiesta viene bloccata prima dell'invio quando il budget giornaliero o mensile non è più disponibile.
@@ -70,13 +70,15 @@ Le decisioni autonome usano Gemini solo quando la scelta deterministica è debol
 - `GET /api/simulations/:simulationId/memories/:entityId`
 - `GET /api/simulations/:simulationId/relationships/:entityId`
 - `GET /api/simulations/:simulationId/development/:entityId`
+- `GET /api/simulations/:simulationId/conversations/:conversationId`
+- `GET /api/simulations/:simulationId/conversations/:conversationId/messages`
 - `POST /api/simulations/:simulationId/conversations/messages`
 
 WebSocket:
 
 `ws://localhost:3000/realtime?simulationId=<uuid>`
 
-Gli eventi includono `simulation.tick`, `world.event`, `entity.state`, `action.created`, `action.completed`, `message.created`, `simulation.status`.
+Gli eventi includono `simulation.tick`, `world.event`, `entity.state`, `action.created`, `action.completed`, `message.created`, `simulation.status`. I messaggi `message.created` includono `simulationAt`, cioè il timestamp del tempo simulato, mentre `occurredAt` resta il timestamp reale del server.
 
 ## Nota sul database
 

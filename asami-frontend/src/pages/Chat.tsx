@@ -1,10 +1,10 @@
 import { Bot, Send, UserRound, WandSparkles } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import type { ChatMessage, Entity } from '../types'
+import type { ChatMessage, ConversationState, Entity } from '../types'
 import { formatSimTime } from '../lib/format'
 import { EmptyState, Panel } from '../components/Ui'
 
-export function Chat({ messages, asami, senderId, onSenderId, onSend }: { messages: ChatMessage[]; asami: Entity; senderId: string; onSenderId: (id: string) => void; onSend: (text: string) => Promise<void> }) {
+export function Chat({ messages, conversationState, asami, senderId, onSenderId, onSend }: { messages: ChatMessage[]; conversationState: ConversationState | null; asami: Entity; senderId: string; onSenderId: (id: string) => void; onSend: (text: string) => Promise<void> }) {
   const [draft, setDraft] = useState('')
   const [sending, setSending] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -33,6 +33,7 @@ export function Chat({ messages, asami, senderId, onSenderId, onSend }: { messag
         <div className="eyebrow">COMUNICAZIONE DIRETTA</div>
         <h2>Parla con {asami.displayName}</h2>
         <span>Stai parlando con Asami: la sua memoria, il suo stato, i suoi obiettivi, le sue relazioni e il suo modo di comunicare possono cambiare nel tempo.</span>
+        {conversationState?.state.currentTopic && <span>Tema attuale: {conversationState.state.currentTopic.replaceAll('_', ' ').toLowerCase()}</span>}
       </div>
     </div>
 
