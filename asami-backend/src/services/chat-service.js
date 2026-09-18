@@ -52,7 +52,7 @@ function stateInnerForDashboard(dashboard,state){
   });
 }
 
-async function updateConversationAfterTurn({simulationId,conversationId,simulationTime,initiator,content,topic,intent,significance,innerState,generated=null}) {
+async function updateConversationAfterTurn({simulationId,conversationId,simulationTime,initiator,content,asamiContent=null,topic,intent,significance,innerState,generated=null}) {
   const current=await getConversationState(simulationId,conversationId);
   if(!current)return null;
   const state=current.state||{};
@@ -84,7 +84,7 @@ async function updateConversationAfterTurn({simulationId,conversationId,simulati
     lastInitiator:initiator,
     innerState:innerState||state.innerState,
     lastUserExcerpt:initiator==="USER"?String(content||"").slice(0,240):(state.lastUserExcerpt||null),
-    lastAsamiExcerpt:initiator==="ASAMI"?String(content||"").slice(0,240):(state.lastAsamiExcerpt||null),
+    lastAsamiExcerpt:String(asamiContent||"").slice(0,240)||state.lastAsamiExcerpt||null,
     significance:Number(Number(significance?.score||0).toFixed(4)),
     significanceReasons:Array.isArray(significance?.reasons)?significance.reasons.slice(0,8):[],
     lastTurnAt:simulationTime
@@ -221,6 +221,7 @@ async function sendMessage({
     simulationTime,
     initiator:"USER",
     content,
+    asamiContent:reply,
     topic:context.conversationTopic,
     intent:context.conversationIntent,
     significance,
