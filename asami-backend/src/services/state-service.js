@@ -296,8 +296,8 @@ async function updateNeeds(entityId,simulationTime,deltaHours,causeEventId=null,
     let delta;
     if(PRESSURE_NEEDS.has(r.code))delta=decayRate*hours*multiplier;
     else if(r.code==="ENERGY")delta=-decayRate*hours*multiplier;
-    else if(r.code==="SAFETY")delta=recoveryRate*0.25*hours;
-    else if(r.code==="COMFORT")delta=(recoveryRate*0.15-decayRate*0.05)*hours;
+    else if(r.code==="SAFETY")delta=(recoveryRate*0.10*(1-clamp(r.value))-decayRate*0.03)*hours;
+    else if(r.code==="COMFORT")delta=(recoveryRate*0.12*(1-clamp(r.value))-decayRate*0.04)*hours;
     else delta=-decayRate*hours;
     if(action){
       const rawGain=saturatedActionDelta(action,r.code,r.value,hours),floor=ACTION_PRESSURE_FLOORS[action]?.[r.code];
