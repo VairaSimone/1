@@ -25,8 +25,15 @@ function isTerminalDecisionStatus(status) {
   return TERMINAL_DECISION_STATUSES.has(String(status || "").trim().toUpperCase());
 }
 
-function cutoffExpression(days) {
-  return "DATE_SUB(?, INTERVAL " + Math.max(1, Math.floor(days)) + " DAY)";
+function cutoffDateTime(simulationTime, days) {
+  const normalized = normalizeSimulationTimestamp(simulationTime);
+  if (typeof normalized !== "string") throw new TypeError("simulationTime must be a string");
+  const date = new Date(normalized.replace(" ", "T") + "Z");
+  if (!Number.isFinite(date.getTime())) throw new TypeError("Invalid simulationTime");
+  date.setUTCDate(date.getUTCDate() - Math.max(1, Math.floor(days)));
+  const pad = n => String(n).padStart(2, "0");
+  const ms = String(date.getUTCMilliseconds()).padStart(3, "0");
+  return `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())} ${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}:${pad(date.getUTCSeconds())}.${ms}`;
 }
 
 async function acquireLock(simulationId) {
@@ -54,7 +61,7 @@ async function releaseLock(lock) {
 }
 
 async function compactOldDecisionContexts(conn, simulationId, simulationTime) {
-  const cutoff = cutoffExpression(POLICY.decisionContextDays);
+  const cutoff = cutoffDateTime(simulationTime, POLICY.decisionContextDays);
   const sql =
     "UPDATE decisions " +
     "SET context=JSON_OBJECT(" +
@@ -65,7 +72,7 @@ async function compactOldDecisionContexts(conn, simulationId, simulationTime) {
     ") " +
     "WHERE simulation_id=UUID_TO_BIN(?) " +
     "AND status IN ('EXECUTED','FAILED','CANCELLED') " +
-    "AND simulation_time < " + cutoff + " " +
+    "AND simulation_time < ? " +
     "AND context IS NOT NULL " +
     "AND (COALESCE(JSON_UNQUOTE(JSON_EXTRACT(context,'$.archived')),'false') <> 'true')";
   if (POLICY.dryRun) {
@@ -73,18 +80,18 @@ async function compactOldDecisionContexts(conn, simulationId, simulationTime) {
       "SELECT COUNT(*) AS candidates FROM decisions " +
       "WHERE simulation_id=UUID_TO_BIN(?) " +
       "AND status IN ('EXECUTED','FAILED','CANCELLED') " +
-      "AND simulation_time < " + cutoff + " " +
+      "AND simulation_time < ? " +
       "AND context IS NOT NULL " +
       "AND (COALESCE(JSON_UNQUOTE(JSON_EXTRACT(context,'$.archived')),'false') <> 'true')";
-    const [rows] = await conn.query(countSql, [simulationId, simulationTime]);
+    const [rows] = await conn.query(countSql, [simulationId, cutoff]);
     return { candidates: Number(rows[0]?.candidates || 0), updated: 0, dryRun: true };
   }
-  const [result] = await conn.query(sql, [simulationId, simulationTime]);
+  const [result] = await conn.query(sql, [simulationId, cutoff]);
   return { candidates: Number(result.affectedRows || 0), updated: Number(result.affectedRows || 0) };
 }
 
 async function deleteUnselectedDecisionOptions(conn, simulationId, simulationTime) {
-  const cutoff = cutoffExpression(POLICY.decisionOptionsDays);
+  const cutoff = cutoffDateTime(simulationTime, POLICY.decisionOptionsDays);
   const limit = POLICY.batchSize;
   const maxDeletes = POLICY.maxDeletesPerTable;
   const selectSql =
@@ -94,7 +101,7 @@ async function deleteUnselectedDecisionOptions(conn, simulationId, simulationTim
     "AND d.status IN ('EXECUTED','FAILED','CANCELLED') " +
     "AND d.selected_option_id IS NOT NULL " +
     "AND dopt.id <> d.selected_option_id " +
-    "AND d.simulation_time < " + cutoff + " " +
+    "AND d.simulation_time < ? " +
     "LIMIT " + limit;
   if (POLICY.dryRun) {
     const countSql =
@@ -104,13 +111,13 @@ async function deleteUnselectedDecisionOptions(conn, simulationId, simulationTim
       "AND d.status IN ('EXECUTED','FAILED','CANCELLED') " +
       "AND d.selected_option_id IS NOT NULL " +
       "AND dopt.id <> d.selected_option_id " +
-      "AND d.simulation_time < " + cutoff;
-    const [rows] = await conn.query(countSql, [simulationId, simulationTime]);
+      "AND d.simulation_time < ?;
+    const [rows] = await conn.query(countSql, [simulationId, cutoff]);
     return { candidates: Number(rows[0]?.candidates || 0), deleted: 0, dryRun: true };
   }
   let deleted = 0;
   while (deleted < maxDeletes) {
-    const [rows] = await conn.query(selectSql, [simulationId, simulationTime]);
+    const [rows] = await conn.query(selectSql, [simulationId, cutoff]);
     if (!rows.length) break;
     const ids = rows.map(row => row.id).filter(Boolean);
     const placeholders = ids.map(() => "UUID_TO_BIN(?)").join(",");
@@ -123,7 +130,7 @@ async function deleteUnselectedDecisionOptions(conn, simulationId, simulationTim
 }
 
 async function deleteResolvedExpectations(conn, simulationId, simulationTime) {
-  const cutoff = cutoffExpression(POLICY.cognitiveArtifactDays);
+  const cutoff = cutoffDateTime(simulationTime, POLICY.cognitiveArtifactDays);
   const limit = POLICY.batchSize;
   const maxDeletes = POLICY.maxDeletesPerTable;
   const selectSql =
@@ -132,8 +139,8 @@ async function deleteResolvedExpectations(conn, simulationId, simulationTime) {
     "WHERE ce.simulation_id=UUID_TO_BIN(?) " +
     "AND ce.status='RESOLVED' " +
     "AND d.status IN ('EXECUTED','FAILED','CANCELLED') " +
-    "AND d.simulation_time < " + cutoff + " " +
-    "AND ce.resolved_simulation_at < " + cutoff + " " +
+    "AND d.simulation_time < ? " +
+    "AND ce.resolved_simulation_at < ? " +
     "LIMIT " + limit;
   if (POLICY.dryRun) {
     const countSql =
@@ -142,14 +149,14 @@ async function deleteResolvedExpectations(conn, simulationId, simulationTime) {
       "WHERE ce.simulation_id=UUID_TO_BIN(?) " +
       "AND ce.status='RESOLVED' " +
       "AND d.status IN ('EXECUTED','FAILED','CANCELLED') " +
-      "AND d.simulation_time < " + cutoff + " " +
-      "AND ce.resolved_simulation_at < " + cutoff;
-    const [rows] = await conn.query(countSql, [simulationId, simulationTime]);
+      "AND d.simulation_time < ? " +
+      "AND ce.resolved_simulation_at < ?;
+    const [rows] = await conn.query(countSql, [simulationId, cutoff, cutoff]);
     return { candidates: Number(rows[0]?.candidates || 0), deleted: 0, dryRun: true };
   }
   let deleted = 0;
   while (deleted < maxDeletes) {
-    const [rows] = await conn.query(selectSql, [simulationId, simulationTime]);
+    const [rows] = await conn.query(selectSql, [simulationId, cutoff, cutoff]);
     if (!rows.length) break;
     const ids = rows.map(row => row.id).filter(Boolean);
     const placeholders = ids.map(() => "UUID_TO_BIN(?)").join(",");
@@ -162,7 +169,7 @@ async function deleteResolvedExpectations(conn, simulationId, simulationTime) {
 }
 
 async function deleteResolvedCounterfactuals(conn, simulationId, simulationTime) {
-  const cutoff = cutoffExpression(POLICY.cognitiveArtifactDays);
+  const cutoff = cutoffDateTime(simulationTime, POLICY.cognitiveArtifactDays);
   const limit = POLICY.batchSize;
   const maxDeletes = POLICY.maxDeletesPerTable;
   const selectSql =
@@ -170,7 +177,7 @@ async function deleteResolvedCounterfactuals(conn, simulationId, simulationTime)
     "JOIN decisions d ON d.id=cf.decision_id " +
     "WHERE cf.simulation_id=UUID_TO_BIN(?) " +
     "AND d.status IN ('EXECUTED','FAILED','CANCELLED') " +
-    "AND d.simulation_time < " + cutoff + " " +
+    "AND d.simulation_time < ? " +
     "LIMIT " + limit;
   if (POLICY.dryRun) {
     const countSql =
@@ -178,13 +185,13 @@ async function deleteResolvedCounterfactuals(conn, simulationId, simulationTime)
       "JOIN decisions d ON d.id=cf.decision_id " +
       "WHERE cf.simulation_id=UUID_TO_BIN(?) " +
       "AND d.status IN ('EXECUTED','FAILED','CANCELLED') " +
-      "AND d.simulation_time < " + cutoff;
-    const [rows] = await conn.query(countSql, [simulationId, simulationTime]);
+      "AND d.simulation_time < ?;
+    const [rows] = await conn.query(countSql, [simulationId, cutoff]);
     return { candidates: Number(rows[0]?.candidates || 0), deleted: 0, dryRun: true };
   }
   let deleted = 0;
   while (deleted < maxDeletes) {
-    const [rows] = await conn.query(selectSql, [simulationId, simulationTime]);
+    const [rows] = await conn.query(selectSql, [simulationId, cutoff]);
     if (!rows.length) break;
     const ids = rows.map(row => row.id).filter(Boolean);
     const placeholders = ids.map(() => "UUID_TO_BIN(?)").join(",");
@@ -197,7 +204,7 @@ async function deleteResolvedCounterfactuals(conn, simulationId, simulationTime)
 }
 
 async function deleteResolvedCounterfactualWorlds(conn, simulationId, simulationTime) {
-  const cutoff = cutoffExpression(POLICY.cognitiveArtifactDays);
+  const cutoff = cutoffDateTime(simulationTime, POLICY.cognitiveArtifactDays);
   const limit = POLICY.batchSize;
   const maxDeletes = POLICY.maxDeletesPerTable;
   const selectSql =
@@ -206,8 +213,8 @@ async function deleteResolvedCounterfactualWorlds(conn, simulationId, simulation
     "WHERE cw.simulation_id=UUID_TO_BIN(?) " +
     "AND cw.status='RESOLVED' " +
     "AND d.status IN ('EXECUTED','FAILED','CANCELLED') " +
-    "AND d.simulation_time < " + cutoff + " " +
-    "AND cw.resolved_simulation_at < " + cutoff + " " +
+    "AND d.simulation_time < ? " +
+    "AND cw.resolved_simulation_at < ? " +
     "LIMIT " + limit;
   if (POLICY.dryRun) {
     const countSql =
@@ -216,14 +223,14 @@ async function deleteResolvedCounterfactualWorlds(conn, simulationId, simulation
       "WHERE cw.simulation_id=UUID_TO_BIN(?) " +
       "AND cw.status='RESOLVED' " +
       "AND d.status IN ('EXECUTED','FAILED','CANCELLED') " +
-      "AND d.simulation_time < " + cutoff + " " +
-      "AND cw.resolved_simulation_at < " + cutoff;
-    const [rows] = await conn.query(countSql, [simulationId, simulationTime]);
+      "AND d.simulation_time < ? " +
+      "AND cw.resolved_simulation_at < ?;
+    const [rows] = await conn.query(countSql, [simulationId, cutoff, cutoff]);
     return { candidates: Number(rows[0]?.candidates || 0), deleted: 0, dryRun: true };
   }
   let deleted = 0;
   while (deleted < maxDeletes) {
-    const [rows] = await conn.query(selectSql, [simulationId, simulationTime]);
+    const [rows] = await conn.query(selectSql, [simulationId, cutoff, cutoff]);
     if (!rows.length) break;
     const ids = rows.map(row => row.id).filter(Boolean);
     const placeholders = ids.map(() => "UUID_TO_BIN(?)").join(",");
