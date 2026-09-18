@@ -603,12 +603,13 @@ function applyDriverPolicy(context, classification, development) {
 async function persistBehavioralDecision(decisionId, context, result) {
   if (!decisionId) return;
   const proactivity = buildProactivity(context, result?.actionType);
-  const updatedContext = {
+  const { compactDecisionContext } = require("./decision-service");
+  const updatedContext = compactDecisionContext({
     ...context,
     behavioralDriver: proactivity.driver,
     proactivity,
     chosenAction: result?.actionType || null
-  };
+  });
   await pool.query(`
     UPDATE decisions
     SET trigger_type=?,context=?
