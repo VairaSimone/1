@@ -1,4 +1,4 @@
-import type { AnalysisData, ChatMessage, ChatResponse, Clock, Dashboard, Development, DevelopmentHistoryItem, EventItem, Memory, Simulation, TimelineItem, MindData } from '../types'
+import type { AnalysisData, ChatMessage, ChatResponse, Clock, ConversationState, Dashboard, Development, DevelopmentHistoryItem, EventItem, Memory, Simulation, TimelineItem, MindData } from '../types'
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/$/, '')
 const REQUEST_TIMEOUT_MS = 15000
@@ -52,6 +52,7 @@ export const api = {
   relationships: (simulationId: string, entityId: string) => request<unknown[]>(`/simulations/${simulationId}/relationships/${entityId}`),
   development: (simulationId: string, entityId: string) => request<{ current: Development | null; history: DevelopmentHistoryItem[] }>(`/simulations/${simulationId}/development/${entityId}`),
   conversationMessages: (simulationId: string, conversationId: string) => request<ChatMessage[]>(`/simulations/${simulationId}/conversations/${conversationId}/messages`),
+  conversationState: (simulationId: string, conversationId: string) => request<ConversationState>(`/simulations/${simulationId}/conversations/${conversationId}`),
   observer: (simulationId: string) => request<{ id: string; displayName: string; status: string }>(`/simulations/${simulationId}/observer`, { method: 'POST' }),
   sendMessage: (simulationId: string, payload: { senderEntityId: string; asamiEntityId?: string; conversationId?: string; content: string }) => request<ChatResponse>(`/simulations/${simulationId}/conversations/messages`, { method: 'POST', body: JSON.stringify(payload) }),
 }
