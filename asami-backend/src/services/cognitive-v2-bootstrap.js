@@ -10,6 +10,7 @@ const cognitive = require('./cognitive-v2-service');
 const { upsertBelief } = require('./personality-service');
 const { applyEmotions, getTraits, persistNeedTransition } = require('./state-service');
 const logger = require('../lib/logger');
+const cognitiveQueue = require('./cognitive-queue');
 
 let installed = false;
 let originalBuildDecisionContext = null;
@@ -219,6 +220,7 @@ async function postCompletionCognition(args, result) {
     if (expectation?.regret > 0.45) await cognitive.upsertIdentityValue({simulationId:args.simulationId,entityId:args.entityId,simulationTime:args.simulationTime,code:'LEARNING',confidenceDelta:0.018,salience:0.9});
   } catch (err) {
     logger.warn({ simulationId:args.simulationId, entityId:args.entityId, actionId:args.actionId, err }, 'Cognitive v2 post-action learning failed; core action result kept');
+    throw err;
   }
 }
 
@@ -265,7 +267,9 @@ function install({ gemini } = {}) {
     originalCompleteAction = actionService.completeAction;
     actionService.completeAction = async function wrappedCompleteAction(args = {}) {
       const result = await originalCompleteAction.call(this,args);
-      void postCompletionCognition(args,result);
+      void cognitiveQueue.enqueue(args.entityId, () => postCompletionCognition(args,result), { retries: 3, baseDelayMs: 10 }).catch(err => {
+        logger.warn({ simulationId:args.simulationId, entityId:args.entityId, actionId:args.actionId, err:err.message }, 'Cognitive v2 post-action learning exhausted retries');
+      });
       return result;
     };
 
