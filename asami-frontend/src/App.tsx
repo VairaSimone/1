@@ -62,7 +62,7 @@ export default function App() {
         {view === 'mind' && <Mind simulationId={sim.simulation.id} entityId={sim.asamiId || sim.dashboard.entity.id} />}
         {view === 'relationships' && <Relationships relationships={sim.dashboard.relationships} />}
         {view === 'development' && <Development current={sim.development.current} history={sim.development.history} traits={sim.dashboard.traits} />}
-        {view === 'chat' && <Chat messages={sim.messages} asami={sim.dashboard.entity} senderId={sim.chatSenderId} onSenderId={sim.setChatSenderId} onSend={async (text) => { await sim.sendMessage(text) }} />}
+        {view === 'chat' && <Chat messages={sim.messages} conversationState={sim.conversationState} asami={sim.dashboard.entity} senderId={sim.chatSenderId} onSenderId={sim.setChatSenderId} onSend={async (text) => { await sim.sendMessage(text) }} />}
       </div>}
       {!sim.simulation && !sim.error && <div className="empty-root"><CircleAlert size={24} /><h2>Nessuna simulazione selezionata</h2><p>Crea la prima vita autonoma per accedere alla sala di controllo.</p><button className="primary-button" onClick={() => setNewSimulation(true)}><Plus size={16} /> Crea simulazione</button></div>}
       <footer className="footer">ASAMI · SALA DI CONTROLLO · REST + WebSocket · stato gestito dal backend · nessuna simulazione lato client</footer>
