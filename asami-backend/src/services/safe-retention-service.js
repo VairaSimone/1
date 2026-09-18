@@ -111,7 +111,7 @@ async function deleteUnselectedDecisionOptions(conn, simulationId, simulationTim
       "AND d.status IN ('EXECUTED','FAILED','CANCELLED') " +
       "AND d.selected_option_id IS NOT NULL " +
       "AND dopt.id <> d.selected_option_id " +
-      "AND d.simulation_time < ?;
+      "AND d.simulation_time < ?";
     const [rows] = await conn.query(countSql, [simulationId, cutoff]);
     return { candidates: Number(rows[0]?.candidates || 0), deleted: 0, dryRun: true };
   }
@@ -150,7 +150,7 @@ async function deleteResolvedExpectations(conn, simulationId, simulationTime) {
       "AND ce.status='RESOLVED' " +
       "AND d.status IN ('EXECUTED','FAILED','CANCELLED') " +
       "AND d.simulation_time < ? " +
-      "AND ce.resolved_simulation_at < ?;
+      "AND ce.resolved_simulation_at < ?";
     const [rows] = await conn.query(countSql, [simulationId, cutoff, cutoff]);
     return { candidates: Number(rows[0]?.candidates || 0), deleted: 0, dryRun: true };
   }
@@ -224,7 +224,7 @@ async function deleteResolvedCounterfactualWorlds(conn, simulationId, simulation
       "AND cw.status='RESOLVED' " +
       "AND d.status IN ('EXECUTED','FAILED','CANCELLED') " +
       "AND d.simulation_time < ? " +
-      "AND cw.resolved_simulation_at < ?;
+      "AND cw.resolved_simulation_at < ?";
     const [rows] = await conn.query(countSql, [simulationId, cutoff, cutoff]);
     return { candidates: Number(rows[0]?.candidates || 0), deleted: 0, dryRun: true };
   }
