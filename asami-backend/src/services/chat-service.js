@@ -21,7 +21,7 @@ async function ensureConversation(simulationId,senderEntityId,asamiEntityId,conv
 async function findExistingConversation(simulationId,entityA,entityB){const[rows]=await pool.query(`SELECT BIN_TO_UUID(c.id) AS id FROM conversations c JOIN conversation_participants p1 ON p1.conversation_id=c.id AND p1.entity_id=UUID_TO_BIN(?) JOIN conversation_participants p2 ON p2.conversation_id=c.id AND p2.entity_id=UUID_TO_BIN(?) WHERE c.simulation_id=UUID_TO_BIN(?) AND c.status='ACTIVE' AND p1.left_simulation_at IS NULL AND p2.left_simulation_at IS NULL ORDER BY c.created_simulation_at DESC LIMIT 1`,[entityA,entityB,simulationId]);return rows[0]?.id||null;}
 
 function clampDialogueDelta(value,maxAbs){const n=Number(value);return Number.isFinite(n)?Math.max(-maxAbs,Math.min(maxAbs,n)):0;}
-function hasFutureIntent(text){return /\\b(domani|dopodomani|prossim|settimana|mese|anno|vorrei|voglio|penso di|prometto|farò|parto|programma|piano|tomorrow|next|future|i want|i will|i'm going to|plan|promise)\\b/i.test(String(text||""));}
+function hasFutureIntent(text){return /\b(domani|dopodomani|prossim|settimana|mese|anno|vorrei|voglio|penso di|prometto|farò|parto|programma|piano|tomorrow|next|future|i want|i will|i'm going to|plan|promise)\b/i.test(String(text||""));}
 function sanitizeDialogueEffects(generated,userMessage,intent){
   if(!generated?.stateEffects)return null;
   const source=generated.stateEffects;
@@ -601,7 +601,7 @@ async function initiateConversation({simulationId,asamiEntityId,simulationTime,g
       strength:.94,
       confidence:generated ? 0.9 : 0.62,
       emotionalIntensity:Math.min(1,.25+updatedInnerState.emotionalEngagement*.2),
-      simulationAt,
+      simulationAt:simulationTime,
       metadata:{
         kind:"proactive_conversation",
         conversationId:cid,
