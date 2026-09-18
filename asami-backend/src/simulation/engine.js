@@ -15,6 +15,7 @@ const { initiateConversation } = require("../services/chat-service");
 const { recordHabitEvidence } = require("../services/habit-service");
 const { updateMentalState } = require("../services/personality-service");
 const { recordSignificantExperience } = require("../services/experience-learning-service");
+const { maybeRunSafeRetention } = require("../services/safe-retention-service");
 
 const INTERRUPTIBLE_ACTIONS = new Set(["SLEEPING", "WORKING", "STUDYING"]);
 const CRITICAL_EVENT_PATTERNS = /DANGER|EMERGENCY|ACCIDENT|THREAT|CRISIS|EVACUATION|ATTACK|FIRE/i;
@@ -189,6 +190,7 @@ class SimulationEngine {
         phase = "world.decay"; await decayMemories(sim.id, nextTime, 6); this.tickCounter.set(sim.id, Number(this.tickCounter.get(sim.id) || 0) + 1);
         const count = Number(this.tickCounter.get(sim.id) || 0); if (count % env.SNAPSHOT_EVERY_TICKS === 0) await simRepo.createSnapshot(sim.id, nextTime);
         await simRepo.completeTick(tickId, { status: "COMPLETED", entityCount: actors.length });
+        void maybeRunSafeRetention(sim.id, nextTime.toISOString());
         this.hub.publish(sim.id, "simulation.tick", { simulationTime: nextTime.toISOString(), tickId });
       } catch (err) {
         await simRepo.completeTick(tickId, { status: "FAILED", error: { name: err.name, message: err.message, code: err.code, phase, entityId, actionType } });
