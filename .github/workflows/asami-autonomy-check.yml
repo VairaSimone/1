@@ -1,0 +1,35 @@
+name: Asami autonomy patch check
+
+on:
+  push:
+    branches:
+      - "patch/asami-autonomy-core-2026-09-18"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: asami-backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: asami-backend/package-lock.json
+      - run: npm ci
+      - run: npm test
+      - run: |
+          node --check src/server.js
+          node --check src/services/behavioral-policy-bootstrap.js
+          node --check src/services/decision-service.js
+          node --check src/services/state-service.js
+          node --check src/services/experience-learning-service.js
+          node --check src/services/cognitive-queue.js
+          node --check src/services/cognitive-v2-bootstrap.js
+          node --check src/services/cognitive-v2-service.js
+          node --check src/services/cognitive-v3-bootstrap.js
+          node --check src/services/cognitive-v3-service.js
+          node --check src/services/action-service.js
+          node --check src/simulation/engine.js
