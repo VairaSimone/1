@@ -43,6 +43,14 @@ const Env = z.object({
   DEFAULT_SPEED: z.coerce.number().nonnegative().default(60),
   SNAPSHOT_EVERY_TICKS: z.coerce.number().int().positive().default(60),
   MAX_ENTITIES_PER_TICK: z.coerce.number().int().positive().default(100),
+  RETENTION_ENABLED: z.preprocess((value)=>{if(typeof value!=="string")return value;const normalized=value.trim().toLowerCase();if(normalized==="true")return true;if(normalized==="false")return false;return value;},z.boolean()).default(true),
+  RETENTION_CHECK_INTERVAL_MS: z.coerce.number().int().min(60000).default(15*60*1000),
+  RETENTION_DECISION_CONTEXT_DAYS: z.coerce.number().int().min(1).default(2),
+  RETENTION_DECISION_OPTIONS_DAYS: z.coerce.number().int().min(2).default(3),
+  RETENTION_COGNITIVE_ARTIFACT_DAYS: z.coerce.number().int().min(14).default(30),
+  RETENTION_BATCH_SIZE: z.coerce.number().int().min(50).max(2000).default(500),
+  RETENTION_MAX_DELETES_PER_TABLE: z.coerce.number().int().min(100).max(10000).default(2000),
+  RETENTION_DRY_RUN: z.preprocess((value)=>{if(typeof value!=="string")return value;const normalized=value.trim().toLowerCase();if(normalized==="true")return true;if(normalized==="false")return false;return value;},z.boolean()).default(false),
   CORS_ORIGIN: z.string().default("*")
 });
 const env=Env.parse(process.env);
