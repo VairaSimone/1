@@ -2,7 +2,7 @@ const logger = require("../lib/logger");
 const { env } = require("../config/env");
 const { pool } = require("../db/pool");
 const simRepo = require("../repositories/simulation-repo");
-const { ensureEntityState, updateNeeds, applyEmotions, developTraits, readNeeds } = require("../services/state-service");
+const { ensureEntityState, updateNeeds, applyEmotions, developTraits, readNeeds, flushPendingNeedHistory } = require("../services/state-service");
 const { findAutonomousActors, actForEntity, completeGoalForAction } = require("../services/autonomy-service");
 const { perceive } = require("../services/perception-service");
 const { completeAction, getActiveAction, learnFromAction, recordResourceFailureKnowledge } = require("../services/action-service");
@@ -113,6 +113,7 @@ async function interruptActiveAction({ simulationId, entityId, active, simulatio
     metadata: { kind: "action_interruption", actionType, interrupted: true, interruption, actionId, eventId, goalId: active.metadata?.goalId || null, planId: active.metadata?.planId || null, planStepId: active.metadata?.planStepId || null, cognitive }
   });
   await applyEmotions(entityId, simulationTime, needChanges, eventId, actionId, actionType, 0, { event: true, outcome: "PARTIAL", expectedOutcome: null, targetEntityId: active.metadata?.targetEntityId || null, targetLocationId: active.metadata?.targetLocationId || null, relationshipIntent: active.metadata?.relationshipIntent || "NONE", failureReason: "ACTION_INTERRUPTED" });
+  await flushPendingNeedHistory(entityId, actionId);
   await completeGoalForAction(active.metadata?.goalId || null, actionType, simulationTime, "PARTIAL", result);
   return true;
 }
