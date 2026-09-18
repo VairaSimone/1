@@ -83,7 +83,7 @@ async function install() {
           ]);
           const emergentFailure = results[0]?.error;
           if (emergentFailure) {
-            throw Object.assign(new Error(emergentFailure), { code: 'OPTIMISTIC_LOCK' });
+            throw Object.assign(new Error(emergentFailure), { code: results[0]?.code || 'COGNITIVE_V3_FAILURE' });
           }
           return results;
         }, { retries: 3, baseDelayMs: 10 }).catch(err => {
