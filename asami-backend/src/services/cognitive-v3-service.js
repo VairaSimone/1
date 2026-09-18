@@ -48,7 +48,8 @@ async function reviseSelfBelief({ simulationId, entityId, simulationTime, belief
   const row = rows[0];
   const next = clamp01(Number(row.confidence) + (target - Number(row.confidence)) * learningRate);
   const [updated] = await pool.query(`UPDATE self_beliefs SET statement=?,confidence=?,importance=?,source_type=?,source_ref=UUID_TO_BIN(?),updated_simulation_at=?,version=version+1 WHERE id=UUID_TO_BIN(?) AND version=?`, [safeText(statement,500),next,Math.max(Number(row.importance),clamp01(importance)),sourceType,sourceRef,simulationTime,row.id,row.version]);
-  return updated.affectedRows ? row.id : null;
+  if (!updated.affectedRows) throw Object.assign(new Error("Optimistic lock conflict on self belief revision"), { code: "OPTIMISTIC_LOCK" });
+  return row.id;
 }
 
 async function decaySelfBeliefs(simulationId, entityId, simulationTime) {
