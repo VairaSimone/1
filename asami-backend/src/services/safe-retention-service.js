@@ -1,4 +1,4 @@
-const { pool, normalizeMysqlValues } = require("../db/pool");
+const { pool, normalizeSimulationTimestamp } = require("../db/pool");
 const logger = require("../lib/logger");
 
 const TERMINAL_DECISION_STATUSES = new Set(["EXECUTED", "FAILED", "CANCELLED"]);
@@ -31,8 +31,6 @@ function cutoffExpression(days) {
 
 async function acquireLock(simulationId) {
   const conn = await pool.getConnection();
-  const rawQuery = conn.query.bind(conn);
-  conn.query = (sql, values) => rawQuery(sql, normalizeMysqlValues(values));
   const lockName = ("asami_retention:" + simulationId).slice(0, 64);
   try {
     const [rows] = await conn.query("SELECT GET_LOCK(?, 0) AS acquired", [lockName]);
@@ -239,14 +237,15 @@ async function deleteResolvedCounterfactualWorlds(conn, simulationId, simulation
 
 async function runSafeRetention(simulationId, simulationTime) {
   if (!POLICY.enabled || !simulationId || !simulationTime) return { skipped: true, reason: "disabled" };
+  const mysqlSimulationTime = normalizeSimulationTimestamp(simulationTime);
   const lock = await acquireLock(simulationId);
   if (!lock) return { skipped: true, reason: "lock_busy" };
   try {
-    const context = await compactOldDecisionContexts(lock.conn, simulationId, simulationTime);
-    const options = await deleteUnselectedDecisionOptions(lock.conn, simulationId, simulationTime);
-    const expectations = await deleteResolvedExpectations(lock.conn, simulationId, simulationTime);
-    const counterfactuals = await deleteResolvedCounterfactuals(lock.conn, simulationId, simulationTime);
-    const worlds = await deleteResolvedCounterfactualWorlds(lock.conn, simulationId, simulationTime);
+    const context = await compactOldDecisionContexts(lock.conn, simulationId, mysqlSimulationTime);
+    const options = await deleteUnselectedDecisionOptions(lock.conn, simulationId, mysqlSimulationTime);
+    const expectations = await deleteResolvedExpectations(lock.conn, simulationId, mysqlSimulationTime);
+    const counterfactuals = await deleteResolvedCounterfactuals(lock.conn, simulationId, mysqlSimulationTime);
+    const worlds = await deleteResolvedCounterfactualWorlds(lock.conn, simulationId, mysqlSimulationTime);
     const summary = {
       simulationId,
       simulationTime,
