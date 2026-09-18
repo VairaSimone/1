@@ -8,6 +8,10 @@ fi
 
 hash="$(openssl passwd -apr1 "$ASAMI_FRONTEND_PASSWORD")"
 printf 'asami:%s\n' "$hash" > /etc/nginx/.htpasswd
+
+# Nginx workers run as the nginx user on the official Alpine image.
+# Keep the credentials file private while allowing the workers to read it.
+chown nginx:nginx /etc/nginx/.htpasswd
 chmod 600 /etc/nginx/.htpasswd
 
 exec nginx -g 'daemon off;'
