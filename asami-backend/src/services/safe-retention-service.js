@@ -1,4 +1,4 @@
-const { pool } = require("../db/pool");
+const { pool, normalizeMysqlValues } = require("../db/pool");
 const logger = require("../lib/logger");
 
 const TERMINAL_DECISION_STATUSES = new Set(["EXECUTED", "FAILED", "CANCELLED"]);
@@ -31,6 +31,8 @@ function cutoffExpression(days) {
 
 async function acquireLock(simulationId) {
   const conn = await pool.getConnection();
+  const rawQuery = conn.query.bind(conn);
+  conn.query = (sql, values) => rawQuery(sql, normalizeMysqlValues(values));
   const lockName = ("asami_retention:" + simulationId).slice(0, 64);
   try {
     const [rows] = await conn.query("SELECT GET_LOCK(?, 0) AS acquired", [lockName]);
