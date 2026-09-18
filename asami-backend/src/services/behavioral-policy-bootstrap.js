@@ -231,11 +231,16 @@ function classifyBehavioralDriver(context = {}) {
   const critical = physiologicalPressure(context.needs);
   const goal = getGoal(context);
   const planAction = normalize(context.activePlanStep?.result?.actionType || context.activePlanStep?.actionType);
+  const motivation = parseJson(goal?.motivation, {});
+  const motivationPressure = Number(motivation?.pressure);
+  const goalMotivation = Number.isFinite(motivationPressure)
+    ? motivationPressure
+    : Number(goal?.priority || 0);
   const goalQualified = Boolean(
     goal &&
-    Number(goal.priority || 0) >= 0.7 &&
-    Number(goal.motivation ?? goal.priority ?? 0) >= 0.5 &&
-    (planAction || Number(goal.progress || 0) < 0.8)
+    (planAction || (Number(goal.priority || 0) >= 0.7 && goalMotivation >= 0.35)) &&
+    Number(goal.progress || 0) < 1 &&
+    !["COMPLETED", "ABANDONED", "CANCELLED"].includes(normalize(goal.status))
   );
 
   const curiosity = getNeedValue(context.needs, "CURIOSITY");
@@ -579,7 +584,11 @@ function applyDriverPolicy(context, classification, development) {
   next.development = development;
   next.decisionHorizon = development?.decisionHorizon || 1;
 
-  if (classification.driver !== "GOAL_DIRECTED") delete next.activePlanStep;
+  // An active plan is a commitment, not just another scoring signal.
+  // Keep it in the decision context unless a higher-priority critical need
+  // explicitly overrides it. Dropping the step here caused WALKING/EATING
+  // plans to lose their EATING step after the first movement completed.
+  if (classification.driver !== "GOAL_DIRECTED" && !context.activePlanStep) delete next.activePlanStep;
   if (classification.driver !== "EXPLORATORY") delete next.explorationDestination;
 
   const candidates = next.candidates;
