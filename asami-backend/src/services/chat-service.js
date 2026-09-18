@@ -429,7 +429,255 @@ async function buildAsamiConversationContext(simulationId,asamiEntityId,senderEn
   };
 }
 
-async function initiateConversation({simulationId,asamiEntityId,simulationTime,gemini,hub}){const observer=await ensureObserver(simulationId);if(!observer||observer.id===asamiEntityId)return null;const[recent]=await pool.query(`SELECT BIN_TO_UUID(m.id) AS id,m.simulation_created_at AS simulationAt FROM messages m WHERE m.simulation_id=UUID_TO_BIN(?) AND m.sender_entity_id=UUID_TO_BIN(?) AND m.message_type='ASSISTANT' ORDER BY m.simulation_created_at DESC LIMIT 1`,[simulationId,asamiEntityId]);if(recent.length){const ageMinutes=(new Date(simulationTime)-new Date(recent[0].simulationAt))/60000;if(ageMinutes<180)return null;}const dashboard=await getDashboard(simulationId,asamiEntityId),needs=dashboard?.needs||[],social=Number(needs.find(n=>n.code==="SOCIAL_NEED")?.value||0),belonging=Number(needs.find(n=>n.code==="BELONGING")?.value||0),curiosity=Number(needs.find(n=>n.code==="CURIOSITY")?.value||0),shouldSpeak=social>.65||belonging>.7||curiosity>.82||Math.random()<.015;if(!shouldSpeak)return null;const cid=await ensureConversation(simulationId,observer.id,asamiEntityId,await findExistingConversation(simulationId,observer.id,asamiEntityId),simulationTime),context=await buildAsamiConversationContext(simulationId,asamiEntityId,observer.id,cid,"Asami wants to initiate a conversation naturally."),generated=gemini?.client?await gemini.dialogue({...context,proactive:true,proactiveReason:{socialNeed:social,belonging,curiosity}}):null,reply=generated?.reply||proactiveFallback(context,social,belonging,curiosity);const intentId=uuid();await pool.query(`INSERT INTO communication_intents(id,simulation_id,entity_id,target_entity_id,channel,reason_type,priority,status,created_simulation_at,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),'CHAT','AUTONOMOUS_INITIATED',?, 'ATTEMPTING',?,1)`,[intentId,simulationId,asamiEntityId,observer.id,Math.max(.2,Math.min(1,social+belonging+curiosity)),simulationTime]);const attemptId=uuid();await pool.query(`INSERT INTO communication_attempts(id,simulation_id,intent_id,attempted_simulation_at,status,result) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,'STARTED',NULL)`,[attemptId,simulationId,intentId,simulationTime]);const eventId=await createEvent({simulationId,eventTypeCode:"COMMUNICATION",title:`${context.entity.displayName} initiated a conversation`,description:"Asami independently chose to contact the observer.",simulationAt:simulationTime,importance:.68,participants:[{entityId:asamiEntityId,role:"ACTOR"},{entityId:observer.id,role:"PARTICIPANT"}],metadata:{channel:"CHAT",proactive:true,reason:{socialNeed:social,belonging,curiosity},replyGeneratedBy:generated?"GEMINI":"DETERMINISTIC"}}),actionId=await persistAction({simulationId,entityId:asamiEntityId,targetEntityId:observer.id,eventId,conversationId:cid,simulationTime,sourceType:"AUTONOMOUS"});await addEffect({simulationId,eventId,effectType:"ACTION_COMPLETED",targetActionId:actionId,targetEntityId:asamiEntityId,afterState:{actionType:"TALKING",status:"COMPLETED",sourceType:"AUTONOMOUS"},magnitude:1,createdSimulationAt:simulationTime});const needChanges=await updateNeeds(asamiEntityId,simulationTime,.08,eventId,actionId,"TALKING"),emotionChanges=await applyEmotions(asamiEntityId,simulationTime,needChanges,eventId,actionId);await learnFromAction(asamiEntityId,"TALKING",simulationTime);const cognition=await applyCognitiveEffects({simulationId,asamiEntityId,senderEntityId:observer.id,simulationTime,eventId,actionId,generated}),deepCognition=await applyDialogueCognition({simulationId,entityId:asamiEntityId,simulationTime,generated,goalId:cognition.goalId});await recordHabitEvidence({entityId:asamiEntityId,simulationTime,actionType:"TALKING"});const assistantId=uuid();await pool.query(`INSERT INTO messages(id,simulation_id,conversation_id,sender_entity_id,message_type,content,simulation_created_at,status,metadata,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),'ASSISTANT',?,?,'DELIVERED',?,1)`,[assistantId,simulationId,cid,asamiEntityId,reply,simulationTime,JSON.stringify({proactive:true,responseSource:generated?"GEMINI":"DETERMINISTIC",eventId,actionId,goalId:cognition.goalId,cognitive:deepCognition})]);await pool.query(`UPDATE communication_attempts SET status='DELIVERED',message_id=UUID_TO_BIN(?),result=? WHERE id=UUID_TO_BIN(?) AND status='STARTED'`,[assistantId,JSON.stringify({messageId:assistantId}),attemptId]);await pool.query(`UPDATE communication_intents SET status='SENT',version=version+1 WHERE id=UUID_TO_BIN(?) AND status='ATTEMPTING'`,[intentId]);const memoryId=await createMemory({simulationId,entityId:asamiEntityId,eventId,content:`I chose to contact ${context.interlocutor.displayName}: "${reply}"`,importance:.72,strength:.96,confidence:generated?.9:.62,emotionalIntensity:.3,simulationAt,metadata:{kind:"proactive_conversation",conversationId:cid,interlocutorEntityId:observer.id,actionId,reason:{socialNeed:social,belonging,curiosity},deepCognition}});hub.publish(simulationId,"message.created",{id:assistantId,conversationId:cid,senderEntityId:asamiEntityId,type:"ASSISTANT",content:reply,metadata:{proactive:true,responseSource:generated?"GEMINI":"DETERMINISTIC",eventId,actionId,goalId:cognition.goalId}});hub.publish(simulationId,"entity.state",{entityId:asamiEntityId,source:"proactive_conversation",actionId,eventId,relationshipId:cognition.relationshipId,goalId:cognition.goalId,needs:[...needChanges,...cognition.needChanges],emotions:[...emotionChanges,...cognition.emotionChanges],communicationStyle:cognition.communicationStyle,cognitiveProfile:deepCognition,memoryId});return{conversationId:cid,assistantMessageId:assistantId,reply,aiUsed:Boolean(generated),actionId,eventId,goalId:cognition.goalId,cognitive:deepCognition};}
+async function initiateConversation({simulationId,asamiEntityId,simulationTime,gemini,hub}) {
+  const observer=await ensureObserver(simulationId);
+  if(!observer||observer.id===asamiEntityId)return null;
+
+  const existingConversationId=await findExistingConversation(simulationId,observer.id,asamiEntityId);
+  const cid=await ensureConversation(simulationId,observer.id,asamiEntityId,existingConversationId,simulationTime);
+  const conversation=await getConversationState(simulationId,cid);
+  if(!conversation)return null;
+
+  const lastActivity=conversation.state.lastActivityAt?new Date(conversation.state.lastActivityAt):null;
+  const silenceHours=lastActivity&&Number.isFinite(lastActivity.getTime())
+    ?Math.max(0,(new Date(simulationTime)-lastActivity)/3600000)
+    :24;
+  if(silenceHours<3)return null;
+
+  const dashboard=await getDashboard(simulationId,asamiEntityId);
+  if(!dashboard||dashboard.currentAction)return null;
+  const needs=dashboard.needs||[];
+  const getNeed=code=>Number(needs.find(n=>String(n.code||"").toUpperCase()===code)?.value||0);
+  const social=getNeed("SOCIAL_NEED");
+  const belonging=getNeed("BELONGING");
+  const curiosity=getNeed("CURIOSITY");
+  const hunger=getNeed("HUNGER");
+  const thirst=getNeed("THIRST");
+  const sleepiness=getNeed("SLEEPINESS");
+  const energy=getNeed("ENERGY");
+  if(thirst>=.72||hunger>=.78||sleepiness>=.82||energy<=.20)return null;
+
+  const innerState=stateInnerForDashboard(dashboard,conversation.state);
+  const primaryReason=social>=belonging&&social>=curiosity
+    ?"SOCIAL_NEED"
+    :belonging>=curiosity
+      ?"BELONGING"
+      :"CURIOSITY";
+  const thresholdReached=social>=.72||belonging>=.78||curiosity>=.86;
+  if(innerState.desireToContinue<.60||!thresholdReached)return null;
+
+  const intent={type:"PROACTIVE_CONTACT",reason:"autonomous_social_initiative"};
+  const topic=conversation.state.currentTopic||null;
+  const proactiveReason={
+    type:primaryReason,
+    socialNeed:social,
+    belonging,
+    curiosity,
+    silenceHours,
+    innerState
+  };
+  const context=await buildAsamiConversationContext(
+    simulationId,
+    asamiEntityId,
+    observer.id,
+    cid,
+    "",
+    {proactive:true,proactiveReason,simulationTime}
+  );
+  context.conversationIntent=intent;
+  context.conversationTopic=topic;
+  context.conversationInnerState=innerState;
+
+  const generated=gemini?.client?await gemini.dialogue(context):null;
+  const sanitizedEffects=sanitizeDialogueEffects(generated,"",intent);
+  if(generated)generated.stateEffects=sanitizedEffects;
+  const reply=generated?.reply||proactiveFallback(context,social,belonging,curiosity);
+  const significance=scoreMessageSignificance(reply,{intent,topic,generated});
+
+  const intentId=uuid();
+  await pool.query(
+    "INSERT INTO communication_intents(id,simulation_id,entity_id,target_entity_id,channel,reason_type,priority,status,created_simulation_at,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),'CHAT','AUTONOMOUS_INITIATED',?, 'ATTEMPTING',?,1)",
+    [intentId,simulationId,asamiEntityId,observer.id,Math.max(.2,Math.min(1,innerState.desireToContinue)),simulationTime]
+  );
+  const attemptId=uuid();
+  await pool.query(
+    "INSERT INTO communication_attempts(id,simulation_id,intent_id,attempted_simulation_at,status,result) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,'STARTED',NULL)",
+    [attemptId,simulationId,intentId,simulationTime]
+  );
+
+  const eventId=await createEvent({
+    simulationId,
+    eventTypeCode:"COMMUNICATION",
+    title:context.entity.displayName+" initiated a conversation",
+    description:"Asami independently chose to contact the observer.",
+    simulationAt:simulationTime,
+    importance:Math.max(.55,significance.score),
+    participants:[
+      {entityId:asamiEntityId,role:"ACTOR"},
+      {entityId:observer.id,role:"PARTICIPANT"}
+    ],
+    metadata:{
+      channel:"CHAT",
+      proactive:true,
+      reason:proactiveReason,
+      conversationIntent:intent,
+      conversationTopic:topic,
+      replyGeneratedBy:generated?"GEMINI":"DETERMINISTIC"
+    }
+  });
+
+  const actionId=await persistAction({
+    simulationId,
+    entityId:asamiEntityId,
+    targetEntityId:observer.id,
+    eventId,
+    conversationId:cid,
+    simulationTime,
+    sourceType:"AUTONOMOUS"
+  });
+  await addEffect({
+    simulationId,
+    eventId,
+    effectType:"ACTION_COMPLETED",
+    targetActionId:actionId,
+    targetEntityId:asamiEntityId,
+    afterState:{actionType:"TALKING",status:"COMPLETED",sourceType:"AUTONOMOUS"},
+    magnitude:1,
+    createdSimulationAt:simulationTime
+  });
+
+  const needChanges=await updateNeeds(asamiEntityId,simulationTime,.08,eventId,actionId,"TALKING");
+  const emotionChanges=await applyEmotions(asamiEntityId,simulationTime,needChanges,eventId,actionId);
+  await learnFromAction(asamiEntityId,"TALKING",simulationTime);
+  const cognition=await applyCognitiveEffects({
+    simulationId,
+    asamiEntityId,
+    senderEntityId:observer.id,
+    simulationTime,
+    eventId,
+    actionId,
+    generated
+  });
+  const deepCognition=await applyDialogueCognition({
+    simulationId,
+    entityId:asamiEntityId,
+    simulationTime,
+    generated,
+    goalId:cognition.goalId
+  });
+  await recordHabitEvidence({entityId:asamiEntityId,simulationTime,actionType:"TALKING"});
+
+  const updatedDashboard=await getDashboard(simulationId,asamiEntityId);
+  const updatedInnerState=stateInnerForDashboard(updatedDashboard,conversation.state);
+  const conversationState=await updateConversationAfterTurn({
+    simulationId,
+    conversationId:cid,
+    simulationTime,
+    initiator:"ASAMI",
+    content:reply,
+    topic,
+    intent,
+    significance,
+    innerState:updatedInnerState,
+    generated
+  });
+
+  let memoryId=null;
+  const shouldRemember=significance.score>=.65||updatedInnerState.emotionalEngagement>=.78||Boolean(generated?.rememberedReferences?.length);
+  if(shouldRemember){
+    memoryId=await createMemory({
+      simulationId,
+      entityId:asamiEntityId,
+      eventId,
+      content:"I chose to contact "+context.interlocutor.displayName+": \""+reply+"\"",
+      importance:Math.max(.62,significance.score),
+      strength:.94,
+      confidence:generated?.9:.62,
+      emotionalIntensity:Math.min(1,.25+updatedInnerState.emotionalEngagement*.2),
+      simulationAt,
+      metadata:{
+        kind:"proactive_conversation",
+        conversationId:cid,
+        interlocutorEntityId:observer.id,
+        actionId,
+        reason:proactiveReason,
+        conversationIntent:intent,
+        conversationTopic:topic,
+        significance:significance.score,
+        significanceReasons:significance.reasons,
+        deepCognition
+      }
+    });
+  }
+
+  const assistantId=uuid();
+  const metadata={
+    proactive:true,
+    responseSource:generated?"GEMINI":"DETERMINISTIC",
+    eventId,
+    actionId,
+    goalId:cognition.goalId,
+    cognitive:deepCognition,
+    conversationIntent:intent,
+    conversationTopic:topic,
+    conversationState,
+    conversationInnerState:updatedInnerState,
+    significance:significance.score,
+    significanceReasons:significance.reasons,
+    memoryCreated:Boolean(memoryId)
+  };
+  await pool.query(
+    "INSERT INTO messages(id,simulation_id,conversation_id,sender_entity_id,message_type,content,simulation_created_at,status,metadata,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),'ASSISTANT',?,?,'DELIVERED',?,1)",
+    [assistantId,simulationId,cid,asamiEntityId,reply,simulationTime,JSON.stringify(metadata)]
+  );
+  await pool.query(
+    "UPDATE communication_attempts SET status='DELIVERED',message_id=UUID_TO_BIN(?),result=? WHERE id=UUID_TO_BIN(?) AND status='STARTED'",
+    [assistantId,JSON.stringify({messageId:assistantId}),attemptId]
+  );
+  await pool.query(
+    "UPDATE communication_intents SET status='SENT',version=version+1 WHERE id=UUID_TO_BIN(?) AND status='ATTEMPTING'",
+    [intentId]
+  );
+
+  hub.publish(simulationId,"message.created",{
+    id:assistantId,
+    conversationId:cid,
+    senderEntityId:asamiEntityId,
+    type:"ASSISTANT",
+    content:reply,
+    metadata
+  });
+  hub.publish(simulationId,"entity.state",{
+    entityId:asamiEntityId,
+    source:"proactive_conversation",
+    actionId,
+    eventId,
+    relationshipId:cognition.relationshipId,
+    goalId:cognition.goalId,
+    needs:[...needChanges,...cognition.needChanges],
+    emotions:[...emotionChanges,...cognition.emotionChanges],
+    communicationStyle:cognition.communicationStyle,
+    cognitiveProfile:deepCognition,
+    memoryId,
+    conversationState,
+    conversationInnerState:updatedInnerState
+  });
+
+  return{
+    conversationId:cid,
+    assistantMessageId:assistantId,
+    reply,
+    aiUsed:Boolean(generated),
+    actionId,
+    eventId,
+    goalId:cognition.goalId,
+    cognitive:deepCognition,
+    conversationState,
+    conversationInnerState:updatedInnerState,
+    memoryCreated:Boolean(memoryId)
+  };
+}
+
 async function persistAction({simulationId,entityId,targetEntityId,eventId,conversationId,simulationTime,sourceType}){const actionId=uuid();await pool.query(`INSERT INTO actions(id,simulation_id,entity_id,decision_id,action_type,source_type,source_event_id,started_simulation_at,completed_simulation_at,status,target,parameters,result,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),NULL,'TALKING',?,UUID_TO_BIN(?),?,?, 'COMPLETED',NULL,?,?,1)`,[actionId,simulationId,entityId,sourceType,eventId,simulationTime,simulationTime,JSON.stringify({targetEntityId,conversationId}),JSON.stringify({eventId,actionType:"TALKING",sourceType})]);return actionId;}
 function proactiveFallback(context,social,belonging,curiosity){if(social>.8)return"Avevo voglia di parlarti. Mi andava di raccontarti un po' cosa mi passa per la testa.";if(belonging>.8)return"Mi sei venuto in mente e ho sentito il bisogno di scriverti. Come stai?";if(curiosity>.85)return"Mi è venuta una curiosità e volevo parlarne con te. Ho la sensazione che tu possa aiutarmi a ragionarci.";return"Ehi. Mi andava di sentirti un po'.";}
 function deterministicReply(context,content){const x=content.toLowerCase(),emotion=(context.emotions||[]).find(e=>Number(e.intensity)>=.6)?.name||null;if(/\bciao|hey|salve\b/.test(x))return"Ciao. Mi fa piacere sentirti.";if(x.includes("come stai"))return emotion?`In questo momento mi sento ${emotion.toLowerCase()}.`:"Sto bene, anche se sto ancora cercando di capire cosa sento.";if(x.includes("perché"))return"Ci sto pensando. Non sono sicura di avere una risposta definitiva, ma posso provare ad argomentare quello che sento.";if(x.includes("cosa stai facendo")){const action=context.currentAction?.actionType;return action?`In questo momento sto ${action.toLowerCase().replaceAll("_"," ")}. Possiamo parlare mentre continuo.`:"Sto seguendo quello che in questo momento considero più importante per me.";}return"Ti ho ascoltato. Quello che mi hai detto mi farà riflettere.";}
