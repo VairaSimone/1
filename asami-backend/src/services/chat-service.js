@@ -303,6 +303,7 @@ async function sendMessage({
     senderEntityId:asamiEntityId,
     type:"ASSISTANT",
     content:reply,
+    simulationAt:simulationTime,
     metadata:{proactive:false,...aiMeta}
   });
   hub.publish(simulationId,"entity.state",{
@@ -651,6 +652,7 @@ async function initiateConversation({simulationId,asamiEntityId,simulationTime,g
     senderEntityId:asamiEntityId,
     type:"ASSISTANT",
     content:reply,
+    simulationAt:simulationTime,
     metadata
   });
   hub.publish(simulationId,"entity.state",{
