@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - "patch/asami-autonomy-core-2026-09-18"
+  pull_request:
+    branches:
+      - "main"
 
 jobs:
   test:
