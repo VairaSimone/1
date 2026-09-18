@@ -7,6 +7,7 @@ const { getRelationships } = require("../services/relationship-service");
 const { getDevelopment,getDevelopmentHistory } = require("../services/development-service");
 const { analyzeSimulation } = require("../services/analysis-service");
 const { sendMessage } = require("../services/chat-service");
+const { getConversationState } = require("../services/conversation-state-service");
 const { getUsage } = require("../services/gemini-budget-service");
 const { simulationCreate, speed, message, uuid, queryLimit } = require("./validation");
 const { runIdempotent } = require("../services/idempotency-service");
@@ -139,6 +140,12 @@ function buildRouter({hub,gemini}){
     res.json({current:await getDevelopment(simulationId,entityId),history:await getDevelopmentHistory(entityId,100)});
   });
 
+  router.get("/simulations/:simulationId/conversations/:conversationId",async(req,res)=>{
+    const simulationId=uuid.parse(req.params.simulationId),conversationId=uuid.parse(req.params.conversationId);
+    const conversation=await getConversationState(simulationId,conversationId);
+    if(!conversation)return res.status(404).json({error:"Conversation not found"});
+    res.json(conversation);
+  });
   router.get("/simulations/:simulationId/conversations/:conversationId/messages",async(req,res)=>{
     const simulationId=uuid.parse(req.params.simulationId),conversationId=uuid.parse(req.params.conversationId);
     const [rows]=await require("../db/pool").pool.query(`
