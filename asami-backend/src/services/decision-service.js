@@ -80,7 +80,7 @@ function chooseSocialTargetCandidate(context,entityId){
     const novelty=(1-Math.min(1,familiarity))*.28;
     const pairBias=socialPairBias(entityId,candidate.id);
     const recentCount=Number(context?.recentSocialTargetCounts?.[candidate.id]||0);
-    const recentPenalty=Math.min(.80,recentCount*.14+(context?.recentSocialTargets?.[0]===candidate.id?.35:0));
+    const recentPenalty=Math.min(.80,recentCount*.14+(context?.recentSocialTargets?.[0]===candidate.id ? .35 : 0));
     const returnScore=relationshipValue+novelty+pairBias-recentPenalty;
     return{...candidate,selectionScore:returnScore,recentInteractionCount:recentCount};
   }).sort((a,b)=>Number(b.selectionScore||0)-Number(a.selectionScore||0))[0]||null;
