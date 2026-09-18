@@ -178,7 +178,7 @@ async function persistDecisionCandidates(decisionId, chosenAction, candidates) {
     [chosen.action, `Autonomously considered ${chosen.action}`, JSON.stringify({ actionType: chosen.action, targetEntityId: chosen.targetEntityId || null, targetLocationId: chosen.targetLocationId || null, resourceIntent: chosen.resourceIntent || null }), JSON.stringify({ score: Number(chosen.score || 0), selected: true, rank: 1 }), JSON.stringify({ actionType: chosen.action }), selectedOptionId]
   );
   await pool.query(`DELETE FROM decision_options WHERE decision_id=UUID_TO_BIN(?) AND id<>UUID_TO_BIN(?)`, [decisionId, selectedOptionId]);
-  const ordered = candidates.filter(candidate => normalize(candidate.action) !== normalize(chosen.action)).slice().sort((a, b) => Number(b.score || 0) - Number(a.score || 0));
+  const ordered = candidates.filter(candidate => normalize(candidate.action) !== normalize(chosen.action)).slice().sort((a, b) => Number(b.score || 0) - Number(a.score || 0)).slice(0, 3);
   const values = [];
   for (let index = 0; index < ordered.length; index += 1) {
     const candidate = ordered[index];
