@@ -60,7 +60,8 @@ async function decaySelfBeliefs(simulationId, entityId, simulationTime) {
     const floor = Math.max(0.12, Number(row.importance) * 0.18);
     const next = Math.max(floor, Number(row.confidence) * decay);
     if (next >= Number(row.confidence) - 0.00001) continue;
-    await pool.query(`UPDATE self_beliefs SET confidence=?,updated_simulation_at=?,version=version+1 WHERE id=UUID_TO_BIN(?) AND version=?`, [next,simulationTime,row.id,row.version]);
+    const [updated] = await pool.query(`UPDATE self_beliefs SET confidence=?,updated_simulation_at=?,version=version+1 WHERE id=UUID_TO_BIN(?) AND version=?`, [next,simulationTime,row.id,row.version]);
+    if (!updated.affectedRows) throw Object.assign(new Error("Optimistic lock conflict on self belief decay"), { code: "OPTIMISTIC_LOCK" });
   }
 }
 
@@ -85,7 +86,8 @@ async function updateIdentityValues(simulationId, entityId, simulationTime, acti
     const nextImportance = clamp01(Number(row.importance) + delta, Number(row.importance));
     const nextConfidence = clamp01(Number(row.confidence) + delta * 0.5, Number(row.confidence));
     if (Math.abs(nextImportance - Number(row.importance)) < 0.000001) continue;
-    await pool.query(`UPDATE identity_values SET importance=?,confidence=?,salience=?,origin='EXPERIENCE',updated_simulation_at=?,version=version+1 WHERE id=UUID_TO_BIN(?) AND version=?`, [nextImportance,nextConfidence,clamp01(0.4 + Math.abs(delta) * 8),simulationTime,row.id,row.version]);
+    const [updated] = await pool.query(`UPDATE identity_values SET importance=?,confidence=?,salience=?,origin='EXPERIENCE',updated_simulation_at=?,version=version+1 WHERE id=UUID_TO_BIN(?) AND version=?`, [nextImportance,nextConfidence,clamp01(0.4 + Math.abs(delta) * 8),simulationTime,row.id,row.version]);
+    if (!updated.affectedRows) throw Object.assign(new Error("Optimistic lock conflict on identity value evolution"), { code: "OPTIMISTIC_LOCK" });
   }
 }
 
@@ -123,6 +125,7 @@ async function evolveSelfModel({ simulationId, entityId, simulationTime, actionT
   const currentSelfView = topCapability ? topLimit ? `I am becoming more capable at ${topCapability[0].toLowerCase().replaceAll('_',' ')}; ${topLimit}.` : `I am becoming more capable at ${topCapability[0].toLowerCase().replaceAll('_',' ')} through experience.` : 'I am still learning what I can reliably do.';
   const selfConcept = successRate >= 0.72 ? 'I learn through experience and tend to become more capable when I keep practicing.' : successRate <= 0.35 ? 'I learn through experience, including noticing what I cannot reliably do yet.' : self.self_concept;
   const [updated] = await pool.query(`UPDATE self_models SET self_concept=?,current_self_view=?,capabilities=?,limitations=?,updated_simulation_at=?,version=version+1 WHERE id=UUID_TO_BIN(?) AND version=?`, [selfConcept,currentSelfView,JSON.stringify(capabilities),JSON.stringify(limitations),simulationTime,self.id,self.version]);
+  if (!updated.affectedRows) throw Object.assign(new Error("Optimistic lock conflict on self model evolution"), { code: "OPTIMISTIC_LOCK" });
   await pool.query(`INSERT INTO self_model_snapshots(id,simulation_id,entity_id,simulation_time,trigger_type,self_view,capabilities,limitations,metrics,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,?,?,?,?,1)`, [uuid(),simulationId,entityId,simulationTime,decisionId?'DECISION_OUTCOME':'EXPERIENCE',currentSelfView,JSON.stringify(capabilities),JSON.stringify(limitations),JSON.stringify({recentActions:known,successRate:Number(successRate.toFixed(3)),actionType:action,outcome:normalize(outcome)})]);
   return { updated: Boolean(updated.affectedRows), currentSelfView, successRate, capabilities, limitations };
 }
