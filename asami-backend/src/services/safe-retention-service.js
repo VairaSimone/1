@@ -67,7 +67,7 @@ async function compactOldDecisionContexts(conn, simulationId, simulationTime) {
     "AND status IN ('EXECUTED','FAILED','CANCELLED') " +
     "AND simulation_time < " + cutoff + " " +
     "AND context IS NOT NULL " +
-    "AND (JSON_EXTRACT(context,'$.archived') IS NULL OR JSON_EXTRACT(context,'$.archived') <> true)";
+    "AND (COALESCE(JSON_UNQUOTE(JSON_EXTRACT(context,'$.archived')),'false') <> 'true')";
   if (POLICY.dryRun) {
     const countSql =
       "SELECT COUNT(*) AS candidates FROM decisions " +
@@ -87,8 +87,8 @@ async function deleteUnselectedDecisionOptions(conn, simulationId, simulationTim
   const cutoff = cutoffExpression(POLICY.decisionOptionsDays);
   const limit = POLICY.batchSize;
   const maxDeletes = POLICY.maxDeletesPerTable;
-  const sql =
-    "DELETE dopt FROM decision_options dopt " +
+  const selectSql =
+    "SELECT BIN_TO_UUID(dopt.id) AS id FROM decision_options dopt " +
     "JOIN decisions d ON d.id=dopt.decision_id " +
     "WHERE d.simulation_id=UUID_TO_BIN(?) " +
     "AND d.status IN ('EXECUTED','FAILED','CANCELLED') " +
@@ -110,10 +110,14 @@ async function deleteUnselectedDecisionOptions(conn, simulationId, simulationTim
   }
   let deleted = 0;
   while (deleted < maxDeletes) {
-    const [result] = await conn.query(sql, [simulationId, simulationTime]);
+    const [rows] = await conn.query(selectSql, [simulationId, simulationTime]);
+    if (!rows.length) break;
+    const ids = rows.map(row => row.id).filter(Boolean);
+    const placeholders = ids.map(() => "UUID_TO_BIN(?)").join(",");
+    const [result] = await conn.query("DELETE FROM decision_options WHERE id IN (" + placeholders + ")", ids);
     const affected = Number(result.affectedRows || 0);
     deleted += affected;
-    if (affected < limit) break;
+    if (affected < rows.length) break;
   }
   return { deleted };
 }
@@ -122,8 +126,8 @@ async function deleteResolvedExpectations(conn, simulationId, simulationTime) {
   const cutoff = cutoffExpression(POLICY.cognitiveArtifactDays);
   const limit = POLICY.batchSize;
   const maxDeletes = POLICY.maxDeletesPerTable;
-  const sql =
-    "DELETE ce FROM cognitive_expectations ce " +
+  const selectSql =
+    "SELECT BIN_TO_UUID(ce.id) AS id FROM cognitive_expectations ce " +
     "JOIN decisions d ON d.id=ce.decision_id " +
     "WHERE ce.simulation_id=UUID_TO_BIN(?) " +
     "AND ce.status='RESOLVED' " +
@@ -145,10 +149,14 @@ async function deleteResolvedExpectations(conn, simulationId, simulationTime) {
   }
   let deleted = 0;
   while (deleted < maxDeletes) {
-    const [result] = await conn.query(sql, [simulationId, simulationTime]);
+    const [rows] = await conn.query(selectSql, [simulationId, simulationTime]);
+    if (!rows.length) break;
+    const ids = rows.map(row => row.id).filter(Boolean);
+    const placeholders = ids.map(() => "UUID_TO_BIN(?)").join(",");
+    const [result] = await conn.query("DELETE FROM cognitive_expectations WHERE id IN (" + placeholders + ")", ids);
     const affected = Number(result.affectedRows || 0);
     deleted += affected;
-    if (affected < limit) break;
+    if (affected < rows.length) break;
   }
   return { deleted };
 }
@@ -157,8 +165,8 @@ async function deleteResolvedCounterfactuals(conn, simulationId, simulationTime)
   const cutoff = cutoffExpression(POLICY.cognitiveArtifactDays);
   const limit = POLICY.batchSize;
   const maxDeletes = POLICY.maxDeletesPerTable;
-  const sql =
-    "DELETE cf FROM counterfactuals cf " +
+  const selectSql =
+    "SELECT BIN_TO_UUID(cf.id) AS id FROM counterfactuals cf " +
     "JOIN decisions d ON d.id=cf.decision_id " +
     "WHERE cf.simulation_id=UUID_TO_BIN(?) " +
     "AND d.status IN ('EXECUTED','FAILED','CANCELLED') " +
@@ -176,10 +184,14 @@ async function deleteResolvedCounterfactuals(conn, simulationId, simulationTime)
   }
   let deleted = 0;
   while (deleted < maxDeletes) {
-    const [result] = await conn.query(sql, [simulationId, simulationTime]);
+    const [rows] = await conn.query(selectSql, [simulationId, simulationTime]);
+    if (!rows.length) break;
+    const ids = rows.map(row => row.id).filter(Boolean);
+    const placeholders = ids.map(() => "UUID_TO_BIN(?)").join(",");
+    const [result] = await conn.query("DELETE FROM counterfactuals WHERE id IN (" + placeholders + ")", ids);
     const affected = Number(result.affectedRows || 0);
     deleted += affected;
-    if (affected < limit) break;
+    if (affected < rows.length) break;
   }
   return { deleted };
 }
@@ -188,8 +200,8 @@ async function deleteResolvedCounterfactualWorlds(conn, simulationId, simulation
   const cutoff = cutoffExpression(POLICY.cognitiveArtifactDays);
   const limit = POLICY.batchSize;
   const maxDeletes = POLICY.maxDeletesPerTable;
-  const sql =
-    "DELETE cw FROM counterfactual_worlds cw " +
+  const selectSql =
+    "SELECT BIN_TO_UUID(cw.id) AS id FROM counterfactual_worlds cw " +
     "JOIN decisions d ON d.id=cw.decision_id " +
     "WHERE cw.simulation_id=UUID_TO_BIN(?) " +
     "AND cw.status='RESOLVED' " +
@@ -211,10 +223,14 @@ async function deleteResolvedCounterfactualWorlds(conn, simulationId, simulation
   }
   let deleted = 0;
   while (deleted < maxDeletes) {
-    const [result] = await conn.query(sql, [simulationId, simulationTime]);
+    const [rows] = await conn.query(selectSql, [simulationId, simulationTime]);
+    if (!rows.length) break;
+    const ids = rows.map(row => row.id).filter(Boolean);
+    const placeholders = ids.map(() => "UUID_TO_BIN(?)").join(",");
+    const [result] = await conn.query("DELETE FROM counterfactual_worlds WHERE id IN (" + placeholders + ")", ids);
     const affected = Number(result.affectedRows || 0);
     deleted += affected;
-    if (affected < limit) break;
+    if (affected < rows.length) break;
   }
   return { deleted };
 }
