@@ -84,7 +84,7 @@ export function useSimulation() {
           if (msg.type === 'message.created') {
             const p = msg.payload
             const metadata = (p.metadata && typeof p.metadata === 'object' ? p.metadata : {}) as Record<string, unknown>
-            const incoming: ChatMessage = { id: String(p.id), senderEntityId: String(p.senderEntityId), messageType: String(p.type), content: String(p.content), simulationAt: msg.occurredAt, status: 'DELIVERED', metadata }
+            const incoming: ChatMessage = { id: String(p.id), senderEntityId: String(p.senderEntityId), messageType: String(p.type), content: String(p.content), simulationAt: String(p.simulationAt || msg.occurredAt), status: 'DELIVERED', metadata }
             if (p.conversationId && (metadata.proactive || String(p.senderEntityId) === asamiId)) {
               const cid = String(p.conversationId); setConversationId(cid); localStorage.setItem('asami.conversationId', cid)
             }
