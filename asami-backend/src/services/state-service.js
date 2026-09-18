@@ -225,26 +225,10 @@ async function accumulateEmotionHistory({ entityId, emotionId, code, oldIntensit
 async function flushPendingNeedHistory(entityId, causeActionId) {
   if (!causeActionId) return 0;
   let count = 0;
-  for (const [key, pending] of pendingNeedHistory.entries()) {
+  for (const pending of [...pendingNeedHistory.values()]) {
     if (String(pending.entityId) !== String(entityId) || String(pending.causeActionId || "") !== String(causeActionId)) continue;
-    await pool.query(
-      `INSERT INTO entity_need_history
-        (id,entity_id,need_id,old_value,new_value,delta,simulation_time,cause_event_id,cause_action_id)
-       VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,?,UUID_TO_BIN(?),UUID_TO_BIN(?))`,
-      [
-        uuid(),
-        pending.entityId,
-        pending.needId,
-        round5(pending.oldValue),
-        round5(pending.newValue),
-        round5(pending.delta),
-        pending.simulationTime,
-        pending.causeEventId,
-        pending.causeActionId
-      ]
-    );
-    pendingNeedHistory.delete(key);
-    count += 1;
+    const persisted = await accumulateNeedHistory({ ...pending, significant: true });
+    if (persisted) count += 1;
   }
   return count;
 }
@@ -252,26 +236,10 @@ async function flushPendingNeedHistory(entityId, causeActionId) {
 async function flushPendingEmotionHistory(entityId, causeActionId) {
   if (!causeActionId) return 0;
   let count = 0;
-  for (const [key, pending] of pendingEmotionHistory.entries()) {
+  for (const pending of [...pendingEmotionHistory.values()]) {
     if (String(pending.entityId) !== String(entityId) || String(pending.causeActionId || "") !== String(causeActionId)) continue;
-    await pool.query(
-      `INSERT INTO entity_emotion_history
-        (id,entity_id,emotion_id,old_intensity,new_intensity,delta,simulation_time,cause_event_id,cause_action_id)
-       VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,?,UUID_TO_BIN(?),UUID_TO_BIN(?))`,
-      [
-        uuid(),
-        pending.entityId,
-        pending.emotionId,
-        round5(pending.oldIntensity),
-        round5(pending.newIntensity),
-        round5(pending.delta),
-        pending.simulationTime,
-        pending.causeEventId,
-        pending.causeActionId
-      ]
-    );
-    pendingEmotionHistory.delete(key);
-    count += 1;
+    const persisted = await accumulateEmotionHistory({ ...pending, significant: true });
+    if (persisted) count += 1;
   }
   return count;
 }
