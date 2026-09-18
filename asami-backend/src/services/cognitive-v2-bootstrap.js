@@ -8,7 +8,7 @@ const {
 } = require('./cognitive-v2-schema');
 const cognitive = require('./cognitive-v2-service');
 const { upsertBelief } = require('./personality-service');
-const { applyEmotions, getTraits } = require('./state-service');
+const { applyEmotions, getTraits, persistNeedTransition } = require('./state-service');
 const logger = require('../lib/logger');
 
 let installed = false;
@@ -143,7 +143,7 @@ async function createDecisionCognition({ simulationId, entityId, simulationTime,
   return { expectationId, counterfactualIds };
 }
 
-async function applyWorld2Feedback({ simulationId, entityId, actionType, simulationTime, outcome }) {
+async function applyWorld2Feedback({ simulationId, entityId, actionType, simulationTime, outcome, actionId = null, eventId = null }) {
   if (String(outcome || '').toUpperCase() !== 'SUCCESS') return [];
   const feedback = ACTION_FEEDBACK[normalize(actionType)];
   if (!feedback) return [];
@@ -158,9 +158,19 @@ async function applyWorld2Feedback({ simulationId, entityId, actionType, simulat
     const oldValue = clamp01(row.value);
     const nextValue = clamp01(oldValue + delta);
     if (Math.abs(nextValue - oldValue) < 0.000001) continue;
-    const [updated] = await pool.query(`UPDATE entity_needs_current SET value=?,updated_simulation_at=?,version=version+1 WHERE entity_id=UUID_TO_BIN(?) AND need_id=UUID_TO_BIN(?) AND version=?`, [nextValue,simulationTime,entityId,row.needId,row.version]);
-    if (!updated.affectedRows) continue;
-    await pool.query(`INSERT INTO entity_need_history(id,entity_id,need_id,old_value,new_value,delta,simulation_time,cause_event_id,cause_action_id) VALUES(UUID_TO_BIN(UUID()),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,?,NULL,NULL)`, [entityId,row.needId,oldValue,nextValue,nextValue-oldValue,simulationTime]);
+    const transition = await persistNeedTransition({
+      entityId,
+      needId: row.needId,
+      code: row.code,
+      oldValue,
+      nextValue,
+      version: row.version,
+      simulationTime,
+      causeEventId: eventId,
+      causeActionId: actionId,
+      significant: true
+    });
+    if (!transition) continue;
     changes.push({ code:row.code,old:oldValue,new:nextValue,delta:nextValue-oldValue });
   }
   return changes;
@@ -196,7 +206,7 @@ async function maybeRecordNarrative({ simulationId, entityId, simulationTime, ar
 async function postCompletionCognition(args, result) {
   if (!result?.completed || !args?.simulationId || !args?.entityId) return;
   try {
-    const feedback = await applyWorld2Feedback({ simulationId:args.simulationId,entityId:args.entityId,actionType:args.actionType,simulationTime:args.simulationTime,outcome:result.outcome });
+    const feedback = await applyWorld2Feedback({ simulationId:args.simulationId,entityId:args.entityId,actionType:args.actionType,simulationTime:args.simulationTime,outcome:result.outcome,actionId:args.actionId,eventId:args.eventId || result.eventId || null });
     if (feedback.length) await applyEmotions(args.entityId,args.simulationTime,feedback,result.eventId || null,args.actionId,args.actionType,0,{ event:true,outcome:result.outcome,targetEntityId:result.targetEntityId || null,meaning:'WORLD2_FEEDBACK' });
     const expectation = await learnCompletion({ simulationId:args.simulationId,entityId:args.entityId,simulationTime:args.simulationTime,result,args });
     const desireKey = DESIRE_BY_ACTION[normalize(args.actionType)];
