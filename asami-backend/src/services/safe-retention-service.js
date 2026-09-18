@@ -75,7 +75,7 @@ async function compactOldDecisionContexts(conn, simulationId, simulationTime) {
       "AND status IN ('EXECUTED','FAILED','CANCELLED') " +
       "AND simulation_time < " + cutoff + " " +
       "AND context IS NOT NULL " +
-      "AND (JSON_EXTRACT(context,'$.archived') IS NULL OR JSON_EXTRACT(context,'$.archived') <> true)";
+      "AND (COALESCE(JSON_UNQUOTE(JSON_EXTRACT(context,'$.archived')),'false') <> 'true')";
     const [rows] = await conn.query(countSql, [simulationId, simulationTime]);
     return { candidates: Number(rows[0]?.candidates || 0), updated: 0, dryRun: true };
   }
