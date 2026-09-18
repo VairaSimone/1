@@ -19,6 +19,39 @@ export interface Development { entityId?: string; developmentStageId?: string | 
 export interface DevelopmentHistoryItem extends Development { simulationAt?: string; reason?: string | null; oldStage?: string | null; newStage?: string | null; oldStageId?: string | null; newStageId?: string | null }
 export interface ChatMessage { id: string; senderEntityId: string; messageType: 'USER' | 'ASSISTANT' | string; content: string; simulationAt: string; status: string; metadata?: unknown }
 export interface ChatResponse { conversationId: string; userMessageId: string; assistantMessageId: string; reply: string; aiUsed: boolean }
+export interface ConversationState {
+  conversationId: string
+  status: string
+  version: number
+  createdAt: string
+  state: {
+    startedAt: string | null
+    lastActivityAt: string | null
+    lastUserMessageAt: string | null
+    lastAsamiMessageAt: string | null
+    currentTopic: string | null
+    emotionalTone: string | null
+    unresolvedTopics: string[]
+    openQuestions: string[]
+    commitments: string[]
+    sharedTopics: Array<Record<string, unknown>>
+    interactionCount: number
+    userInitiatedCount: number
+    asamiInitiatedCount: number
+    lastIntent: string | null
+    lastInitiator: string | null
+    innerState: {
+      attention: number
+      curiosity: number
+      socialInterest: number
+      emotionalEngagement: number
+      conversationalEnergy: number
+      desireToContinue: number
+    }
+    [key: string]: unknown
+  }
+  metadata: Record<string, unknown>
+}
 export interface WsMessage { type: string; simulationId: string; occurredAt: string; payload: Record<string, unknown> }
 
 export interface MindValue { id: string; code: string; label: string; importance: number; confidence: number; origin: string; salience: number; updatedAt: string }
