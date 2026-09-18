@@ -6,6 +6,84 @@ const DECAY_CHECKPOINT_MINUTES = 360;
 const DECAY_PER_HOUR_FACTOR = 0.997;
 const lastDecayCheckBySimulation = new Map();
 
+function compactMemoryMetadata(metadata) {
+  if (!metadata || typeof metadata !== "object") return metadata || null;
+
+  const compact = { ...metadata };
+  delete compact.context;
+  delete compact.cognitive;
+
+  if (metadata.cognitive && typeof metadata.cognitive === "object") {
+    const cognitive = metadata.cognitive;
+    compact.cognitiveRefs = {
+      preferenceIds: Array.isArray(cognitive.preferenceIds) ? cognitive.preferenceIds.slice(0, 8) : [],
+      beliefId: cognitive.beliefId || null,
+      knowledgeId: cognitive.knowledgeId || null,
+      semantic: cognitive.semantic ? {
+        consolidated: Boolean(cognitive.semantic.consolidated),
+        reliability: Number.isFinite(Number(cognitive.semantic.reliability)) ? Number(Number(cognitive.semantic.reliability).toFixed(4)) : null,
+        observations: Number.isFinite(Number(cognitive.semantic.observations)) ? Number(cognitive.semantic.observations) : 0,
+        beliefId: cognitive.semantic.beliefId || null,
+        preferenceId: cognitive.semantic.preferenceId || null
+      } : null,
+      learningStrength: Number.isFinite(Number(cognitive.learningStrength))
+        ? Number(Number(cognitive.learningStrength).toFixed(4))
+        : null
+    };
+  }
+
+  if (Array.isArray(compact.needChanges)) {
+    compact.needChanges = compact.needChanges
+      .map(change => ({
+        code: change?.code || null,
+        delta: Number.isFinite(Number(change?.delta)) ? Number(Number(change.delta).toFixed(4)) : null,
+        new: Number.isFinite(Number(change?.new)) ? Number(Number(change.new).toFixed(4)) : null
+      }))
+      .filter(change => change.code)
+      .sort((a, b) => Math.abs(Number(b.delta || 0)) - Math.abs(Number(a.delta || 0)))
+      .slice(0, 6);
+  }
+
+  if (compact.decision && typeof compact.decision === "object") {
+    compact.decision = {
+      decisionId: compact.decision.decisionId || null,
+      actionType: compact.decision.actionType || null,
+      goalId: compact.decision.goalId || null,
+      confidence: Number.isFinite(Number(compact.decision.confidence))
+        ? Number(Number(compact.decision.confidence).toFixed(4))
+        : null,
+      reason: String(compact.decision.reason || "").slice(0, 240) || null
+    };
+  }
+
+  if (compact.location && typeof compact.location === "object") {
+    compact.location = {
+      id: compact.location.id || null,
+      type: compact.location.type || null,
+      label: String(compact.location.label || "").slice(0, 160) || null
+    };
+  }
+
+  if (compact.resource && typeof compact.resource === "object") {
+    compact.resource = {
+      resource: compact.resource.resource || null,
+      consumed: Number.isFinite(Number(compact.resource.consumed)) ? Number(compact.resource.consumed) : null,
+      remaining: Number.isFinite(Number(compact.resource.remaining)) ? Number(compact.resource.remaining) : null,
+      ok: compact.resource.ok === undefined ? null : Boolean(compact.resource.ok)
+    };
+  }
+
+  if (compact.resourceLearning && typeof compact.resourceLearning === "object") {
+    compact.resourceLearning = {
+      type: compact.resourceLearning.type || null,
+      resource: compact.resourceLearning.resource || null,
+      locationId: compact.resourceLearning.locationId || null
+    };
+  }
+
+  return compact;
+}
+
 function normalizeJson(value) {
   if (Buffer.isBuffer(value)) value = value.toString();
   if (typeof value !== "string") return value;
@@ -37,6 +115,7 @@ function buildActionMemory({ actionType, outcome = "SUCCESS", perception = null,
 function buildFailureMemory({ locationId, simulationTime, actionType, perception, decision, needChanges, physical, failureReason, resourceLearning, strategyAlternative = null }) { const resource = physical?.resource ? String(physical.resource).toLowerCase() : null; const resourceState = Number.isFinite(Number(physical?.remaining)) ? Number(physical.remaining) : null; const normalizedLearning = resourceLearning ? { ...resourceLearning, type: resourceLearning.type || "RESOURCE_UNAVAILABLE" } : null; const memory = buildActionMemory({ actionType, outcome: "FAILURE", perception, decision, needChanges, simulationAt: simulationTime, completion: { failureReason: failureReason || "ACTION_FAILED", resource: physical || null, resourceLearning: normalizedLearning, strategyAlternative: strategyAlternative || (resource ? `go to another location with ${resource} available` : "choose another strategy") } }); memory.context.resource = { ...(memory.context.resource || {}), name: resource, remaining: resourceState }; memory.metadata.resource = physical || null; memory.metadata.locationId = locationId || memory.metadata.location?.id || null; memory.metadata.failureReason = failureReason || "ACTION_FAILED"; memory.metadata.resourceLearning = normalizedLearning; memory.metadata.strategyAlternative = strategyAlternative || memory.metadata.strategyAlternative; memory.metadata.source = "action_completion"; memory.metadata.kind = "resource_failure"; return memory; }
 
 async function createMemory({ simulationId, entityId, eventId = null, activityId = null, locationId = null, type = "EPISODIC", content, importance = 0.5, strength = 1, confidence = 0.8, emotionalIntensity = 0.2, simulationAt, metadata = null }) {
+  metadata = compactMemoryMetadata(metadata);
   const memoryKind = metadata?.kind || null;
   if (memoryKind === "resource_failure") {
     const resource = metadata?.resource?.resource || metadata?.resource || null, resourceName = resource ? String(resource).trim().toLowerCase() : null, memoryLocationId = locationId || metadata?.locationId || metadata?.location?.id || null;
@@ -98,4 +177,4 @@ async function recallContext(simulationId, entityId, limit = 8, context = {}) {
   return memories;
 }
 
-module.exports = { createMemory, decayMemories, listMemories, recallContext, buildMemoryContext, buildActionMemory, buildFailureMemory, memoryRelevance, deriveRecallContext };
+module.exports = { createMemory, decayMemories, listMemories, recallContext, buildMemoryContext, buildActionMemory, buildFailureMemory, memoryRelevance, deriveRecallContext, compactMemoryMetadata };
