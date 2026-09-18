@@ -48,7 +48,8 @@ async function ensureLink({ simulationId, entityId, simulationTime, sourceType, 
   const nextWeight = signed(previousWeight * 0.82 + observedWeight * 0.18);
   const nextPolarity = nextWeight < 0 ? -1 : nextWeight > 0 ? 1 : (Number(row.polarity) < 0 ? -1 : 1);
   const nextConfidence = clamp01(Number(row.confidence) * 0.88 + clamp01(confidence) * 0.12);
-  await pool.query(`UPDATE causal_links SET weight=?,polarity=?,confidence=?,evidence_count=evidence_count+1,last_activated_simulation_at=?,updated_simulation_at=?,version=version+1 WHERE id=UUID_TO_BIN(?) AND version=?`, [nextWeight,nextPolarity,nextConfidence,simulationTime,simulationTime,row.id,row.version]);
+  const [updated] = await pool.query(`UPDATE causal_links SET weight=?,polarity=?,confidence=?,evidence_count=evidence_count+1,last_activated_simulation_at=?,updated_simulation_at=?,version=version+1 WHERE id=UUID_TO_BIN(?) AND version=?`, [nextWeight,nextPolarity,nextConfidence,simulationTime,simulationTime,row.id,row.version]);
+  if (!updated.affectedRows) throw Object.assign(new Error("Optimistic lock conflict on causal link"), { code: "OPTIMISTIC_LOCK" });
   return row.id;
 }
 
@@ -83,7 +84,8 @@ async function updateBelief({ simulationId, entityId, simulationTime, belief, ac
     return;
   }
   const row = rows[0], next = clamp01(Number(row.confidence) + (target - Number(row.confidence)) * rate);
-  await pool.query(`UPDATE self_beliefs SET confidence=?,source_type='CAUSAL_EXPERIENCE',source_ref=UUID_TO_BIN(?),updated_simulation_at=?,version=version+1 WHERE id=UUID_TO_BIN(?) AND version=?`, [next,sourceRef,simulationTime,row.id,row.version]);
+  const [updated] = await pool.query(`UPDATE self_beliefs SET confidence=?,source_type='CAUSAL_EXPERIENCE',source_ref=UUID_TO_BIN(?),updated_simulation_at=?,version=version+1 WHERE id=UUID_TO_BIN(?) AND version=?`, [next,sourceRef,simulationTime,row.id,row.version]);
+  if (!updated.affectedRows) throw Object.assign(new Error("Optimistic lock conflict on causal self belief"), { code: "OPTIMISTIC_LOCK" });
 }
 
 async function updateDesire({ simulationId, entityId, simulationTime, desireKey, actionOutcome, activation }) {
@@ -100,7 +102,8 @@ async function updateDesire({ simulationId, entityId, simulationTime, desireKey,
   const nextProgress = clamp01(Number(row.progress) + progressDelta);
   const nextPriority = clamp01(Number(row.priority) + priorityDelta);
   const nextPersistence = clamp01(Number(row.persistence) + persistenceDelta);
-  await pool.query(`UPDATE long_term_desires SET progress=?,priority=?,persistence=?,updated_simulation_at=?,version=version+1 WHERE id=UUID_TO_BIN(?) AND version=?`, [nextProgress,nextPriority,nextPersistence,simulationTime,row.id,row.version]);
+  const [updated] = await pool.query(`UPDATE long_term_desires SET progress=?,priority=?,persistence=?,updated_simulation_at=?,version=version+1 WHERE id=UUID_TO_BIN(?) AND version=?`, [nextProgress,nextPriority,nextPersistence,simulationTime,row.id,row.version]);
+  if (!updated.affectedRows) throw Object.assign(new Error("Optimistic lock conflict on causal desire"), { code: "OPTIMISTIC_LOCK" });
   return { id: row.id, progress: nextProgress, priority: nextPriority, persistence: nextPersistence };
 }
 
@@ -112,7 +115,8 @@ async function updateValue({ simulationId, entityId, simulationTime, valueCode, 
   const nextImportance = clamp01(Number(row.importance) + delta);
   const nextConfidence = clamp01(Number(row.confidence) + delta * 0.65);
   const nextSalience = clamp01(0.45 + Math.abs(delta) * 8);
-  await pool.query(`UPDATE identity_values SET importance=?,confidence=?,salience=?,origin='CAUSAL_EXPERIENCE',updated_simulation_at=?,version=version+1 WHERE id=UUID_TO_BIN(?) AND version=?`, [nextImportance,nextConfidence,nextSalience,simulationTime,row.id,row.version]);
+  const [updated] = await pool.query(`UPDATE identity_values SET importance=?,confidence=?,salience=?,origin='CAUSAL_EXPERIENCE',updated_simulation_at=?,version=version+1 WHERE id=UUID_TO_BIN(?) AND version=?`, [nextImportance,nextConfidence,nextSalience,simulationTime,row.id,row.version]);
+  if (!updated.affectedRows) throw Object.assign(new Error("Optimistic lock conflict on causal identity value"), { code: "OPTIMISTIC_LOCK" });
   return { code: valueCode, importance: nextImportance, confidence: nextConfidence };
 }
 
