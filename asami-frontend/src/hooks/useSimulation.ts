@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../lib/api'
-import type { ChatMessage, Dashboard, Development, DevelopmentHistoryItem, EventItem, Memory, Simulation, TimelineItem, WsMessage } from '../types'
+import type { ChatMessage, ConversationState, Dashboard, Development, DevelopmentHistoryItem, EventItem, Memory, Simulation, TimelineItem, WsMessage } from '../types'
 
 const ACTIVE_SIM_KEY = 'asami.activeSimulationId'
 const ASAMI_ENTITY_KEY = 'asami.entityId'
@@ -16,6 +16,7 @@ export function useSimulation() {
   const [memories, setMemories] = useState<Memory[]>([])
   const [development, setDevelopment] = useState<{ current: Development | null; history: DevelopmentHistoryItem[] }>({ current: null, history: [] })
   const [messages, setMessages] = useState<ChatMessage[]>([])
+  const [conversationState, setConversationState] = useState<ConversationState | null>(null)
   const [clockSpeed, setClockSpeed] = useState(1)
   const [conversationId, setConversationId] = useState(() => localStorage.getItem('asami.conversationId') || '')
   const [chatSenderId, setChatSenderIdState] = useState(() => localStorage.getItem(CHAT_SENDER_KEY) || '')
@@ -31,7 +32,7 @@ export function useSimulation() {
   const setSimulationId = useCallback((id: string) => {
     setSimulationIdState(id)
     localStorage.setItem(ACTIVE_SIM_KEY, id)
-    setDashboard(null); setTimeline([]); setEvents([]); setMemories([]); setDevelopment({ current: null, history: [] }); setMessages([]); setConversationId('')
+    setDashboard(null); setTimeline([]); setEvents([]); setMemories([]); setDevelopment({ current: null, history: [] }); setMessages([]); setConversationId(''); setConversationState(null)
     localStorage.removeItem('asami.conversationId')
   }, [])
 
@@ -120,8 +121,25 @@ export function useSimulation() {
     setMessages(await api.conversationMessages(simulationId, result.conversationId)); await refresh(true); return result
   }, [simulationId, chatSenderId, asamiId, conversationId, refresh])
 
-  useEffect(() => { if (!simulationId || !conversationId) return; api.conversationMessages(simulationId, conversationId).then(setMessages).catch(() => undefined) }, [simulationId, conversationId])
+  useEffect(() => {
+    if (!simulationId || !conversationId) {
+      setConversationState(null)
+      return
+    }
+    let cancelled = false
+    Promise.all([
+      api.conversationMessages(simulationId, conversationId),
+      api.conversationState(simulationId, conversationId),
+    ]).then(([nextMessages, nextState]) => {
+      if (cancelled) return
+      setMessages(nextMessages)
+      setConversationState(nextState)
+    }).catch(() => {
+      if (!cancelled) setConversationState(null)
+    })
+    return () => { cancelled = true }
+  }, [simulationId, conversationId])
   const setChatSenderId = useCallback((id: string) => { setChatSenderIdState(id); localStorage.setItem(CHAT_SENDER_KEY, id) }, [])
 
-  return { simulations, simulation, simulationId, asamiId, dashboard, timeline, events, memories, development, messages, clockSpeed, chatSenderId, loading, refreshing, error, wsConnected, setSimulationId, setChatSenderId, createSimulation, refresh, control, changeSpeed, sendMessage }
+  return { simulations, simulation, simulationId, asamiId, dashboard, timeline, events, memories, development, messages, conversationState, clockSpeed, chatSenderId, loading, refreshing, error, wsConnected, setSimulationId, setChatSenderId, createSimulation, refresh, control, changeSpeed, sendMessage }
 }
