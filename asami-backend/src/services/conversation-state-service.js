@@ -107,8 +107,9 @@ function topicFromText(content, fallback = null) {
     ["DAILY_LIFE", /\b(mangiare|cibo|acqua|dormire|casa|pranzo|cena|colazione|stanco|oggi|mattina|sera|food|water|sleep|home|lunch|dinner|breakfast|today)\b/]
   ];
   for (const [topic, pattern] of groups) if (pattern.test(text)) return topic;
-  const tokens = [...new Set(text.split(/[^a-zàèéìòù0-9]+/i).filter(t => t.length >= 4))];
-  return tokens.slice(0, 2).join(" ") || fallback;
+  const stopWords = new Set(["ciao","salve","hey","buongiorno","buonasera","hello","come","cosa","stai","state","sono","sei","oggi","perché","perche","dove","quando","chi","che","con","questo","questa","that","what","how","are","you","today","hello"]);
+  const tokens = [...new Set(text.split(/[^a-zàèéìòù0-9]+/i).filter(t => t.length >= 4 && !stopWords.has(t)))];
+  return tokens.slice(0, 2).join(" ") || fallback || null;
 }
 
 function deriveConversationIntent(content, { proactive = false, currentTopic = null } = {}) {
