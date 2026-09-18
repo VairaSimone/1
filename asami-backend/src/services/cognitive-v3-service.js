@@ -252,7 +252,7 @@ async function processExperience({ simulationId, entityId, simulationTime, actio
     await resolveCounterfactualWorlds({simulationId,entityId,decisionId,actionType,outcome,simulationTime,regretScore});
     return { evidenceId, evolution, consolidation, group };
   } catch (err) {
-    return { error: err.message || 'emergent cognition failed' };
+    return { error: err.message || 'emergent cognition failed', code: err.code || null };
   }
 }
 
