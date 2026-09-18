@@ -87,7 +87,10 @@ export function useSimulation() {
             const metadata = (p.metadata && typeof p.metadata === 'object' ? p.metadata : {}) as Record<string, unknown>
             const incoming: ChatMessage = { id: String(p.id), senderEntityId: String(p.senderEntityId), messageType: String(p.type), content: String(p.content), simulationAt: String(p.simulationAt || msg.occurredAt), status: 'DELIVERED', metadata }
             if (p.conversationId && (metadata.proactive || String(p.senderEntityId) === asamiId)) {
-              const cid = String(p.conversationId); setConversationId(cid); localStorage.setItem('asami.conversationId', cid)
+              const cid = String(p.conversationId)
+              setConversationId(cid)
+              localStorage.setItem('asami.conversationId', cid)
+              void api.conversationState(simulationId, cid).then(setConversationState).catch(() => undefined)
             }
             setMessages((prev) => prev.some((m) => m.id === incoming.id) ? prev : [...prev, incoming])
           }
@@ -109,16 +112,29 @@ export function useSimulation() {
   }, [simulationId, refresh, wsConnected])
 
   const createSimulation = useCallback(async (payload: Record<string, unknown>) => {
-    const created = await api.createSimulation(payload); setSimulationIdState(created.simulation.id); localStorage.setItem(ACTIVE_SIM_KEY, created.simulation.id); setAsamiIdState(created.asamiEntityId); localStorage.setItem(ASAMI_ENTITY_KEY, created.asamiEntityId); await loadSimulations(); return created
-  }, [loadSimulations])
+    const created = await api.createSimulation(payload)
+    setSimulationId(created.simulation.id)
+    setAsamiIdState(created.asamiEntityId)
+    localStorage.setItem(ASAMI_ENTITY_KEY, created.asamiEntityId)
+    await loadSimulations()
+    return created
+  }, [loadSimulations, setSimulationId])
 
   const control = useCallback(async (action: 'pause' | 'resume' | 'stop') => { if (!simulationId) return; const result = await api[action](simulationId); setSimulations((prev) => prev.map((s) => s.id === result.id ? result : s)); await refresh(true) }, [simulationId, refresh])
   const changeSpeed = useCallback(async (speed: number) => { if (!simulationId) return; const result = await api.speed(simulationId, speed); setSimulations((prev) => prev.map((s) => s.id === result.id ? result : s)); await refresh(true) }, [simulationId, refresh])
   const sendMessage = useCallback(async (content: string) => {
     if (!simulationId || !chatSenderId || !asamiId) throw new Error('Serve un interlocutore valido oltre ad Asami per inviare messaggi.')
     const result = await api.sendMessage(simulationId, { senderEntityId: chatSenderId, asamiEntityId: asamiId, conversationId: conversationId || undefined, content })
-    setConversationId(result.conversationId); localStorage.setItem('asami.conversationId', result.conversationId)
-    setMessages(await api.conversationMessages(simulationId, result.conversationId)); await refresh(true); return result
+    setConversationId(result.conversationId)
+    localStorage.setItem('asami.conversationId', result.conversationId)
+    const [nextMessages, nextState] = await Promise.all([
+      api.conversationMessages(simulationId, result.conversationId),
+      api.conversationState(simulationId, result.conversationId),
+    ])
+    setMessages(nextMessages)
+    setConversationState(nextState)
+    await refresh(true)
+    return result
   }, [simulationId, chatSenderId, asamiId, conversationId, refresh])
 
   useEffect(() => {
