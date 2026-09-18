@@ -140,11 +140,11 @@ class SimulationEngine {
         phase = "world.events"; await generateWorldEvents(sim.id, nextTime, tickId, elapsedMinutes); const actors = await findAutonomousActors(sim.id, env.MAX_ENTITIES_PER_TICK);
         for (const id of actors) {
           entityId = id; actionType = null; phase = "entity.state"; await ensureEntityState(entityId, nextTime);
-          const elapsedHours = Math.min(6, Math.max(0, (nextTime - previousTime) / 3600000)); const active = await getActiveAction(entityId, sim.id);
+          const elapsedHours = Math.min(168, Math.max(0, (nextTime - previousTime) / 3600000)); const active = await getActiveAction(entityId, sim.id);
           if (active) {
             actionType = active.actionType; const actionStart = new Date(active.startedSimulationAt); const durationMinutes = Number(active.metadata?.durationMinutes || 30); const completionAt = new Date(actionStart.getTime() + durationMinutes * 60000);
             const eventId = active.metadata?.eventId || null; const targetEntityId = active.metadata?.targetEntityId || null; const targetLocationId = active.metadata?.targetLocationId || null; const relationshipIntent = active.metadata?.relationshipIntent || "NONE";
-            const wasCompleted = nextTime >= completionAt; const updateTime = wasCompleted ? completionAt : nextTime; const updateHours = Math.min(6, Math.max(0, (updateTime - previousTime) / 3600000));
+            const wasCompleted = nextTime >= completionAt; const updateTime = wasCompleted ? completionAt : nextTime; const updateHours = Math.min(168, Math.max(0, (updateTime - previousTime) / 3600000));
             phase = "entity.perception"; const perception = await perceive(sim.id, entityId, nextTime);
             phase = "entity.needs"; const needChanges = await updateNeeds(entityId, updateTime, updateHours, null, active.id, active.actionType, { significant: wasCompleted });
             phase = "entity.emotions"; await applyEmotions(entityId, updateTime, needChanges, null, active.id, active.actionType, updateHours);
@@ -171,10 +171,24 @@ class SimulationEngine {
               phase = "entity.memory";
               const memoryPayload = outcome === "FAILURE" ? buildFailureMemory({ locationId: perception.location?.locationId || null, simulationTime: completionAt, actionType: active.actionType, perception, decision: { actionType: active.actionType, goalId: active.metadata?.goalId || null }, needChanges, physical: completion.resource, failureReason: completion.failureReason, resourceLearning: completion.resourceLearning }) : buildActionMemory({ actionType: active.actionType, outcome, perception, decision: { actionType: active.actionType, goalId: active.metadata?.goalId || null }, needChanges, completion, simulationAt: completionAt });
               await createMemory({ simulationId: sim.id, entityId, eventId, locationId: perception.location?.locationId || null, type: "EPISODIC", content: memoryPayload.content, importance: memoryPayload.importance, strength: memoryPayload.strength, confidence: memoryPayload.confidence, emotionalIntensity: memoryPayload.emotionalIntensity, simulationAt: completionAt, metadata: { ...memoryPayload.metadata, actionId: active.id, eventId, durationMinutes, relationshipIntent, goalId: active.metadata?.goalId || null, planId: active.metadata?.planId || null, planStepId: active.metadata?.planStepId || null, cognitiveRefs: { preferenceIds: Array.isArray(cognitive?.preferenceIds) ? cognitive.preferenceIds.slice(0, 8) : [], beliefId: cognitive?.beliefId || null, knowledgeId: cognitive?.knowledgeId || null, learningStrength: Number.isFinite(Number(cognitive?.learningStrength)) ? Number(Number(cognitive.learningStrength).toFixed(4)) : null, semanticBeliefId: cognitive?.semantic?.beliefId || null, semanticPreferenceId: cognitive?.semantic?.preferenceId || null, semanticReliability: Number.isFinite(Number(cognitive?.semantic?.reliability)) ? Number(Number(cognitive.semantic.reliability).toFixed(4)) : null } } });
+              // A large simulation jump can finish the active action long before nextTime.
+              // Advance the passive state for the remainder so needs/emotions never freeze
+              // at the action completion timestamp.
+              const postActionGapHours = Math.min(168, Math.max(0, (nextTime - completionAt) / 3600000));
+              if (postActionGapHours > 0.0001) {
+                phase = "entity.gap.catchup";
+                const passiveNeedChanges = await updateNeeds(entityId, nextTime, postActionGapHours, null, null, null, { significant: false });
+                await applyEmotions(entityId, nextTime, passiveNeedChanges, null, null, null, postActionGapHours);
+              }
             }
             phase = "entity.mental_state"; if (["TALKING", "STUDYING", "WORKING", "EXPLORING"].includes(active.actionType)) await updateMentalState(sim.id, entityId, nextTime, { currentFocus: active.actionType.toLowerCase().replaceAll("_", " "), mentalLoad: ["WORKING", "STUDYING"].includes(active.actionType) ? 0.55 : 0.35, certainty: 0.7 });
             phase = "entity.publish"; this.hub.publish(sim.id, "entity.state", { entityId, action: { ...active, status: wasCompleted ? "COMPLETED" : "ACTIVE" }, needChanges });
           } else {
+            if (elapsedHours > 0.0001) {
+              phase = "entity.gap.catchup";
+              const passiveNeedChanges = await updateNeeds(entityId, nextTime, elapsedHours, null, null, null, { significant: false });
+              await applyEmotions(entityId, nextTime, passiveNeedChanges, null, null, null, elapsedHours);
+            }
             phase = "entity.autonomy";
             const autonomy = await actForEntity({ simulationId: sim.id, entityId, simulationTime: nextTime.toISOString(), gemini: this.gemini });
             if (!autonomy) continue;
@@ -187,7 +201,7 @@ class SimulationEngine {
             this.hub.publish(sim.id, "action.created", { entityId, decision, action: started });
           }
         }
-        phase = "world.decay"; await decayMemories(sim.id, nextTime, 6); this.tickCounter.set(sim.id, Number(this.tickCounter.get(sim.id) || 0) + 1);
+        phase = "world.decay"; await decayMemories(sim.id, nextTime); this.tickCounter.set(sim.id, Number(this.tickCounter.get(sim.id) || 0) + 1);
         const count = Number(this.tickCounter.get(sim.id) || 0); if (count % env.SNAPSHOT_EVERY_TICKS === 0) await simRepo.createSnapshot(sim.id, nextTime);
         await simRepo.completeTick(tickId, { status: "COMPLETED", entityCount: actors.length });
         void maybeRunSafeRetention(sim.id, nextTime.toISOString());
