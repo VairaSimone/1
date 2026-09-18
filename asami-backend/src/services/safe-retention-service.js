@@ -185,7 +185,7 @@ async function deleteResolvedCounterfactuals(conn, simulationId, simulationTime)
       "JOIN decisions d ON d.id=cf.decision_id " +
       "WHERE cf.simulation_id=UUID_TO_BIN(?) " +
       "AND d.status IN ('EXECUTED','FAILED','CANCELLED') " +
-      "AND d.simulation_time < ?;
+      "AND d.simulation_time < ?";
     const [rows] = await conn.query(countSql, [simulationId, cutoff]);
     return { candidates: Number(rows[0]?.candidates || 0), deleted: 0, dryRun: true };
   }
