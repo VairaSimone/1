@@ -1,5 +1,5 @@
 const { pool } = require("../db/pool");
-const { uuid } = require("../lib/ids");
+const { persistNeedTransition } = require("./state-service");
 
 const SUCCESS_NEED_FEEDBACK = {
   DRINKING: { THIRST: 0.08 },
@@ -38,20 +38,19 @@ async function applyActionOutcomeNeedFeedback({ simulationId, entityId, actionId
     const delta = Number((nextValue - oldValue).toFixed(5));
     if (Math.abs(delta) < 0.000001) continue;
 
-    const [updated] = await pool.query(
-      `UPDATE entity_needs_current
-       SET value=?,updated_simulation_at=?,version=version+1
-       WHERE entity_id=UUID_TO_BIN(?) AND need_id=UUID_TO_BIN(?) AND version=?`,
-      [nextValue, simulationTime, entityId, row.needId, row.version]
-    );
-    if (!updated.affectedRows) continue;
-
-    await pool.query(
-      `INSERT INTO entity_need_history
-        (id,entity_id,need_id,old_value,new_value,delta,simulation_time,cause_event_id,cause_action_id)
-       VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,?,NULL,UUID_TO_BIN(?))`,
-      [uuid(), entityId, row.needId, oldValue, nextValue, delta, simulationTime, actionId]
-    );
+    const transition = await persistNeedTransition({
+      entityId,
+      needId: row.needId,
+      code: row.code,
+      oldValue,
+      nextValue,
+      version: row.version,
+      simulationTime,
+      causeEventId: null,
+      causeActionId: actionId,
+      significant: true
+    });
+    if (!transition) continue;
 
     changes.push({ code: row.code, old: oldValue, new: nextValue, delta });
   }
