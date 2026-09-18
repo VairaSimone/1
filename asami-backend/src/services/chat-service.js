@@ -5,7 +5,7 @@ const { ensureEntityState, updateNeeds, applyEmotions, getTraits } = require("./
 const { getDashboard, ensureObserver } = require("../repositories/entity-repo");
 const { createEvent, addEffect } = require("./event-service");
 const { applyNeedDeltas, applyEmotionDeltas, applyTraitDeltas, applyRelationshipDeltas, updateCommunicationStyle, createGoalFromProposal } = require("./conversation-cognition-service");
-const { getCognitiveProfile, applyDialogueCognition, recordHabitEvidence } = require("./personality-service");
+const { getCognitiveProfile, applyDialogueCognition, recordHabitEvidence, updateMentalState } = require("./personality-service");
 const { learnFromAction } = require("./action-service");
 const {
   getConversationState,
@@ -215,6 +215,7 @@ async function sendMessage({
 
   const updatedDashboard=await getDashboard(simulationId,asamiEntityId);
   const innerStateAfter=stateInnerForDashboard(updatedDashboard,stateBefore?.state||{});
+  await updateMentalState(simulationId,asamiEntityId,simulationTime,{currentFocus:"conversation with "+context.interlocutor.displayName,currentConcern:context.conversationState?.unresolvedTopics?.[0]||null,mentalLoad:Math.max(.05,Math.min(.9,.25+innerStateAfter.emotionalEngagement*.35)),certainty:.5+innerStateAfter.attention*.25});
   const conversationState=await updateConversationAfterTurn({
     simulationId,
     conversationId:cid,
@@ -570,6 +571,7 @@ async function initiateConversation({simulationId,asamiEntityId,simulationTime,g
 
   const updatedDashboard=await getDashboard(simulationId,asamiEntityId);
   const updatedInnerState=stateInnerForDashboard(updatedDashboard,conversation.state);
+  await updateMentalState(simulationId,asamiEntityId,simulationTime,{currentFocus:"conversation with "+context.interlocutor.displayName,currentConcern:conversation.state?.unresolvedTopics?.[0]||null,mentalLoad:Math.max(.05,Math.min(.9,.2+updatedInnerState.emotionalEngagement*.30)),certainty:.5+updatedInnerState.attention*.25});
   const conversationState=await updateConversationAfterTurn({
     simulationId,
     conversationId:cid,
