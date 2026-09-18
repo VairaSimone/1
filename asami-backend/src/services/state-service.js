@@ -35,8 +35,8 @@ function crossesCriticalNeedThreshold(code, oldValue, newValue) {
   if (!policy) return false;
   const oldNumber = Number(oldValue), newNumber = Number(newValue), threshold = Number(policy.threshold);
   if (![oldNumber, newNumber, threshold].every(Number.isFinite)) return false;
-  if (policy.direction === "HIGH") return oldNumber < threshold && newNumber >= threshold;
-  return oldNumber > threshold && newNumber <= threshold;
+  if (policy.direction === "HIGH") return (oldNumber < threshold && newNumber >= threshold) || (oldNumber >= threshold && newNumber < threshold);
+  return (oldNumber > threshold && newNumber <= threshold) || (oldNumber <= threshold && newNumber > threshold);
 }
 
 function shouldPersistHistory({ delta, significant = false, critical = false, threshold }) {
@@ -72,6 +72,46 @@ async function accumulateNeedHistory({ entityId, needId, code, oldValue, newValu
 
   const critical = crossesCriticalNeedThreshold(code, pending.oldValue, pending.newValue);
   if (!shouldPersistHistory({ delta: pending.delta, significant, critical, threshold: NEED_HISTORY_MIN_DELTA })) return false;
+
+  const matchCondition = pending.causeActionId
+    ? `entity_id=UUID_TO_BIN(?) AND need_id=UUID_TO_BIN(?) AND cause_action_id=UUID_TO_BIN(?)`
+    : pending.causeEventId
+      ? `entity_id=UUID_TO_BIN(?) AND need_id=UUID_TO_BIN(?) AND cause_event_id=UUID_TO_BIN(?)`
+      : null;
+  const matchParams = pending.causeActionId
+    ? [pending.entityId, pending.needId, pending.causeActionId]
+    : pending.causeEventId
+      ? [pending.entityId, pending.needId, pending.causeEventId]
+      : [];
+
+  if (matchCondition) {
+    const [existingRows] = await pool.query(
+      `SELECT BIN_TO_UUID(id) AS id,old_value AS oldValue
+       FROM entity_need_history
+       WHERE ${matchCondition}
+       ORDER BY simulation_time ASC
+       LIMIT 1`,
+      matchParams
+    );
+    if (existingRows.length) {
+      const existing = existingRows[0];
+      const mergedDelta = round5(Number(pending.newValue) - Number(existing.oldValue));
+      await pool.query(
+        `UPDATE entity_need_history
+         SET new_value=?,delta=?,simulation_time=?,cause_event_id=COALESCE(UUID_TO_BIN(?),cause_event_id)
+         WHERE id=UUID_TO_BIN(?)`,
+        [
+          round5(pending.newValue),
+          mergedDelta,
+          pending.simulationTime,
+          pending.causeEventId,
+          existing.id
+        ]
+      );
+      pendingNeedHistory.delete(key);
+      return true;
+    }
+  }
 
   await pool.query(
     `INSERT INTO entity_need_history
@@ -121,6 +161,46 @@ async function accumulateEmotionHistory({ entityId, emotionId, code, oldIntensit
   pendingEmotionHistory.set(key, pending);
 
   if (!shouldPersistHistory({ delta: pending.delta, significant, threshold: EMOTION_HISTORY_MIN_DELTA })) return false;
+
+  const matchCondition = pending.causeActionId
+    ? `entity_id=UUID_TO_BIN(?) AND emotion_id=UUID_TO_BIN(?) AND cause_action_id=UUID_TO_BIN(?)`
+    : pending.causeEventId
+      ? `entity_id=UUID_TO_BIN(?) AND emotion_id=UUID_TO_BIN(?) AND cause_event_id=UUID_TO_BIN(?)`
+      : null;
+  const matchParams = pending.causeActionId
+    ? [pending.entityId, pending.emotionId, pending.causeActionId]
+    : pending.causeEventId
+      ? [pending.entityId, pending.emotionId, pending.causeEventId]
+      : [];
+
+  if (matchCondition) {
+    const [existingRows] = await pool.query(
+      `SELECT BIN_TO_UUID(id) AS id,old_intensity AS oldIntensity
+       FROM entity_emotion_history
+       WHERE ${matchCondition}
+       ORDER BY simulation_time ASC
+       LIMIT 1`,
+      matchParams
+    );
+    if (existingRows.length) {
+      const existing = existingRows[0];
+      const mergedDelta = round5(Number(pending.newIntensity) - Number(existing.oldIntensity));
+      await pool.query(
+        `UPDATE entity_emotion_history
+         SET new_intensity=?,delta=?,simulation_time=?,cause_event_id=COALESCE(UUID_TO_BIN(?),cause_event_id)
+         WHERE id=UUID_TO_BIN(?)`,
+        [
+          round5(pending.newIntensity),
+          mergedDelta,
+          pending.simulationTime,
+          pending.causeEventId,
+          existing.id
+        ]
+      );
+      pendingEmotionHistory.delete(key);
+      return true;
+    }
+  }
 
   await pool.query(
     `INSERT INTO entity_emotion_history
