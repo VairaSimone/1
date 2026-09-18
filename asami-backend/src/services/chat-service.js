@@ -244,8 +244,8 @@ async function sendMessage({
       eventId,
       content:"Conversation with "+context.interlocutor.displayName+": they said \""+content+"\". I replied \""+reply+"\"",
       importance:Math.max(.55,significance.score),
-      strength:significance.score>=.75?.98:.88,
-      confidence:generated?.92:.65,
+      strength:significance.score >= 0.75 ? 0.98 : 0.88,
+      confidence:generated ? 0.92 : 0.65,
       emotionalIntensity:Math.min(1,.20+cognition.emotionChanges.length*.04),
       simulationAt:simulationTime,
       metadata:{
@@ -598,7 +598,7 @@ async function initiateConversation({simulationId,asamiEntityId,simulationTime,g
       content:"I chose to contact "+context.interlocutor.displayName+": \""+reply+"\"",
       importance:Math.max(.62,significance.score),
       strength:.94,
-      confidence:generated?.9:.62,
+      confidence:generated ? 0.9 : 0.62,
       emotionalIntensity:Math.min(1,.25+updatedInnerState.emotionalEngagement*.2),
       simulationAt,
       metadata:{
