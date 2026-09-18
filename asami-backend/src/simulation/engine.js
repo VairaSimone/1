@@ -134,7 +134,7 @@ class SimulationEngine {
       tickId = await simRepo.advanceAndCreateTick(sim.id, nextTime, sim.version, "AUTONOMOUS", env.ENGINE_VERSION); if (!tickId) return;
       context.simulationTime = nextTime.toISOString(); phase = "tick.create";
       try {
-        const elapsedMinutes = Math.min(360, Math.max(0, (nextTime - previousTime) / 60000));
+        const elapsedMinutes = Math.min(10080, Math.max(0, (nextTime - previousTime) / 60000));
         const lastMaintenance = this.worldMaintenanceAt.get(sim.id); const maintenanceDue = lastMaintenance === undefined || nextTime.getTime() - lastMaintenance >= 3600000;
         if (maintenanceDue) { phase = "world.initialize"; await ensureWorld(sim.id, nextTime); phase = "world.physical"; await seedPhysicalWorld(sim.id, nextTime); phase = "world.relationships"; await evolveRelationships(sim.id, nextTime); this.worldMaintenanceAt.set(sim.id, nextTime.getTime()); }
         phase = "world.events"; await generateWorldEvents(sim.id, nextTime, tickId, elapsedMinutes); const actors = await findAutonomousActors(sim.id, env.MAX_ENTITIES_PER_TICK);
