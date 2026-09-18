@@ -33,6 +33,193 @@ async function loadResourceContext(simulationId,entityId,location,simulationTime
 async function buildDecisionContext(simulationId,entityId,simulationTime=null){let effectiveSimulationTime=simulationTime;if(!effectiveSimulationTime){const[rows]=await pool.query(`SELECT current_simulation_at AS currentSimulationAt FROM simulations WHERE id=UUID_TO_BIN(?) LIMIT 1`,[simulationId]);effectiveSimulationTime=rows[0]?.currentSimulationAt||new Date();}const[[needs],[traits],[goals],[location],[recentActions]]=await Promise.all([pool.query(`SELECT nd.code,enc.value,nd.priority_weight AS priorityWeight FROM entity_needs_current enc JOIN need_definitions nd ON nd.id=enc.need_id WHERE enc.entity_id=UUID_TO_BIN(?) AND nd.active=1`,[entityId]),pool.query(`SELECT td.code,etc.value FROM entity_traits_current etc JOIN trait_definitions td ON td.id=etc.trait_id WHERE etc.entity_id=UUID_TO_BIN(?) AND td.active=1`,[entityId]),pool.query(`SELECT BIN_TO_UUID(id) AS id,title,goal_type AS goalType,priority,progress,motivation FROM goals WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND status IN ('DRAFT','ACTIVE','PAUSED') ORDER BY priority DESC,created_simulation_at ASC LIMIT 10`,[simulationId,entityId]),pool.query(`SELECT BIN_TO_UUID(elc.location_id) AS locationId,l.location_type AS locationType,l.address_data AS addressData FROM entity_locations_current elc JOIN locations l ON l.entity_id=elc.location_id AND l.simulation_id=elc.simulation_id WHERE elc.simulation_id=UUID_TO_BIN(?) AND elc.entity_id=UUID_TO_BIN(?) LIMIT 1`,[simulationId,entityId]),pool.query(`SELECT action_type AS actionType FROM actions WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND status='COMPLETED' ORDER BY started_simulation_at DESC LIMIT ?`,[simulationId,entityId,MAX_RECENT_ACTIONS])]);const currentLocation=location[0]||null,cognitiveProfile=await getCognitiveProfile(simulationId,entityId),excludedLocationIds=[];for(const plan of cognitiveProfile.plans||[])for(const id of plan.strategy?.avoidLocationIds||[])if(id&&!excludedLocationIds.includes(id))excludedLocationIds.push(id);const resourceContext=await loadResourceContext(simulationId,entityId,currentLocation,effectiveSimulationTime,excludedLocationIds);let candidates=ACTIONS.map(action=>({action,score:scoreAction(action,needs,traits,resourceContext)}));candidates=candidates.map(c=>({...c,score:Number(c.score||0)+cognitiveDecisionModifier(cognitiveProfile,c.action)+Math.max(-MAX_EXPERIENCE_SCORE_EFFECT,Math.min(MAX_EXPERIENCE_SCORE_EFFECT,cognitiveExperienceModifier(cognitiveProfile,c.action,{locationType:currentLocation?.locationType,locationId:currentLocation?.locationId})))}));candidates=applyIndividualityBias(candidates,entityId);candidates=applyPlanBias(candidates,cognitiveProfile.plans);candidates=applyRecentActionPenalty(candidates,recentActions.map(r=>r.actionType));candidates=applyLocationBias(candidates,currentLocation);candidates=applyResourceRoutingBias(candidates,resourceContext,needs);const needPriority=needPriorityState(needs);return{needs,traits,goals,location:currentLocation,recentActions:recentActions.map(r=>r.actionType),resourceContext,cognitiveProfile,needPriority,allowedActionTypes:ACTIONS,candidates};}
 function chooseStochasticCandidate(candidates,{temperature=BASE_TEMPERATURE,random=Math.random}={}){const usable=candidates.filter(c=>Number(c.score||0)>0).slice(0,STOCHASTIC_TOP_K);if(!usable.length)return candidates[0]||{action:"RESTING",score:0};if(usable.length===1)return usable[0];const top=Number(usable[0].score||0),second=Number(usable[1].score||0);if(top-second>=.85)return usable[0];const t=Math.max(.12,Math.min(.48,Number(temperature||BASE_TEMPERATURE))),weights=usable.map(c=>Math.exp((Number(c.score||0)-top)/t)),total=weights.reduce((s,v)=>s+v,0);if(!Number.isFinite(total)||total<=0)return usable[0];let cursor=random()*total;for(let i=0;i<usable.length;i++){cursor-=weights[i];if(cursor<=0)return usable[i];}return usable[usable.length-1];}
 function resolvePlanCommitment(context){const step=context?.activePlanStep;if(!step)return null;const action=normalizeAction(step.result?.actionType||step.actionType);if(!action)return null;const critical=criticalNeedAction(context?.needs||[]);if(critical&&critical!==action)return null;const candidate=(context?.candidates||[]).find(c=>normalizeAction(c.action)===action);return candidate?{action,candidate,reason:"ACTIVE_PLAN_COMMITMENT"}:null;}
-async function makeDecision({simulationId,entityId,simulationTime,triggerType=null,triggerEventId=null,context,aiChoice=null}){const decisionId=uuid(),baseCandidates=Array.isArray(context?.candidates)?context.candidates:[],proactivity=deriveProactivity(context);let candidates=applyProactiveOpportunityBias(baseCandidates.map(c=>({...c})),proactivity);candidates=applyPlanCommitment(candidates,context);candidates=applyExplorationCommitment(candidates,context);candidates=applySocialFeasibility(candidates,context,entityId);const committed=resolvePlanCommitment({...context,candidates}),criticalAction=criticalNeedAction(context?.needs||[]),aiAction=normalizeAction(aiChoice?.selectedActionType),aiCandidate=candidates.find(c=>normalizeAction(c.action)===aiAction),aiHasSocialTarget=aiAction!=="TALKING"||Boolean(aiChoice?.targetEntityId||aiCandidate?.targetEntityId),validAiAction=Boolean(aiAction&&ACTIONS.includes(aiAction)&&aiHasSocialTarget),aiBlockedByCritical=Boolean(criticalAction&&aiAction&&aiAction!==criticalAction);let chosenCandidate,selectionMode,selectedStrategy=null,selectedPlanProposal=null;if(criticalAction){chosenCandidate=candidates.find(c=>normalizeAction(c.action)===criticalAction)||candidates[0]||{action:criticalAction,score:0};selectionMode="CRITICAL_NEED";}else if(committed){chosenCandidate=committed.candidate;selectionMode="PLAN_COMMITMENT";}else if(validAiAction&&!aiBlockedByCritical){chosenCandidate=aiCandidate||{action:aiAction,score:0};selectedStrategy=aiChoice?.strategy||null;selectedPlanProposal=aiChoice?.planProposal||null;selectionMode="AI_DELIBERATION";}else{const certainty=Number(context?.cognitiveProfile?.mentalState?.certainty??.65),temperature=BASE_TEMPERATURE+Math.max(0,Math.min(1,1-certainty))*.20;chosenCandidate=chooseStochasticCandidate(candidates,{temperature});selectionMode="STOCHASTIC_DETERMINISTIC";}const chosen=chosenCandidate.action,selectedTargetEntityId=validAiAction&&!aiBlockedByCritical&&selectionMode==="AI_DELIBERATION"?(aiChoice?.targetEntityId||chosenCandidate.targetEntityId||null):chosenCandidate.targetEntityId||null,selectedTargetLocationId=validAiAction&&!aiBlockedByCritical&&selectionMode==="AI_DELIBERATION"?(aiChoice?.targetLocationId||chosenCandidate.targetLocationId||null):chosenCandidate.targetLocationId||null,needPriority=needPriorityState(context?.needs||[]),mysqlSimulationTime=effectiveSimulationTimeString(simulationTime);const reason=criticalAction?`critical need: ${criticalAction}`:selectionMode==="PLAN_COMMITMENT"?`active plan step: ${normalizeAction(context?.activePlanStep?.actionType||context?.activePlanStep?.result?.actionType)}`:selectionMode==="AI_DELIBERATION"?(aiChoice?.reason||"AI strategic deliberation"):chosenCandidate.resourceIntent?`resource-driven routing: ${chosenCandidate.resourceIntent.resource}`:chosenCandidate.socialTarget?`social interaction with ${chosenCandidate.targetName||chosenCandidate.targetEntityId}`:proactivity.priority!=="LOW"?`proactive ${String(proactivity.signals[0]?.type||"state").toLowerCase()}-driven decision`:"deterministic needs, personality, experience and recent-action diversity";await pool.query(`INSERT INTO decisions(id,simulation_id,entity_id,simulation_time,trigger_event_id,trigger_type,context,status,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,UUID_TO_BIN(?),?,?,?,'CREATED',1)`,[decisionId,simulationId,entityId,mysqlSimulationTime,triggerEventId,triggerType||proactivity.trigger||proactivity.mode||"AUTONOMOUS",JSON.stringify({...context,proactivity,needPriority,selectionMode,chosenAction:chosen,individuality:individualityBias(entityId,chosen),candidates,aiChoice:aiChoice||null})]);const optionId=uuid();await pool.query(`INSERT INTO decision_options(id,decision_id,option_code,description,action_definition,evaluation,expected_outcome) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?, ?,?)`,[optionId,decisionId,chosen,`Autonomously selected ${chosen}`,JSON.stringify({actionType:chosen,targetEntityId:selectedTargetEntityId,targetLocationId:selectedTargetLocationId,strategy:selectedStrategy}),JSON.stringify({score:Number(chosenCandidate.score||0),resourceIntent:chosenCandidate.resourceIntent||null,proactivity,aiAccepted:validAiAction&&!aiBlockedByCritical&&selectionMode==="AI_DELIBERATION",criticalNeed:criticalAction,needPriority,selectionMode,planCommitted:selectionMode==="PLAN_COMMITMENT",socialTarget:selectedTargetEntityId&&chosen==="TALKING"?chosenCandidate.targetName||null:null}),JSON.stringify({actionType:chosen,targetEntityId:selectedTargetEntityId,targetLocationId:selectedTargetLocationId,strategy:selectedStrategy,planProposal:selectedPlanProposal})]);await pool.query(`UPDATE decisions SET selected_option_id=UUID_TO_BIN(?),status='EVALUATED',expected_outcome=? WHERE id=UUID_TO_BIN(?)`,[optionId,JSON.stringify({actionType:chosen,targetEntityId:selectedTargetEntityId,targetLocationId:selectedTargetLocationId,strategy:selectedStrategy,planProposal:selectedPlanProposal}),decisionId]);return{decisionId,actionType:chosen,targetEntityId:selectedTargetEntityId,targetLocationId:selectedTargetLocationId,strategy:selectedStrategy,planProposal:selectedPlanProposal,aiAccepted:validAiAction&&!aiBlockedByCritical&&selectionMode==="AI_DELIBERATION",selectionMode,reason,confidence:selectionMode==="AI_DELIBERATION"?(aiChoice?.confidence??.7):Math.max(.45,Math.min(.92,.55+Math.min(.35,Math.max(0,Number(chosenCandidate.score||0)-Number(candidates[1]?.score||0))*.20))),proactivity,needPriority};}
+function compactDecisionContext(context = {}) {
+  const compactNumber = (value, fallback = null) => {
+    const n = Number(value);
+    return Number.isFinite(n) ? Number(n.toFixed(4)) : fallback;
+  };
+  const compactString = (value, maxLength = 240) => {
+    if (value === null || value === undefined) return null;
+    const string = String(value);
+    return string.length > maxLength ? string.slice(0, maxLength) : string;
+  };
+  const compactCandidate = (candidate, rank) => {
+    const resourceIntent = candidate?.resourceIntent;
+    return {
+      rank,
+      action: normalizeAction(candidate?.action),
+      score: compactNumber(candidate?.score, 0),
+      targetEntityId: candidate?.targetEntityId || null,
+      targetLocationId: candidate?.targetLocationId || null,
+      planCommitted: Boolean(candidate?.planCommitted),
+      habitCommitted: Boolean(candidate?.habitCommitted),
+      socialTarget: Boolean(candidate?.socialTarget),
+      socialUnavailable: Boolean(candidate?.socialUnavailable),
+      world2: Boolean(candidate?.world2),
+      resourceIntent: resourceIntent ? {
+        resource: resourceIntent.resource || null,
+        reason: resourceIntent.reason || null,
+        expectedTravelMinutes: compactNumber(resourceIntent.expectedTravelMinutes),
+        destinationLocationId: resourceIntent.destinationLocationId || null
+      } : null
+    };
+  };
+
+  const candidates = Array.isArray(context.candidates)
+    ? context.candidates
+        .slice()
+        .sort((a, b) => Number(b?.score || 0) - Number(a?.score || 0))
+        .slice(0, 4)
+        .map((candidate, index) => compactCandidate(candidate, index + 1))
+    : [];
+
+  const proactivity = context.proactivity || {};
+  const signals = Array.isArray(proactivity.signals)
+    ? proactivity.signals.slice(0, 5).map(signal => ({
+        type: signal?.type || null,
+        code: signal?.code || null,
+        goalId: signal?.goalId || null,
+        stepId: signal?.stepId || null,
+        actionType: normalizeAction(signal?.actionType) || null,
+        targetEntityId: signal?.targetEntityId || null,
+        locationId: signal?.locationId || null,
+        candidateCount: compactNumber(signal?.candidateCount),
+        novelty: compactNumber(signal?.novelty),
+        priority: compactNumber(signal?.priority)
+      }))
+    : [];
+
+  const development = context.development || context.capabilityGate || {};
+  const developmentSnapshot = development && typeof development === "object" ? {
+    stage: development.stage || development.code || null,
+    ageDays: compactNumber(development.ageDays),
+    languageLevel: compactNumber(development.languageLevel),
+    socialAutonomy: compactNumber(development.socialAutonomy),
+    memoryCapacity: Number.isFinite(Number(development.memoryCapacity)) ? Number(development.memoryCapacity) : null,
+    decisionHorizon: Number.isFinite(Number(development.decisionHorizon)) ? Number(development.decisionHorizon) : null,
+    actionDurationScale: compactNumber(development.actionDurationScale)
+  } : null;
+
+  const activePlanStep = context.activePlanStep;
+  const exploration = context.explorationDestination;
+  const resourceContext = context.resourceContext || {};
+  const resourceActions = resourceContext.actions && typeof resourceContext.actions === "object"
+    ? Object.fromEntries(Object.entries(resourceContext.actions).map(([action, status]) => [
+        action,
+        {
+          resource: status?.resource || null,
+          required: compactNumber(status?.required),
+          localAvailable: compactNumber(status?.localAvailable),
+          locallyAvailable: Boolean(status?.locallyAvailable),
+          recentlyBlocked: Boolean(status?.recentlyBlocked),
+          nearestLocationId: status?.nearestLocation?.locationId || null,
+          nearestTravelMinutes: compactNumber(status?.nearestLocation?.travelMinutes)
+        }
+      ]))
+    : {};
+
+  const aiChoice = context.aiChoice;
+  const aiSnapshot = aiChoice && typeof aiChoice === "object" ? {
+    selectedActionType: normalizeAction(aiChoice.selectedActionType) || null,
+    targetEntityId: aiChoice.targetEntityId || null,
+    targetLocationId: aiChoice.targetLocationId || null,
+    confidence: compactNumber(aiChoice.confidence),
+    strategy: compactString(aiChoice.strategy, 180),
+    reason: compactString(aiChoice.reason, 300),
+    planProposal: aiChoice.planProposal ? {
+      title: compactString(aiChoice.planProposal.title, 180),
+      intent: compactString(aiChoice.planProposal.intent, 240),
+      steps: Array.isArray(aiChoice.planProposal.steps)
+        ? aiChoice.planProposal.steps.slice(0, 8).map(step => ({
+            actionType: normalizeAction(step?.actionType || step?.result?.actionType) || null,
+            durationMinutes: compactNumber(step?.durationMinutes)
+          }))
+        : []
+    } : null
+  } : null;
+
+  return {
+    schemaVersion: 2,
+    selectionMode: context.selectionMode || null,
+    chosenAction: normalizeAction(context.chosenAction || context.selectedActionType) || null,
+    individuality: compactNumber(context.individuality),
+    needPriority: context.needPriority || null,
+    needs: Array.isArray(context.needs)
+      ? context.needs.map(need => ({
+          code: normalizeAction(need?.code) || null,
+          value: compactNumber(need?.value, 0),
+          priorityWeight: compactNumber(need?.priorityWeight, 1)
+        }))
+      : [],
+    traits: Array.isArray(context.traits)
+      ? context.traits.map(trait => ({
+          code: normalizeAction(trait?.code) || null,
+          value: compactNumber(trait?.value, 0)
+        }))
+      : [],
+    goals: Array.isArray(context.goals)
+      ? context.goals.slice(0, 5).map(goal => ({
+          id: goal?.id || null,
+          goalType: goal?.goalType || null,
+          priority: compactNumber(goal?.priority, 0),
+          progress: compactNumber(goal?.progress, 0),
+          motivation: compactNumber(goal?.motivation)
+        }))
+      : [],
+    location: context.location ? {
+      locationId: context.location.locationId || null,
+      locationType: context.location.locationType || null
+    } : null,
+    recentActions: Array.isArray(context.recentActions) ? context.recentActions.slice(0, 12).map(normalizeAction) : [],
+    allowedActionTypes: Array.isArray(context.allowedActionTypes) ? context.allowedActionTypes.slice(0, 64).map(normalizeAction) : [],
+    candidateCount: Array.isArray(context.candidates) ? context.candidates.length : 0,
+    candidates,
+    activePlanStep: activePlanStep ? {
+      id: activePlanStep.id || null,
+      status: activePlanStep.status || null,
+      actionType: normalizeAction(activePlanStep.actionType || activePlanStep.result?.actionType) || null
+    } : null,
+    explorationDestination: exploration ? {
+      locationId: exploration.locationId || null,
+      novelty: compactNumber(exploration.novelty),
+      interest: compactNumber(exploration.interest),
+      score: compactNumber(exploration.score),
+      travelMinutes: compactNumber(exploration.travelMinutes)
+    } : null,
+    resourceContext: {
+      currentResources: resourceContext.currentResources || resourceContext.localResources || {},
+      blockedResources: resourceContext.blockedResources || {},
+      actions: resourceActions
+    },
+    memoryPolicy: context.memoryPolicy ? {
+      biases: context.memoryPolicy.biases || {}
+    } : null,
+    behavioralDriver: context.behavioralDriver || null,
+    proactivity: {
+      mode: proactivity.mode || null,
+      driver: proactivity.driver || null,
+      isProactive: Boolean(proactivity.isProactive),
+      proactiveScore: compactNumber(proactivity.proactiveScore),
+      priority: proactivity.priority || null,
+      trigger: proactivity.trigger || null,
+      previousAction: normalizeAction(proactivity.previousAction) || null,
+      autonomous: Boolean(proactivity.autonomous),
+      signals
+    },
+    development: developmentSnapshot,
+    capabilityGate: context.capabilityGate ? {
+      stage: context.capabilityGate.stage || null,
+      allowedActionTypes: Array.isArray(context.capabilityGate.allowedActionTypes) ? context.capabilityGate.allowedActionTypes.slice(0, 64).map(normalizeAction) : [],
+      decisionHorizon: Number.isFinite(Number(context.capabilityGate.decisionHorizon)) ? Number(context.capabilityGate.decisionHorizon) : null
+    } : null,
+    geminiTrigger: context.geminiTrigger ? {
+      type: context.geminiTrigger.type || null,
+      reason: compactString(context.geminiTrigger.reason, 240)
+    } : null,
+    aiChoice: aiSnapshot
+  };
+}
+
+async function makeDecision({simulationId,entityId,simulationTime,triggerType=null,triggerEventId=null,context,aiChoice=null}){const decisionId=uuid(),baseCandidates=Array.isArray(context?.candidates)?context.candidates:[],proactivity=deriveProactivity(context);let candidates=applyProactiveOpportunityBias(baseCandidates.map(c=>({...c})),proactivity);candidates=applyPlanCommitment(candidates,context);candidates=applyExplorationCommitment(candidates,context);candidates=applySocialFeasibility(candidates,context,entityId);const committed=resolvePlanCommitment({...context,candidates}),criticalAction=criticalNeedAction(context?.needs||[]),aiAction=normalizeAction(aiChoice?.selectedActionType),aiCandidate=candidates.find(c=>normalizeAction(c.action)===aiAction),aiHasSocialTarget=aiAction!=="TALKING"||Boolean(aiChoice?.targetEntityId||aiCandidate?.targetEntityId),validAiAction=Boolean(aiAction&&ACTIONS.includes(aiAction)&&aiHasSocialTarget),aiBlockedByCritical=Boolean(criticalAction&&aiAction&&aiAction!==criticalAction);let chosenCandidate,selectionMode,selectedStrategy=null,selectedPlanProposal=null;if(criticalAction){chosenCandidate=candidates.find(c=>normalizeAction(c.action)===criticalAction)||candidates[0]||{action:criticalAction,score:0};selectionMode="CRITICAL_NEED";}else if(committed){chosenCandidate=committed.candidate;selectionMode="PLAN_COMMITMENT";}else if(validAiAction&&!aiBlockedByCritical){chosenCandidate=aiCandidate||{action:aiAction,score:0};selectedStrategy=aiChoice?.strategy||null;selectedPlanProposal=aiChoice?.planProposal||null;selectionMode="AI_DELIBERATION";}else{const certainty=Number(context?.cognitiveProfile?.mentalState?.certainty??.65),temperature=BASE_TEMPERATURE+Math.max(0,Math.min(1,1-certainty))*.20;chosenCandidate=chooseStochasticCandidate(candidates,{temperature});selectionMode="STOCHASTIC_DETERMINISTIC";}const chosen=chosenCandidate.action,selectedTargetEntityId=validAiAction&&!aiBlockedByCritical&&selectionMode==="AI_DELIBERATION"?(aiChoice?.targetEntityId||chosenCandidate.targetEntityId||null):chosenCandidate.targetEntityId||null,selectedTargetLocationId=validAiAction&&!aiBlockedByCritical&&selectionMode==="AI_DELIBERATION"?(aiChoice?.targetLocationId||chosenCandidate.targetLocationId||null):chosenCandidate.targetLocationId||null,needPriority=needPriorityState(context?.needs||[]),mysqlSimulationTime=effectiveSimulationTimeString(simulationTime);const reason=criticalAction?`critical need: ${criticalAction}`:selectionMode==="PLAN_COMMITMENT"?`active plan step: ${normalizeAction(context?.activePlanStep?.actionType||context?.activePlanStep?.result?.actionType)}`:selectionMode==="AI_DELIBERATION"?(aiChoice?.reason||"AI strategic deliberation"):chosenCandidate.resourceIntent?`resource-driven routing: ${chosenCandidate.resourceIntent.resource}`:chosenCandidate.socialTarget?`social interaction with ${chosenCandidate.targetName||chosenCandidate.targetEntityId}`:proactivity.priority!=="LOW"?`proactive ${String(proactivity.signals[0]?.type||"state").toLowerCase()}-driven decision`:"deterministic needs, personality, experience and recent-action diversity";await pool.query(`INSERT INTO decisions(id,simulation_id,entity_id,simulation_time,trigger_event_id,trigger_type,context,status,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,UUID_TO_BIN(?),?,?,?,'CREATED',1)`,[decisionId,simulationId,entityId,mysqlSimulationTime,triggerEventId,triggerType||proactivity.trigger||proactivity.mode||"AUTONOMOUS",JSON.stringify(compactDecisionContext({...context,proactivity,needPriority,selectionMode,chosenAction:chosen,individuality:individualityBias(entityId,chosen),candidates,aiChoice:aiChoice||null}))]);const optionId=uuid();await pool.query(`INSERT INTO decision_options(id,decision_id,option_code,description,action_definition,evaluation,expected_outcome) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?, ?,?)`,[optionId,decisionId,chosen,`Autonomously selected ${chosen}`,JSON.stringify({actionType:chosen,targetEntityId:selectedTargetEntityId,targetLocationId:selectedTargetLocationId,strategy:selectedStrategy}),JSON.stringify({score:Number(chosenCandidate.score||0),resourceIntent:chosenCandidate.resourceIntent||null,proactivity,aiAccepted:validAiAction&&!aiBlockedByCritical&&selectionMode==="AI_DELIBERATION",criticalNeed:criticalAction,needPriority,selectionMode,planCommitted:selectionMode==="PLAN_COMMITMENT",socialTarget:selectedTargetEntityId&&chosen==="TALKING"?chosenCandidate.targetName||null:null}),JSON.stringify({actionType:chosen,targetEntityId:selectedTargetEntityId,targetLocationId:selectedTargetLocationId,strategy:selectedStrategy,planProposal:selectedPlanProposal})]);await pool.query(`UPDATE decisions SET selected_option_id=UUID_TO_BIN(?),status='EVALUATED',expected_outcome=? WHERE id=UUID_TO_BIN(?)`,[optionId,JSON.stringify({actionType:chosen,targetEntityId:selectedTargetEntityId,targetLocationId:selectedTargetLocationId,strategy:selectedStrategy,planProposal:selectedPlanProposal}),decisionId]);return{decisionId,actionType:chosen,targetEntityId:selectedTargetEntityId,targetLocationId:selectedTargetLocationId,strategy:selectedStrategy,planProposal:selectedPlanProposal,aiAccepted:validAiAction&&!aiBlockedByCritical&&selectionMode==="AI_DELIBERATION",selectionMode,reason,confidence:selectionMode==="AI_DELIBERATION"?(aiChoice?.confidence??.7):Math.max(.45,Math.min(.92,.55+Math.min(.35,Math.max(0,Number(chosenCandidate.score||0)-Number(candidates[1]?.score||0))*.20))),proactivity,needPriority};}
 function effectiveSimulationTimeString(value){const date=value instanceof Date?value:new Date(value);if(!Number.isFinite(date.getTime()))throw Object.assign(new Error("Invalid simulation time"),{code:"INVALID_SIMULATION_TIME"});const pad=n=>String(n).padStart(2,"0"),ms=String(date.getUTCMilliseconds()).padStart(3,"0");return `${date.getUTCFullYear()}-${pad(date.getUTCMonth()+1)}-${pad(date.getUTCDate())} ${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}:${pad(date.getUTCSeconds())}.${ms}`;}
-module.exports={ACTIONS,RESOURCE_REQUIREMENTS,scoreAction,buildDecisionContext,makeDecision,applyLocationBias,LOCATION_ACTION_BIAS,loadResourceContext,findNearestResourceLocation,shortestRoute,deriveProactivity,applyProactiveOpportunityBias,applyPlanCommitment,applyExplorationCommitment,criticalNeedState,criticalNeedAction,applyRecentActionPenalty,individualityBias,chooseStochasticCandidate,resolvePlanCommitment,chooseSocialTargetCandidate,applySocialFeasibility};
+module.exports={ACTIONS,RESOURCE_REQUIREMENTS,scoreAction,buildDecisionContext,makeDecision,applyLocationBias,LOCATION_ACTION_BIAS,loadResourceContext,findNearestResourceLocation,shortestRoute,deriveProactivity,applyProactiveOpportunityBias,applyPlanCommitment,applyExplorationCommitment,criticalNeedState,criticalNeedAction,applyRecentActionPenalty,individualityBias,chooseStochasticCandidate,resolvePlanCommitment,chooseSocialTargetCandidate,applySocialFeasibility,compactDecisionContext};
