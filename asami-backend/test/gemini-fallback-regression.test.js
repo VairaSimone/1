@@ -3,7 +3,8 @@ const assert=require("node:assert/strict");
 const {classifyGeminiError}=require("../src/ai/gemini");
 
 test("Gemini quota errors are distinguished from rate limits",()=>{
-  assert.deepEqual(classifyGeminiError(Object.assign(new Error("RESOURCE_EXHAUSTED quota exceeded"),{code:429})),{kind:"RATE_LIMIT",retryAfterMs:0});
+  assert.deepEqual(classifyGeminiError(Object.assign(new Error("RESOURCE_EXHAUSTED quota exceeded"),{code:429})),{kind:"QUOTA",retryAfterMs:0});
+  assert.equal(classifyGeminiError(Object.assign(new Error("Too many requests"),{status:429})).kind,"RATE_LIMIT");
   assert.equal(classifyGeminiError(new Error("daily quota exceeded")).kind,"QUOTA");
 });
 
