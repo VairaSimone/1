@@ -118,4 +118,4 @@ async function listTimeline(simulationId,entityId,limit=200){
   return rows;
 }
 
-module.exports={createEvent,addEffect,listEvents,listTimeline,eventWriteLockName};
+module.exports={createEvent,addEffect,listEvents,listTimeline,eventWriteLockName,withEventWriteLock};
