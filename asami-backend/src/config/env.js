@@ -36,6 +36,8 @@ const Env = z.object({
     return Number.isFinite(n)?Math.min(60,Math.max(1,n)):value;
   },z.coerce.number().nonnegative().default(60)),
   GEMINI_DAILY_PACING_GRACE_MINUTES: z.coerce.number().nonnegative().default(10),
+  GEMINI_PROVIDER_RATE_LIMIT_COOLDOWN_MS: z.coerce.number().int().min(10000).default(60000),
+  GEMINI_PROVIDER_QUOTA_COOLDOWN_MS: z.coerce.number().int().min(60000).default(15*60*1000),
   GEMINI_PROACTIVE_EVERY_TICKS: z.coerce.number().int().positive().default(90),
   WORLD_EVENT_RATE_PER_SIM_HOUR: z.coerce.number().nonnegative().default(0.25),
   ENGINE_VERSION: z.string().default("1.0.1"),
