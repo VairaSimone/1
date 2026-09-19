@@ -80,9 +80,13 @@ async function main(){
     shuttingDown=true;
     logger.info({signal},"shutdown started");
     try{
-      await engine.stop({drainTimeoutMs:5000});
+      const drained = await engine.stop({drainTimeoutMs:5000});
       await new Promise(resolve=>server.close(resolve));
       wss.close();
+      if (!drained) {
+        logger.error({phase:"shutdown",activeSimulations:engine.running.size}, "shutdown drain incomplete; database pool left open until process exit");
+        process.exit(1);
+      }
       await close();
       process.exit(0);
     }catch(err){
