@@ -1,6 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { buildActionMemory, buildFailureMemory } = require("../src/services/memory-service");
+const { buildActionMemory, buildFailureMemory, recallContext, deriveRecallContext, memoryRelevance } = require("../src/services/memory-service");
 
 test("action memory captures context, cause, outcome, consequence and learning", () => {
   const memory = buildActionMemory({
@@ -47,4 +47,33 @@ test("resource failure memory records the exhausted resource and alternative str
   assert.match(memory.content, /Alternative strategy:/);
   assert.match(memory.content, /go to another location/);
   assert.equal(memory.context.outcome, "FAILURE");
+});
+
+
+test("cognitive memory recall requires an explicit simulation timestamp", async () => {
+  await assert.rejects(
+    () => recallContext("simulation-1", "entity-1"),
+    error => error?.code === "SIMULATION_TIME_REQUIRED"
+  );
+  await assert.rejects(
+    () => deriveRecallContext("simulation-1", "entity-1"),
+    error => error?.code === "SIMULATION_TIME_REQUIRED"
+  );
+});
+
+test("memory relevance never falls back to wall-clock time", () => {
+  assert.throws(
+    () =>
+      memoryRelevance(
+        {
+          simulationAt: "2026-09-20T10:00:00.000Z",
+          importance: 0.5,
+          strength: 0.8,
+          confidence: 0.8,
+          metadata: {}
+        },
+        {}
+      ),
+    error => error?.code === "SIMULATION_TIME_REQUIRED"
+  );
 });
