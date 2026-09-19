@@ -27,6 +27,8 @@ const { errorHandler } = require("./api/error-handler");
 async function main(){
   await ensureDatabase();
   await ping();
+  const staleTicks = await require("./repositories/simulation-repo").reconcileStaleRunningTicks();
+  if (staleTicks) logger.warn({staleTicks}, "stale simulation ticks reconciled at startup");
   await bootstrapCoreDefinitions();
   const gemini=new GeminiService();
   await gemini.init();
