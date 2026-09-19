@@ -179,6 +179,15 @@ function compactDecisionContext(context = {}) {
       ]))
     : {};
 
+  const geminiDecision = context.geminiDecision;
+  const geminiSnapshot = geminiDecision && typeof geminiDecision === "object" ? {
+    status: geminiDecision.status || null,
+    source: geminiDecision.source || null,
+    reason: compactString(geminiDecision.reason, 120),
+    attempted: Boolean(geminiDecision.attempted),
+    retryAfterMs: Number.isFinite(Number(geminiDecision.retryAfterMs)) ? Number(geminiDecision.retryAfterMs) : 0
+  } : null;
+
   const aiChoice = context.aiChoice;
   const aiSnapshot = aiChoice && typeof aiChoice === "object" ? {
     selectedActionType: normalizeAction(aiChoice.selectedActionType) || null,
@@ -295,6 +304,7 @@ function compactDecisionContext(context = {}) {
       type: context.geminiTrigger.type || null,
       reason: compactString(context.geminiTrigger.reason, 240)
     } : null,
+    geminiDecision: geminiSnapshot,
     aiChoice: aiSnapshot
   };
 }
@@ -643,6 +653,12 @@ async function makeDecision({
   }
 
   const chosen = chosenCandidate.action;
+  const decisionSource =
+    selectionMode === "AI_DELIBERATION"
+      ? "GEMINI"
+      : context?.geminiDecision?.status === "FALLBACK"
+        ? "DETERMINISTIC_FALLBACK"
+        : "DETERMINISTIC";
   const selectedTargetEntityId =
     validAiAction &&
     !aiBlockedByCritical &&
@@ -803,6 +819,8 @@ async function makeDecision({
       !aiBlockedByCritical &&
       selectionMode === "AI_DELIBERATION",
     selectionMode,
+    decisionSource,
+    geminiDecision: context.geminiDecision || null,
     reason,
     confidence:
       selectionMode === "AI_DELIBERATION"
