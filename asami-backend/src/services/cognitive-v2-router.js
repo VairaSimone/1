@@ -1,5 +1,5 @@
 const express = require('express');
-const { uuid } = require('../api/validation');
+const { uuid, queryLimit } = require('../api/validation');
 const { getMind, getIdentity, getSocialMind, getLatestCognitiveState } = require('./cognitive-v2-service');
 const { getEmergentMind } = require('./cognitive-v3-service');
 const { getCausalMind } = require('./cognitive-causal-service');
@@ -43,7 +43,7 @@ function buildCognitiveRouter() {
     const simulationId = uuid.parse(req.params.simulationId);
     const entityId = uuid.parse(req.params.entityId);
     await assertEntityInSimulation(simulationId,entityId);
-    res.json(await getCausalMind(simulationId, entityId, Number(req.query.limit) || 60));
+    res.json(await getCausalMind(simulationId, entityId, queryLimit(60, 200).parse(req.query.limit)));
   });
 
   router.get('/simulations/:simulationId/promises/:entityId', async (req, res) => {
