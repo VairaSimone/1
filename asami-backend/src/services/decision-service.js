@@ -289,6 +289,433 @@ function compactDecisionContext(context = {}) {
   };
 }
 
-async function makeDecision({simulationId,entityId,simulationTime,triggerType=null,triggerEventId=null,context,aiChoice=null}){const decisionId=uuid(),baseCandidates=Array.isArray(context?.candidates)?context.candidates:[],proactivity=deriveProactivity(context);let candidates=applyProactiveOpportunityBias(baseCandidates.map(c=>({...c})),proactivity);candidates=applyPlanCommitment(candidates,context);candidates=applyExplorationCommitment(candidates,context);candidates=applySocialFeasibility(candidates,context,entityId);candidates=applyRecoveryBlocks(candidates,context?.recoveryBlocks||[]);const committed=resolvePlanCommitment({...context,candidates}),criticalAction=criticalNeedAction(context?.needs||[]),aiAction=normalizeAction(aiChoice?.selectedActionType),aiCandidate=candidates.find(c=>normalizeAction(c.action)===aiAction&&!c.recoveryBlocked),aiHasSocialTarget=aiAction!=="TALKING"||Boolean(aiChoice?.targetEntityId||aiCandidate?.targetEntityId),validAiAction=Boolean(aiAction&&ACTIONS.includes(aiAction)&&aiHasSocialTarget),aiBlockedByCritical=Boolean(criticalAction&&aiAction&&aiAction!==criticalAction);let chosenCandidate,selectionMode,selectedStrategy=null,selectedPlanProposal=null;if(criticalAction){chosenCandidate=candidates.find(c=>normalizeAction(c.action)===criticalAction)||candidates[0]||{action:criticalAction,score:0};selectionMode="CRITICAL_NEED";}else if(committed){chosenCandidate=committed.candidate;selectionMode="PLAN_COMMITMENT";}else if(validAiAction&&!aiBlockedByCritical){chosenCandidate=aiCandidate||{action:aiAction,score:0};selectedStrategy=aiChoice?.strategy||null;selectedPlanProposal=aiChoice?.planProposal||null;selectionMode="AI_DELIBERATION";}else{const certainty=Number(context?.cognitiveProfile?.mentalState?.certainty??.65),temperature=BASE_TEMPERATURE+Math.max(0,Math.min(1,1-certainty))*.20;chosenCandidate=chooseStochasticCandidate(candidates,{temperature});selectionMode="STOCHASTIC_DETERMINISTIC";}const chosen=chosenCandidate.action,selectedTargetEntityId=validAiAction&&!aiBlockedByCritical&&selectionMode==="AI_DELIBERATION"?(aiChoice?.targetEntityId||chosenCandidate.targetEntityId||null):chosenCandidate.targetEntityId||null,selectedTargetLocationId=validAiAction&&!aiBlockedByCritical&&selectionMode==="AI_DELIBERATION"?(aiChoice?.targetLocationId||chosenCandidate.targetLocationId||null):chosenCandidate.targetLocationId||null,needPriority=needPriorityState(context?.needs||[]),mysqlSimulationTime=effectiveSimulationTimeString(simulationTime);const reason=criticalAction?`critical need: ${criticalAction}`:selectionMode==="PLAN_COMMITMENT"?`active plan step: ${normalizeAction(context?.activePlanStep?.actionType||context?.activePlanStep?.result?.actionType)}`:selectionMode==="AI_DELIBERATION"?(aiChoice?.reason||"AI strategic deliberation"):chosenCandidate.resourceIntent?`resource-driven routing: ${chosenCandidate.resourceIntent.resource}`:chosenCandidate.socialTarget?`social interaction with ${chosenCandidate.targetName||chosenCandidate.targetEntityId}`:proactivity.priority!=="LOW"?`proactive ${String(proactivity.signals[0]?.type||"state").toLowerCase()}-driven decision`:"deterministic needs, personality, experience and recent-action diversity";await pool.query(`INSERT INTO decisions(id,simulation_id,entity_id,simulation_time,trigger_event_id,trigger_type,context,status,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,UUID_TO_BIN(?),?,?,?,'CREATED',1)`,[decisionId,simulationId,entityId,mysqlSimulationTime,triggerEventId,triggerType||proactivity.trigger||proactivity.mode||"AUTONOMOUS",JSON.stringify(compactDecisionContext({...context,proactivity,needPriority,selectionMode,chosenAction:chosen,individuality:individualityBias(entityId,chosen),candidates,aiChoice:aiChoice||null}))]);const optionId=uuid();await pool.query(`INSERT INTO decision_options(id,decision_id,option_code,description,action_definition,evaluation,expected_outcome) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?, ?,?)`,[optionId,decisionId,chosen,`Autonomously selected ${chosen}`,JSON.stringify({actionType:chosen,targetEntityId:selectedTargetEntityId,targetLocationId:selectedTargetLocationId,strategy:selectedStrategy}),JSON.stringify({score:Number(chosenCandidate.score||0),resourceIntent:chosenCandidate.resourceIntent||null,proactivity,aiAccepted:validAiAction&&!aiBlockedByCritical&&selectionMode==="AI_DELIBERATION",criticalNeed:criticalAction,needPriority,selectionMode,planCommitted:selectionMode==="PLAN_COMMITMENT",socialTarget:selectedTargetEntityId&&chosen==="TALKING"?chosenCandidate.targetName||null:null}),JSON.stringify({actionType:chosen,targetEntityId:selectedTargetEntityId,targetLocationId:selectedTargetLocationId,strategy:selectedStrategy,planProposal:selectedPlanProposal})]);await pool.query(`UPDATE decisions SET selected_option_id=UUID_TO_BIN(?),status='EVALUATED',expected_outcome=? WHERE id=UUID_TO_BIN(?)`,[optionId,JSON.stringify({actionType:chosen,targetEntityId:selectedTargetEntityId,targetLocationId:selectedTargetLocationId,strategy:selectedStrategy,planProposal:selectedPlanProposal}),decisionId]);return{decisionId,actionType:chosen,targetEntityId:selectedTargetEntityId,targetLocationId:selectedTargetLocationId,strategy:selectedStrategy,planProposal:selectedPlanProposal,aiAccepted:validAiAction&&!aiBlockedByCritical&&selectionMode==="AI_DELIBERATION",selectionMode,reason,confidence:selectionMode==="AI_DELIBERATION"?(aiChoice?.confidence??.7):Math.max(.45,Math.min(.92,.55+Math.min(.35,Math.max(0,Number(chosenCandidate.score||0)-Number(candidates[1]?.score||0))*.20))),proactivity,needPriority};}
+
+function criticalResourceNeedState(needs = []) {
+  let highest = null;
+  for (const code of ["THIRST", "HUNGER"]) {
+    const need = needs.find(item => normalizeAction(item?.code) === code);
+    if (!need) continue;
+    const value = Number(need.value);
+    const policy = CRITICAL_NEED_ACTIONS[code];
+    if (!policy || !Number.isFinite(value) || value < policy.threshold) continue;
+    const weight = Math.max(0.1, Number(need.priorityWeight || 1));
+    const urgency = Math.min(
+      1.5,
+      1 + (value - policy.threshold) / Math.max(0.01, 1 - policy.threshold)
+    ) * weight;
+    const candidate = {
+      code,
+      value,
+      threshold: policy.threshold,
+      action: policy.action,
+      resource: policy.resource,
+      urgency
+    };
+    if (
+      !highest ||
+      candidate.urgency > highest.urgency ||
+      (candidate.urgency === highest.urgency && candidate.value > highest.value)
+    ) {
+      highest = candidate;
+    }
+  }
+  return highest;
+}
+
+function resolveCriticalResourceRecovery(context = {}) {
+  const critical = criticalResourceNeedState(context.needs || []);
+  if (!critical) return null;
+
+  const candidates = Array.isArray(context.candidates) ? context.candidates : [];
+  const resourceContext = context.resourceContext || {};
+  const directAction = normalizeAction(critical.action);
+  const resource = critical.resource;
+  const localResources = resourceContext.localResources || {};
+  const resourceActionContext = resourceContext.actions?.[directAction] || {};
+  const localAvailable =
+    Number(localResources[resource] ?? resourceActionContext.localAvailable ?? 0) >= 1;
+
+  const directCandidate = candidates.find(
+    candidate => normalizeAction(candidate.action) === directAction
+  );
+
+  if (localAvailable) {
+    if (directCandidate?.recoveryBlocked) {
+      throw Object.assign(
+        new Error(
+          "Critical " + critical.code +
+          " cannot be satisfied because " + directAction +
+          " is blocked by an active recovery constraint"
+        ),
+        {
+          code: "CRITICAL_RESOURCE_RECOVERY_UNAVAILABLE",
+          needCode: critical.code,
+          resource,
+          requiredAction: directAction
+        }
+      );
+    }
+
+    return {
+      critical,
+      mode: "DIRECT",
+      candidate:
+        directCandidate || {
+          action: directAction,
+          score: 0,
+          criticalRecovery: true
+        },
+      selectedAction: directAction
+    };
+  }
+
+  const walkingCandidate = candidates.find(
+    candidate =>
+      normalizeAction(candidate.action) === "WALKING" && !candidate.recoveryBlocked
+  );
+  const walkingBlocked = candidates.some(
+    candidate =>
+      normalizeAction(candidate.action) === "WALKING" && candidate.recoveryBlocked
+  );
+  const nearest =
+    resourceContext.nearestResources?.[resource] ||
+    resourceActionContext.nearestLocation ||
+    null;
+
+  if (!walkingCandidate && walkingBlocked) {
+    throw Object.assign(
+      new Error(
+        "Critical " + critical.code +
+        " requires " + resource +
+        ", but WALKING is blocked by an active recovery constraint"
+      ),
+      {
+        code: "CRITICAL_RESOURCE_RECOVERY_UNAVAILABLE",
+        needCode: critical.code,
+        resource,
+        requiredAction: "WALKING"
+      }
+    );
+  }
+
+  if (nearest?.locationId) {
+    const candidate = walkingCandidate || {
+      action: "WALKING",
+      score: 0,
+      criticalRecovery: true
+    };
+    candidate.targetLocationId = nearest.locationId;
+    candidate.resourceIntent = {
+      ...(candidate.resourceIntent || {}),
+      resource,
+      reason: "CRITICAL_NEED_RESOURCE_RECOVERY",
+      destinationLocationId: nearest.locationId,
+      expectedTravelMinutes: Number.isFinite(Number(nearest.travelMinutes))
+        ? Number(nearest.travelMinutes)
+        : null
+    };
+    candidate.criticalRecovery = true;
+    return {
+      critical,
+      mode: "ROUTING",
+      candidate,
+      selectedAction: "WALKING"
+    };
+  }
+
+  throw Object.assign(
+    new Error(
+      "Critical " + critical.code +
+      " cannot be satisfied: no reachable " + resource +
+      " resource is available"
+    ),
+    {
+      code: "CRITICAL_RESOURCE_RECOVERY_UNAVAILABLE",
+      needCode: critical.code,
+      resource,
+      requiredAction: "WALKING"
+    }
+  );
+}
+
+async function makeDecision({
+  simulationId,
+  entityId,
+  simulationTime,
+  triggerType = null,
+  triggerEventId = null,
+  context,
+  aiChoice = null
+}) {
+  const decisionId = uuid();
+  const baseCandidates = Array.isArray(context?.candidates) ? context.candidates : [];
+  const proactivity = deriveProactivity(context);
+
+  let candidates = applyProactiveOpportunityBias(
+    baseCandidates.map(candidate => ({ ...candidate })),
+    proactivity
+  );
+  candidates = applyPlanCommitment(candidates, context);
+  candidates = applyExplorationCommitment(candidates, context);
+  candidates = applySocialFeasibility(candidates, context, entityId);
+  candidates = applyRecoveryBlocks(candidates, context?.recoveryBlocks || []);
+
+  const criticalResourceRecovery = resolveCriticalResourceRecovery({
+    ...context,
+    candidates
+  });
+
+  if (
+    criticalResourceRecovery?.candidate &&
+    !candidates.includes(criticalResourceRecovery.candidate)
+  ) {
+    candidates = [criticalResourceRecovery.candidate, ...candidates];
+  }
+
+  const committed = resolvePlanCommitment({ ...context, candidates });
+  const criticalAction =
+    criticalResourceRecovery?.selectedAction ||
+    criticalNeedAction(context?.needs || []);
+
+  const aiAction = normalizeAction(aiChoice?.selectedActionType);
+  const aiCandidate = candidates.find(
+    candidate =>
+      normalizeAction(candidate.action) === aiAction &&
+      !candidate.recoveryBlocked
+  );
+  const aiHasSocialTarget =
+    aiAction !== "TALKING" ||
+    Boolean(aiChoice?.targetEntityId || aiCandidate?.targetEntityId);
+  const validAiAction = Boolean(
+    aiAction && ACTIONS.includes(aiAction) && aiHasSocialTarget
+  );
+  const aiBlockedByCritical = Boolean(
+    criticalAction && aiAction && aiAction !== criticalAction
+  );
+
+  let chosenCandidate;
+  let selectionMode;
+  let selectedStrategy = null;
+  let selectedPlanProposal = null;
+
+  if (criticalResourceRecovery) {
+    chosenCandidate = criticalResourceRecovery.candidate;
+    selectionMode = "CRITICAL_RESOURCE_RECOVERY";
+  } else if (criticalAction) {
+    const criticalCandidate = candidates.find(
+      candidate =>
+        normalizeAction(candidate.action) === criticalAction &&
+        !candidate.recoveryBlocked
+    );
+    if (!criticalCandidate) {
+      throw Object.assign(
+        new Error("Critical action " + criticalAction + " is not executable in the current context"),
+        {
+          code: "CRITICAL_ACTION_UNAVAILABLE",
+          requiredAction: criticalAction
+        }
+      );
+    }
+    chosenCandidate = criticalCandidate;
+    selectionMode = "CRITICAL_NEED";
+  } else if (committed) {
+    chosenCandidate = committed.candidate;
+    selectionMode = "PLAN_COMMITMENT";
+  } else if (validAiAction && !aiBlockedByCritical) {
+    chosenCandidate = aiCandidate || { action: aiAction, score: 0 };
+    selectedStrategy = aiChoice?.strategy || null;
+    selectedPlanProposal = aiChoice?.planProposal || null;
+    selectionMode = "AI_DELIBERATION";
+  } else {
+    const certainty = Number(
+      context?.cognitiveProfile?.mentalState?.certainty ?? 0.65
+    );
+    const temperature =
+      BASE_TEMPERATURE + Math.max(0, Math.min(1, 1 - certainty)) * 0.20;
+    chosenCandidate = chooseStochasticCandidate(candidates, { temperature });
+    selectionMode = "STOCHASTIC_DETERMINISTIC";
+  }
+
+  const chosen = chosenCandidate.action;
+  const selectedTargetEntityId =
+    validAiAction &&
+    !aiBlockedByCritical &&
+    selectionMode === "AI_DELIBERATION"
+      ? aiChoice?.targetEntityId || chosenCandidate.targetEntityId || null
+      : chosenCandidate.targetEntityId || null;
+  const selectedTargetLocationId =
+    validAiAction &&
+    !aiBlockedByCritical &&
+    selectionMode === "AI_DELIBERATION"
+      ? aiChoice?.targetLocationId || chosenCandidate.targetLocationId || null
+      : chosenCandidate.targetLocationId || null;
+  const needPriority = needPriorityState(context?.needs || []);
+  const mysqlSimulationTime = effectiveSimulationTimeString(simulationTime);
+
+  let reason;
+  if (criticalResourceRecovery) {
+    reason =
+      "critical resource recovery: " +
+      criticalResourceRecovery.critical.code +
+      " -> " +
+      chosen;
+  } else if (criticalAction) {
+    reason = "critical need: " + criticalAction;
+  } else if (selectionMode === "PLAN_COMMITMENT") {
+    reason =
+      "active plan step: " +
+      normalizeAction(
+        context?.activePlanStep?.actionType ||
+        context?.activePlanStep?.result?.actionType
+      );
+  } else if (selectionMode === "AI_DELIBERATION") {
+    reason = aiChoice?.reason || "AI strategic deliberation";
+  } else if (chosenCandidate.resourceIntent) {
+    reason = "resource-driven routing: " + chosenCandidate.resourceIntent.resource;
+  } else if (chosenCandidate.socialTarget) {
+    reason =
+      "social interaction with " +
+      (chosenCandidate.targetName || chosenCandidate.targetEntityId);
+  } else if (proactivity.priority !== "LOW") {
+    reason =
+      "proactive " +
+      String(proactivity.signals[0]?.type || "state").toLowerCase() +
+      "-driven decision";
+  } else {
+    reason = "deterministic needs, personality, experience and recent-action diversity";
+  }
+
+  await pool.query(
+    `INSERT INTO decisions(id,simulation_id,entity_id,simulation_time,trigger_event_id,trigger_type,context,status,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,UUID_TO_BIN(?),?,?,?,'CREATED',1)`,
+    [
+      decisionId,
+      simulationId,
+      entityId,
+      mysqlSimulationTime,
+      triggerEventId,
+      triggerType || proactivity.trigger || proactivity.mode || "AUTONOMOUS",
+      JSON.stringify(
+        compactDecisionContext({
+          ...context,
+          proactivity,
+          needPriority,
+          selectionMode,
+          chosenAction: chosen,
+          criticalResourceRecovery: criticalResourceRecovery
+            ? {
+                code: criticalResourceRecovery.critical.code,
+                resource: criticalResourceRecovery.critical.resource,
+                mode: criticalResourceRecovery.mode
+              }
+            : null,
+          individuality: individualityBias(entityId, chosen),
+          candidates,
+          aiChoice: aiChoice || null
+        })
+      )
+    ]
+  );
+
+  const optionId = uuid();
+  await pool.query(
+    `INSERT INTO decision_options(id,decision_id,option_code,description,action_definition,evaluation,expected_outcome) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?, ?,?)`,
+    [
+      optionId,
+      decisionId,
+      chosen,
+      "Autonomously selected " + chosen,
+      JSON.stringify({
+        actionType: chosen,
+        targetEntityId: selectedTargetEntityId,
+        targetLocationId: selectedTargetLocationId,
+        strategy: selectedStrategy
+      }),
+      JSON.stringify({
+        score: Number(chosenCandidate.score || 0),
+        resourceIntent: chosenCandidate.resourceIntent || null,
+        proactivity,
+        aiAccepted:
+          validAiAction &&
+          !aiBlockedByCritical &&
+          selectionMode === "AI_DELIBERATION",
+        criticalNeed: criticalAction,
+        criticalResourceRecovery: criticalResourceRecovery
+          ? {
+              code: criticalResourceRecovery.critical.code,
+              resource: criticalResourceRecovery.critical.resource,
+              mode: criticalResourceRecovery.mode
+            }
+          : null,
+        needPriority,
+        selectionMode,
+        planCommitted: selectionMode === "PLAN_COMMITMENT",
+        socialTarget:
+          selectedTargetEntityId && chosen === "TALKING"
+            ? chosenCandidate.targetName || null
+            : null
+      }),
+      JSON.stringify({
+        actionType: chosen,
+        targetEntityId: selectedTargetEntityId,
+        targetLocationId: selectedTargetLocationId,
+        strategy: selectedStrategy,
+        planProposal: selectedPlanProposal
+      })
+    ]
+  );
+
+  await pool.query(
+    `UPDATE decisions SET selected_option_id=UUID_TO_BIN(?),status='EVALUATED',expected_outcome=? WHERE id=UUID_TO_BIN(?)`,
+    [
+      optionId,
+      JSON.stringify({
+        actionType: chosen,
+        targetEntityId: selectedTargetEntityId,
+        targetLocationId: selectedTargetLocationId,
+        strategy: selectedStrategy,
+        planProposal: selectedPlanProposal
+      }),
+      decisionId
+    ]
+  );
+
+  return {
+    decisionId,
+    actionType: chosen,
+    targetEntityId: selectedTargetEntityId,
+    targetLocationId: selectedTargetLocationId,
+    strategy: selectedStrategy,
+    planProposal: selectedPlanProposal,
+    aiAccepted:
+      validAiAction &&
+      !aiBlockedByCritical &&
+      selectionMode === "AI_DELIBERATION",
+    selectionMode,
+    reason,
+    confidence:
+      selectionMode === "AI_DELIBERATION"
+        ? aiChoice?.confidence ?? 0.7
+        : criticalResourceRecovery || criticalAction
+          ? 0.92
+          : Math.max(
+              0.45,
+              Math.min(
+                0.92,
+                0.55 +
+                  Math.min(
+                    0.35,
+                    Math.max(
+                      0,
+                      Number(chosenCandidate.score || 0) -
+                        Number(candidates[1]?.score || 0)
+                    ) * 0.20
+                  )
+              )
+            ),
+    proactivity,
+    needPriority
+  };
+}
+
 function effectiveSimulationTimeString(value){const date=value instanceof Date?value:new Date(value);if(!Number.isFinite(date.getTime()))throw Object.assign(new Error("Invalid simulation time"),{code:"INVALID_SIMULATION_TIME"});const pad=n=>String(n).padStart(2,"0"),ms=String(date.getUTCMilliseconds()).padStart(3,"0");return `${date.getUTCFullYear()}-${pad(date.getUTCMonth()+1)}-${pad(date.getUTCDate())} ${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}:${pad(date.getUTCSeconds())}.${ms}`;}
-module.exports={ACTIONS,RESOURCE_REQUIREMENTS,scoreAction,buildDecisionContext,makeDecision,applyLocationBias,LOCATION_ACTION_BIAS,loadResourceContext,findNearestResourceLocation,shortestRoute,deriveProactivity,applyProactiveOpportunityBias,applyPlanCommitment,applyExplorationCommitment,applyRecoveryBlocks,recoveryBlockForInterruption,activeRecoveryBlocks,criticalNeedState,criticalNeedAction,applyRecentActionPenalty,individualityBias,chooseStochasticCandidate,resolvePlanCommitment,chooseSocialTargetCandidate,applySocialFeasibility,compactDecisionContext};
+module.exports={ACTIONS,RESOURCE_REQUIREMENTS,scoreAction,buildDecisionContext,makeDecision,applyLocationBias,LOCATION_ACTION_BIAS,loadResourceContext,findNearestResourceLocation,shortestRoute,deriveProactivity,applyProactiveOpportunityBias,applyPlanCommitment,applyExplorationCommitment,applyRecoveryBlocks,recoveryBlockForInterruption,activeRecoveryBlocks,criticalNeedState,criticalNeedAction,criticalResourceNeedState,resolveCriticalResourceRecovery,applyRecentActionPenalty,individualityBias,chooseStochasticCandidate,resolvePlanCommitment,chooseSocialTargetCandidate,applySocialFeasibility,compactDecisionContext};
