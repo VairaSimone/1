@@ -47,40 +47,223 @@ async function chooseDestination(simulationId,entityId,originId,targetId=null){i
 async function routeDetails(simulationId,originId,targetId){return shortestRoute(await loadLocationGraph(simulationId),originId,targetId);}
 async function getActiveRelationshipType(simulationId,sourceEntityId,targetEntityId){const[rows]=await pool.query(`SELECT rt.code AS type FROM relationships r JOIN relationship_types rt ON rt.id=r.relationship_type_id WHERE r.simulation_id=UUID_TO_BIN(?) AND r.status='ACTIVE' AND ((r.source_entity_id=UUID_TO_BIN(?) AND r.target_entity_id=UUID_TO_BIN(?)) OR (r.source_entity_id=UUID_TO_BIN(?) AND r.target_entity_id=UUID_TO_BIN(?))) ORDER BY CASE rt.code WHEN 'PARTNER' THEN 3 WHEN 'FRIEND' THEN 2 WHEN 'ACQUAINTANCE' THEN 1 ELSE 0 END DESC LIMIT 1`,[simulationId,sourceEntityId,targetEntityId,targetEntityId,sourceEntityId]);return rows[0]?.type||"ACQUAINTANCE";}
 async function getActiveAction(entityId,simulationId){const[rows]=await pool.query(`SELECT BIN_TO_UUID(id) AS id,action_type AS actionType,started_simulation_at AS startedSimulationAt,completed_simulation_at AS completedSimulationAt,BIN_TO_UUID(decision_id) AS decisionId,BIN_TO_UUID(source_intention_id) AS intentionId,target,parameters,result,version FROM actions WHERE entity_id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?) AND status='ACTIVE' ORDER BY started_simulation_at DESC LIMIT 1`,[entityId,simulationId]);const action=rows[0]||null;if(!action)return null;for(const key of ["parameters","result"]){if(Buffer.isBuffer(action[key]))action[key]=action[key].toString();if(typeof action[key]==="string")action[key]=parseJson(action[key],{});}if(Buffer.isBuffer(action.target))action.target=action.target.toString();action.metadata={...(action.parameters||{}),...(action.result||{})};return action;}
-async function startMovement({simulationId,entityId,origin,destination,simulationTime,distanceMeters,speedKmh}){const[existing]=await pool.query(`SELECT id FROM movements WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND status IN ('PLANNED','ACTIVE') LIMIT 1`,[simulationId,entityId]);if(existing.length)return null;const safeDistance=Math.max(5,Number(distanceMeters)||5),safeSpeed=Math.max(1,Number(speedKmh)||WALKING_SPEED_KMH),durationMinutes=Math.max(2,(safeDistance/1000/safeSpeed)*60),expectedArrival=new Date(new Date(simulationTime).getTime()+durationMinutes*60000),movementId=uuid();await pool.query(`INSERT INTO movements(id,simulation_id,entity_id,origin_location_id,destination_location_id,started_simulation_at,expected_arrival_simulation_at,status,reason,source_activity_id,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,'ACTIVE','autonomous route',NULL,1)`,[movementId,simulationId,entityId,origin,destination,simulationTime,expectedArrival]);return{movementId,durationMinutes,expectedArrival,distanceMeters:safeDistance,speedKmh:safeSpeed};}
-async function completeMovement({simulationId,entityId,destination,movementId=null,simulationTime,db=pool}){const query=movementId?`SELECT BIN_TO_UUID(id) AS id,BIN_TO_UUID(origin_location_id) AS originLocationId,BIN_TO_UUID(destination_location_id) AS destinationLocationId,version FROM movements WHERE id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND status='ACTIVE' LIMIT 1`:`SELECT BIN_TO_UUID(id) AS id,BIN_TO_UUID(origin_location_id) AS originLocationId,BIN_TO_UUID(destination_location_id) AS destinationLocationId,version FROM movements WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND destination_location_id=UUID_TO_BIN(?) AND status='ACTIVE' ORDER BY started_simulation_at DESC LIMIT 1`;const params=movementId?[movementId,simulationId,entityId]:[simulationId,entityId,destination],[rows]=await db.query(query,params);if(!rows.length)return false;const movement=rows[0],resolvedDestination=movement.destinationLocationId||destination;if(!resolvedDestination)return false;const[updated]=await db.query(`UPDATE movements SET status='COMPLETED',actual_arrival_simulation_at=?,version=version+1 WHERE id=UUID_TO_BIN(?) AND status='ACTIVE' AND version=?`,[simulationTime,movement.id,movement.version]);if(!updated.affectedRows)return false;await db.query(`INSERT INTO entity_location_history(id,simulation_id,entity_id,location_id,entered_simulation_at,reason,source_event_id) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,'AUTONOMOUS',NULL)`,[uuid(),simulationId,entityId,resolvedDestination,simulationTime]);if(movement.originLocationId)await db.query(`UPDATE entity_location_history SET exited_simulation_at=? WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND location_id=UUID_TO_BIN(?) AND exited_simulation_at IS NULL AND entered_simulation_at<?`,[simulationTime,simulationId,entityId,movement.originLocationId,simulationTime]);await db.query(`INSERT INTO entity_locations_current(entity_id,simulation_id,location_id,since_simulation_at,reason,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,'AUTONOMOUS',1) ON DUPLICATE KEY UPDATE location_id=VALUES(location_id),since_simulation_at=VALUES(since_simulation_at),reason=VALUES(reason),version=version+1`,[entityId,simulationId,resolvedDestination,simulationTime]);return true;}
+async function startMovement({simulationId,entityId,origin,destination,simulationTime,distanceMeters,speedKmh}){
+  const conn=await pool.getConnection();
+  try{
+    await conn.beginTransaction();
+    const [locationRows]=await conn.query(
+      `SELECT location_id FROM entity_locations_current
+       WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) LIMIT 1 FOR UPDATE`,
+      [simulationId,entityId]
+    );
+    if(!locationRows.length){
+      await conn.rollback();
+      return null;
+    }
+    const [existing]=await conn.query(
+      `SELECT id FROM movements
+       WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND status IN ('PLANNED','ACTIVE')
+       LIMIT 1 FOR UPDATE`,
+      [simulationId,entityId]
+    );
+    if(existing.length){
+      await conn.rollback();
+      return null;
+    }
+    const safeDistance=Math.max(5,Number(distanceMeters)||5),
+      safeSpeed=Math.max(1,Number(speedKmh)||WALKING_SPEED_KMH),
+      durationMinutes=Math.max(2,(safeDistance/1000/safeSpeed)*60),
+      expectedArrival=new Date(new Date(simulationTime).getTime()+durationMinutes*60000),
+      movementId=uuid();
+    await conn.query(
+      `INSERT INTO movements(id,simulation_id,entity_id,origin_location_id,destination_location_id,started_simulation_at,expected_arrival_simulation_at,status,reason,source_activity_id,version)
+       VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,'ACTIVE','autonomous route',NULL,1)`,
+      [movementId,simulationId,entityId,origin,destination,simulationTime,expectedArrival]
+    );
+    await conn.commit();
+    return{movementId,durationMinutes,expectedArrival,distanceMeters:safeDistance,speedKmh:safeSpeed};
+  }catch(err){
+    try{await conn.rollback();}catch{}
+    throw err;
+  }finally{
+    conn.release();
+  }
+}
+
+async function completeMovement({simulationId,entityId,destination,movementId=null,simulationTime,db=pool}){const query=movementId?`SELECT BIN_TO_UUID(id) AS id,BIN_TO_UUID(origin_location_id) AS originLocationId,BIN_TO_UUID(destination_location_id) AS destinationLocationId,version FROM movements WHERE id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND status='ACTIVE' LIMIT 1`:`SELECT BIN_TO_UUID(id) AS id,BIN_TO_UUID(origin_location_id) AS originLocationId,BIN_TO_UUID(destination_location_id) AS destinationLocationId,version FROM movements WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND destination_location_id=UUID_TO_BIN(?) AND status='ACTIVE' ORDER BY started_simulation_at DESC LIMIT 1`;const params=movementId?[movementId,simulationId,entityId]:[simulationId,entityId,destination],[rows]=await db.query(query,params);if(!rows.length)return false;const movement=rows[0],resolvedDestination=movement.destinationLocationId||destination;if(!resolvedDestination)return false;const[updated]=await db.query(`UPDATE movements SET status='COMPLETED',actual_arrival_simulation_at=?,version=version+1 WHERE id=UUID_TO_BIN(?) AND status='ACTIVE' AND version=?`,[simulationTime,movement.id,movement.version]);if(!updated.affectedRows)return false;await db.query(`INSERT INTO entity_location_history(id,entity_id,location_id,entered_simulation_at,reason,source_event_id) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,'AUTONOMOUS',NULL)`,[uuid(),entityId,resolvedDestination,simulationTime]);if(movement.originLocationId)await db.query(`UPDATE entity_location_history SET exited_simulation_at=? WHERE entity_id=UUID_TO_BIN(?) AND location_id=UUID_TO_BIN(?) AND exited_simulation_at IS NULL AND entered_simulation_at<?`,[simulationTime,entityId,movement.originLocationId,simulationTime]);await db.query(`INSERT INTO entity_locations_current(entity_id,simulation_id,location_id,since_simulation_at,reason,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,'AUTONOMOUS',1) ON DUPLICATE KEY UPDATE location_id=VALUES(location_id),since_simulation_at=VALUES(since_simulation_at),reason=VALUES(reason),version=version+1`,[entityId,simulationId,resolvedDestination,simulationTime]);return true;}
 async function startAction({simulationId,entityId,decisionId,intentionId=null,actionType,simulationTime,targetEntityId=null,targetLocationId=null,relationshipIntent="NONE"}){
-  if (decisionId) {
-    const [decisionRows] = await pool.query(
+  if(decisionId){
+    const [decisionRows]=await pool.query(
       `SELECT context FROM decisions
        WHERE id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?)
        LIMIT 1`,
-      [decisionId, simulationId, entityId]
+      [decisionId,simulationId,entityId]
     );
-    const decisionContext = parseJson(decisionRows[0]?.context, null);
-
-    if (decisionContext?.criticalNeed) {
-      const recovery = decisionContext.criticalResourceRecovery;
+    const decisionContext=parseJson(decisionRows[0]?.context,null);
+    if(decisionContext?.criticalNeed){
+      const recovery=decisionContext.criticalResourceRecovery;
       validateCriticalDecision(
-        decisionContext.needs || [],
+        decisionContext.needs||[],
         actionType,
         targetLocationId,
-        recovery
-          ? {
-              critical: {
-                code: recovery.code,
-                resource: recovery.resource || null
-              },
-              selectedAction: decisionContext.criticalAction || actionType,
-              mode: recovery.mode || "DIRECT",
-              candidate: {
-                targetLocationId: recovery.targetLocationId || null
-              }
-            }
-          : null
+        recovery?{
+          critical:{code:recovery.code,resource:recovery.resource||null},
+          selectedAction:decisionContext.criticalAction||actionType,
+          mode:recovery.mode||"DIRECT",
+          candidate:{targetLocationId:recovery.targetLocationId||null}
+        }:null
       );
     }
-  }const normalizedAction=String(actionType||"").trim().toUpperCase();let duration=getActionDurationMinutes(normalizedAction),move=null,origin=null,destination=null;if(MOVE_ACTIONS.has(normalizedAction)){origin=await currentLocation(entityId,simulationId);if(!origin)throw Object.assign(new Error("Movement requires a current entity location"),{code:"MOVEMENT_ORIGIN_REQUIRED"});let route;if(targetLocationId){route=await routeDetails(simulationId,origin,targetLocationId);if(!route)throw Object.assign(new Error("Movement destination is unreachable from the current location"),{code:"MOVEMENT_DESTINATION_UNREACHABLE"});}else{const locations=await loadLocationGraph(simulationId),next=nextHop(locations,origin,null);if(!next)throw Object.assign(new Error("Movement has no connected destination"),{code:"MOVEMENT_DESTINATION_REQUIRED"});const distance=haversineMeters(locations.find(location=>String(location.locationId)===String(origin)),locations.find(location=>String(location.locationId)===String(next)));if(!Number.isFinite(distance))throw Object.assign(new Error("Movement route has invalid coordinates"),{code:"INVALID_MOVEMENT_ROUTE"});route={path:[origin,next],distanceMeters:Math.max(5,distance*ROAD_FACTOR)};}destination=route.path[1]||null;if(!destination)throw Object.assign(new Error("Movement destination is missing"),{code:"MOVEMENT_DESTINATION_REQUIRED"});const speed=normalizedAction==="EXPLORING"?EXPLORING_SPEED_KMH:WALKING_SPEED_KMH;move=await startMovement({simulationId,entityId,origin,destination,simulationTime,distanceMeters:route.distanceMeters,speedKmh:speed});if(!move)throw Object.assign(new Error("Movement is already active for this entity"),{code:"MOVEMENT_ALREADY_ACTIVE"});duration=move.durationMinutes;}const actionId=uuid(),expectedCompletion=new Date(new Date(simulationTime).getTime()+duration*60000);await pool.query(`INSERT INTO actions(id,simulation_id,entity_id,decision_id,action_type,source_type,source_goal_id,source_intention_id,started_simulation_at,status,target,parameters,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,'AUTONOMOUS',(SELECT goal_id FROM intentions WHERE id=UUID_TO_BIN(?)),UUID_TO_BIN(?),?,'ACTIVE',?,?,1)`,[actionId,simulationId,entityId,decisionId,normalizedAction,intentionId,intentionId,simulationTime,targetLocationId?JSON.stringify({locationId:targetLocationId}):null,JSON.stringify({targetEntityId,targetLocationId,relationshipIntent,durationMinutes:duration,expectedCompletionSimulationAt:expectedCompletion.toISOString(),movement:move?{movementId:move.movementId,originLocationId:origin,destinationLocationId:destination,distanceMeters:move.distanceMeters,speedKmh:move.speedKmh,expectedArrivalSimulationAt:move.expectedArrival.toISOString()}:null})]);const eventId=await createEvent({simulationId,eventTypeCode:normalizedAction==="TALKING"?"SOCIAL":"PERSONAL",title:`Autonomous action: ${normalizedAction.toLowerCase().replaceAll("_"," ")}`,description:`Autonomous action started for entity ${entityId}: ${normalizedAction}`,simulationAt:simulationTime,importance:.45,sourceActionId:actionId,participants:[{entityId,role:"ACTOR"}],metadata:{actionType:normalizedAction,targetEntityId,targetLocationId,relationshipIntent,durationMinutes:duration,status:"ACTIVE",movement:move?{origin,destination,distanceMeters:move.distanceMeters,expectedArrival:move.expectedArrival.toISOString()}:null}});const initialResult={eventId,actionType:normalizedAction,durationMinutes:duration,targetEntityId,targetLocationId,relationshipIntent,movement:move?{movementId:move.movementId,originLocationId:origin,destinationLocationId:destination,distanceMeters:move.distanceMeters,speedKmh:move.speedKmh,expectedArrivalSimulationAt:move.expectedArrival.toISOString()}:null};await pool.query(`UPDATE actions SET result=? WHERE id=UUID_TO_BIN(?)`,[JSON.stringify(initialResult),actionId]);return{actionId,eventId,actionType:normalizedAction,durationMinutes:duration,relationshipIntent,expectedCompletionSimulationAt:expectedCompletion,movement:move?{movementId:move.movementId,originLocationId:origin,destinationLocationId:destination,distanceMeters:move.distanceMeters,speedKmh:move.speedKmh,expectedArrivalSimulationAt:move.expectedArrival.toISOString()}:null};}
+  }
+
+  const normalizedAction=String(actionType||"").trim().toUpperCase();
+  let duration=getActionDurationMinutes(normalizedAction),move=null,origin=null,destination=null,actionId=null,eventId=null;
+  try{
+    if(MOVE_ACTIONS.has(normalizedAction)){
+      origin=await currentLocation(entityId,simulationId);
+      if(!origin)throw Object.assign(new Error("Movement requires a current entity location"),{code:"MOVEMENT_ORIGIN_REQUIRED"});
+      let route;
+      if(targetLocationId){
+        route=await routeDetails(simulationId,origin,targetLocationId);
+        if(!route)throw Object.assign(new Error("Movement destination is unreachable from the current location"),{code:"MOVEMENT_DESTINATION_UNREACHABLE"});
+      }else{
+        const locations=await loadLocationGraph(simulationId),next=nextHop(locations,origin,null);
+        if(!next)throw Object.assign(new Error("Movement has no connected destination"),{code:"MOVEMENT_DESTINATION_REQUIRED"});
+        const distance=haversineMeters(
+          locations.find(location=>String(location.locationId)===String(origin)),
+          locations.find(location=>String(location.locationId)===String(next))
+        );
+        if(!Number.isFinite(distance))throw Object.assign(new Error("Movement route has invalid coordinates"),{code:"INVALID_MOVEMENT_ROUTE"});
+        route={path:[origin,next],distanceMeters:Math.max(5,distance*ROAD_FACTOR)};
+      }
+      destination=route.path[1]||null;
+      if(!destination)throw Object.assign(new Error("Movement destination is missing"),{code:"MOVEMENT_DESTINATION_REQUIRED"});
+      const speed=normalizedAction==="EXPLORING"?EXPLORING_SPEED_KMH:WALKING_SPEED_KMH;
+      move=await startMovement({simulationId,entityId,origin,destination,simulationTime,distanceMeters:route.distanceMeters,speedKmh:speed});
+      if(!move)throw Object.assign(new Error("Movement is already active for this entity"),{code:"MOVEMENT_ALREADY_ACTIVE"});
+      duration=move.durationMinutes;
+    }
+
+    actionId=uuid();
+    const expectedCompletion=new Date(new Date(simulationTime).getTime()+duration*60000);
+    await pool.query(
+      `INSERT INTO actions(id,simulation_id,entity_id,decision_id,action_type,source_type,source_goal_id,source_intention_id,started_simulation_at,status,target,parameters,version)
+       VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,'AUTONOMOUS',
+               (SELECT goal_id FROM intentions WHERE id=UUID_TO_BIN(?)),
+               UUID_TO_BIN(?),?,'ACTIVE',?,?,1)`,
+      [
+        actionId,simulationId,entityId,decisionId,normalizedAction,intentionId,intentionId,simulationTime,
+        targetLocationId?JSON.stringify({locationId:targetLocationId}):null,
+        JSON.stringify({
+          targetEntityId,targetLocationId,relationshipIntent,
+          durationMinutes:duration,
+          expectedCompletionSimulationAt:expectedCompletion.toISOString(),
+          movement:move?{
+            movementId:move.movementId,
+            originLocationId:origin,
+            destinationLocationId:destination,
+            distanceMeters:move.distanceMeters,
+            speedKmh:move.speedKmh,
+            expectedArrivalSimulationAt:move.expectedArrival.toISOString()
+          }:null
+        })
+      ]
+    );
+
+    eventId=await createEvent({
+      simulationId,
+      eventTypeCode:normalizedAction==="TALKING"?"SOCIAL":"PERSONAL",
+      title:`Autonomous action: ${normalizedAction.toLowerCase().replaceAll("_"," ")}`,
+      description:`Autonomous action started for entity ${entityId}: ${normalizedAction}`,
+      simulationAt:simulationTime,
+      importance:.45,
+      sourceActionId:actionId,
+      participants:[{entityId,role:"ACTOR"}],
+      metadata:{
+        actionType:normalizedAction,targetEntityId,targetLocationId,relationshipIntent,
+        durationMinutes:duration,status:"ACTIVE",
+        movement:move?{
+          origin,destination,distanceMeters:move.distanceMeters,
+          expectedArrival:move.expectedArrival.toISOString()
+        }:null
+      }
+    });
+
+    const initialResult={
+      eventId,actionType:normalizedAction,durationMinutes:duration,targetEntityId,targetLocationId,relationshipIntent,
+      movement:move?{
+        movementId:move.movementId,
+        originLocationId:origin,
+        destinationLocationId:destination,
+        distanceMeters:move.distanceMeters,
+        speedKmh:move.speedKmh,
+        expectedArrivalSimulationAt:move.expectedArrival.toISOString()
+      }:null
+    };
+    await pool.query(`UPDATE actions SET result=? WHERE id=UUID_TO_BIN(?) AND status='ACTIVE'`,[JSON.stringify(initialResult),actionId]);
+
+    return{
+      actionId,eventId,actionType:normalizedAction,durationMinutes:duration,relationshipIntent,
+      expectedCompletionSimulationAt:expectedCompletion,
+      movement:move?{
+        movementId:move.movementId,
+        originLocationId:origin,destinationLocationId:destination,
+        distanceMeters:move.distanceMeters,speedKmh:move.speedKmh,
+        expectedArrivalSimulationAt:move.expectedArrival.toISOString()
+      }:null
+    };
+  }catch(err){
+    if(actionId){
+      try{
+        await pool.query(
+          `UPDATE actions
+           SET status='FAILED',completed_simulation_at=?,result=?
+           WHERE id=UUID_TO_BIN(?) AND status='ACTIVE'`,
+          [simulationTime,JSON.stringify({actionType:normalizedAction,failureReason:"ACTION_START_FAILED",error:String(err?.message||"Action start failed")}),actionId]
+        );
+      }catch{}
+    }
+    if(move?.movementId){
+      try{
+        await pool.query(
+          `UPDATE movements SET status='FAILED',reason='action start failed',version=version+1
+           WHERE id=UUID_TO_BIN(?) AND status='ACTIVE'`,
+          [move.movementId]
+        );
+      }catch{}
+    }
+    if(eventId){
+      try{
+        await pool.query(
+          `UPDATE events SET status='CANCELLED'
+           WHERE id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?) AND status='RECORDED'`,
+          [eventId,simulationId]
+        );
+      }catch{}
+    }
+    if(intentionId){
+      try{
+        await pool.query(
+          `UPDATE intentions SET status='CANCELLED',version=version+1
+           WHERE id=UUID_TO_BIN(?) AND status='ACTIVE'`,
+          [intentionId]
+        );
+      }catch{}
+    }
+    if(decisionId){
+      try{
+        await pool.query(
+          `UPDATE decisions SET status='FAILED',actual_outcome=?
+           WHERE id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?)
+             AND status IN ('CREATED','EVALUATED')`,
+          [JSON.stringify({actionType:normalizedAction,failureReason:"ACTION_START_FAILED"}),decisionId,simulationId,entityId]
+        );
+      }catch{}
+    }
+    throw err;
+  }
+}
+
 async function ensureEventId({simulationId,entityId,actionId,eventId,actionType,simulationTime,targetEntityId=null,targetLocationId=null,relationshipIntent="NONE"}){if(eventId)return eventId;return createEvent({simulationId,eventTypeCode:actionType==="TALKING"?"SOCIAL":"PERSONAL",title:`Asami ${String(actionType||"ACTION").toLowerCase().replaceAll("_"," ")}`,description:`Recovered autonomous action: ${actionType||"ACTION"}`,simulationAt:simulationTime,importance:.35,sourceActionId:actionId,participants:[{entityId,role:"ACTOR"}],metadata:{actionType,targetEntityId,targetLocationId,relationshipIntent,recovered:true,status:"ACTIVE"}});}
 function classifyPhysicalOutcome(physical){if(!physical||typeof physical!=="object"||!Object.prototype.hasOwnProperty.call(physical,"ok"))return{outcome:"SUCCESS",success:true,failureReason:null};if(physical.ok)return{outcome:"SUCCESS",success:true,failureReason:null};const consumed=Number(physical.consumed||0);return{outcome:consumed>0?"PARTIAL":"FAILURE",success:false,failureReason:consumed>0?"RESOURCE_PARTIALLY_AVAILABLE":"RESOURCE_UNAVAILABLE"};}
 async function recordResourceFailureKnowledge({simulationId,entityId,locationId,simulationTime,physical}){if(!locationId||!physical?.resource||physical.ok)return null;const resource=String(physical.resource).trim().toLowerCase(),remaining=Number(physical.remaining);if(!resource||!Number.isFinite(remaining)||remaining>0)return null;const knowledgePayload={type:"RESOURCE_UNAVAILABLE",resource,locationId,simulationAt:simulationTime};const knowledgeId=await upsertKnowledge({simulationId,entityId,simulationTime,item:{knowledgeType:"WORLD_EXPERIENCE",content:JSON.stringify(knowledgePayload),subjectEntityId:entityId,objectEntityId:locationId,predicate:"RESOURCE_UNAVAILABLE",confidence:.98,importance:.85}});await createMemory({simulationId,entityId,eventId:null,locationId,type:"EPISODIC",content:`I tried to ${String(physical.actionType||"perform an action").toLowerCase()} here, but ${resource} was unavailable. I should consider another location or strategy next time.`,importance:.82,strength:.98,confidence:.98,emotionalIntensity:.35,simulationAt:simulationTime,metadata:{kind:"resource_failure",resource,locationId,remaining,learning:"RESOURCE_UNAVAILABLE"}});return{knowledgeId,resource,locationId,type:"RESOURCE_UNAVAILABLE"};}
