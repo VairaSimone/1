@@ -40,10 +40,17 @@ async function upsertInteractionRelationship({simulationId,sourceEntityId,target
              attraction_score,conflict_score,fear_score,admiration_score,jealousy_score,dependence_score,
              closeness_score,irritation_score
       FROM relationships
-      WHERE simulation_id=UUID_TO_BIN(?) AND source_entity_id=UUID_TO_BIN(?)
-        AND target_entity_id=UUID_TO_BIN(?) AND relationship_type_id=UUID_TO_BIN(?) AND status='ACTIVE'
+      WHERE simulation_id=UUID_TO_BIN(?)
+        AND ((source_entity_id=UUID_TO_BIN(?) AND target_entity_id=UUID_TO_BIN(?))
+          OR (source_entity_id=UUID_TO_BIN(?) AND target_entity_id=UUID_TO_BIN(?)))
+        AND status='ACTIVE'
+      ORDER BY CASE
+        WHEN relationship_type_id=UUID_TO_BIN((SELECT id FROM relationship_types WHERE code='PARTNER' LIMIT 1)) THEN 3
+        WHEN relationship_type_id=UUID_TO_BIN((SELECT id FROM relationship_types WHERE code='FRIEND' LIMIT 1)) THEN 2
+        ELSE 1
+      END DESC, started_simulation_at DESC
       LIMIT 1
-    `,[simulationId,targetEntityId,sourceEntityId,type.id]);
+    `,[simulationId,sourceEntityId,targetEntityId,targetEntityId,sourceEntityId]);
   }
   if(!rows.length){
     const id=uuid();
