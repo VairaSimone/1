@@ -137,6 +137,8 @@ function buildRouter({hub,gemini}){
   });
   router.get("/simulations/:simulationId/development/:entityId",async(req,res)=>{
     const simulationId=uuid.parse(req.params.simulationId),entityId=uuid.parse(req.params.entityId);
+    const entity=await entityRepo.getEntity(simulationId,entityId);
+    if(!entity)return res.status(404).json({error:"Entity not found"});
     res.json({current:await getDevelopment(simulationId,entityId),history:await getDevelopmentHistory(entityId,100)});
   });
 
