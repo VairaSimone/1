@@ -269,6 +269,16 @@ async function advanceAndCreateTick(id, nowSimulation, version, tickType, engine
   });
 }
 
+async function reconcileStaleRunningTicks(maxAgeMs = env.TICK_MAX_RUNNING_AGE_MS) {
+  const maxAgeSeconds = Math.max(60, Math.floor(Number(maxAgeMs || 0) / 1000));
+  const [rows] = await pool.query("SELECT BIN_TO_UUID(id) AS id FROM simulation_ticks WHERE status='RUNNING' AND TIMESTAMPDIFF(SECOND,real_started_at,UTC_TIMESTAMP(3)) >= ? ORDER BY real_started_at",[maxAgeSeconds]);
+  if (!rows.length) return 0;
+  const ids = rows.map(row => row.id).filter(Boolean);
+  const placeholders = ids.map(() => "UUID_TO_BIN(?)").join(",");
+  const [updated] = await pool.query("UPDATE simulation_ticks SET status='FAILED',real_finished_at=UTC_TIMESTAMP(3) WHERE id IN ("+placeholders+") AND status='RUNNING'",ids);
+  return Number(updated.affectedRows || 0);
+}
+
 async function updateCurrentTimeOptimistic(id, nowSimulation, version) {
   const [r] = await pool.query(`
     UPDATE simulations
