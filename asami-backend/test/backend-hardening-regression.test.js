@@ -58,3 +58,31 @@ test('simulation snapshots use timestamps that exist on the canonical goals sche
   assert.match(source, /created_simulation_at AS createdSimulationAt,COALESCE\(g\.completed_simulation_at,g\.created_simulation_at\) AS updatedSimulationAt/);
   assert.doesNotMatch(source, /g\.updated_simulation_at/);
 });
+
+test('location history queries match the canonical schema',()=>{
+  const source=read('services/action-service.js');
+  const world=read('services/world-population-service.js');
+  assert.doesNotMatch(source,/entity_location_history[^;\n]*simulation_id/);
+  assert.doesNotMatch(world,/entity_location_history[^;\n]*simulation_id/);
+  assert.match(source,/UPDATE entity_location_history SET exited_simulation_at/);
+  assert.match(world,/UPDATE entity_location_history SET exited_simulation_at/);
+});
+
+test('failed action starts clean up persisted partial state',()=>{
+  const source=read('services/action-service.js');
+  assert.match(source,/UPDATE actions[\s\S]*SET status='FAILED'/);
+  assert.match(source,/UPDATE movements SET status='FAILED'/);
+  assert.match(source,/UPDATE events SET status='CANCELLED'/);
+  assert.match(source,/UPDATE intentions SET status='CANCELLED'/);
+  assert.match(source,/UPDATE decisions SET status='FAILED'/);
+});
+
+test('movement creation serializes on the entity location row',()=>{
+  const source=read('services/action-service.js');
+  const start=source.indexOf('async function startMovement');
+  const end=source.indexOf('async function completeMovement',start);
+  assert.ok(start>=0&&end>start);
+  const section=source.slice(start,end);
+  assert.match(section,/entity_locations_current[\s\S]*FOR UPDATE/);
+  assert.match(section,/movements[\s\S]*status IN \('PLANNED','ACTIVE'\)[\s\S]*FOR UPDATE/);
+});
