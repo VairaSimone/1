@@ -128,6 +128,8 @@ async function sendMessage({
     [userMessageId,JSON.stringify({messageId:userMessageId}),attemptId]
   );
 
+  let assistantId=null;
+  try{
   const context=await buildAsamiConversationContext(simulationId,asamiEntityId,senderEntityId,cid,content,{simulationTime});
   const significanceBefore=scoreMessageSignificance(content,{
     intent:context.conversationIntent,
@@ -287,7 +289,7 @@ async function sendMessage({
     memoryCreated:Boolean(memoryId)
   };
 
-  const assistantId=uuid();
+  assistantId=uuid();
   await pool.query(
     "INSERT INTO messages(id,simulation_id,conversation_id,sender_entity_id,message_type,content,simulation_created_at,status,metadata,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),'ASSISTANT',?,?,'DELIVERED',?,1)",
     [assistantId,simulationId,cid,asamiEntityId,reply,simulationTime,JSON.stringify(aiMeta)]
@@ -351,6 +353,24 @@ async function sendMessage({
       significanceReasons:significance.reasons
     }
   };
+  }catch(err){
+    try{
+      await pool.query(
+        `UPDATE communication_attempts
+         SET status='FAILED',result=?
+         WHERE id=UUID_TO_BIN(?) AND status IN ('STARTED','DELIVERED')`,
+        [JSON.stringify({error:String(err?.message||"Conversation processing failed")}),attemptId]
+      );
+      await pool.query(
+        `UPDATE communication_intents
+         SET status='FAILED',version=version+1
+         WHERE id=UUID_TO_BIN(?) AND status='ATTEMPTING'`,
+        [intentId]
+      );
+    }catch{}
+    throw err;
+  }
+
 }
 
 async function applyCognitiveEffects({simulationId,asamiEntityId,senderEntityId,simulationTime,eventId,actionId,generated}){const empty={needChanges:[],emotionChanges:[],traitChanges:[],relationshipId:null,communicationStyle:null,goalId:null};if(!generated?.stateEffects)return empty;const effects=generated.stateEffects;return{needChanges:await applyNeedDeltas(asamiEntityId,simulationTime,effects.needs,eventId,actionId),emotionChanges:await applyEmotionDeltas(asamiEntityId,simulationTime,effects.emotions,eventId,actionId),traitChanges:await applyTraitDeltas(asamiEntityId,simulationTime,effects.traits,eventId,actionId),relationshipId:await applyRelationshipDeltas({simulationId,sourceEntityId:asamiEntityId,targetEntityId:senderEntityId,simulationTime,deltas:effects.relationship,sourceEventId:eventId}),communicationStyle:await updateCommunicationStyle(simulationId,asamiEntityId,effects.communicationStyle,simulationTime),goalId:await createGoalFromProposal({simulationId,entityId:asamiEntityId,simulationTime,proposal:effects.goalProposal})};}
