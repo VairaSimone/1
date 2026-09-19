@@ -352,5 +352,5 @@ async function createSnapshot(id, simulationTime, state, snapshotVersion = 2) {
 module.exports = {
   listSimulations, getSimulation, createSimulation, setStatus, changeSpeed,
   getActiveClock, updateCurrentTimeOptimistic, advanceAndCreateTick, createTick, finishTick,
-  completeTick: finishTick, createSnapshot
+  completeTick: finishTick, reconcileStaleRunningTicks, buildSimulationSnapshotState, createSnapshot
 };
