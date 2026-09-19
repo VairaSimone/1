@@ -29,3 +29,10 @@ test("environment model contains localized weather and activity events",()=>{
   assert.ok(EVENTS.SHOP.some(event=>event[0]==="RESTOCK"));
   assert.ok(EVENTS.LIBRARY.some(event=>event[0]==="BOOK_RETURN"));
 });
+
+test("temporary weather durations are explicitly bounded",()=>{
+  const source=require("fs").readFileSync(require("path").join(__dirname,"../src/services/environment-service.js"),"utf8");
+  assert.match(source,/WEATHER_DURATIONS_HOURS=\{RAIN:3,STORM:6\}/);
+  assert.match(source,/weatherCode='CLEAR'/);
+  assert.match(source,/lastWeatherChangeAt/);
+});
