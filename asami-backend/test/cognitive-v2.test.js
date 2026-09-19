@@ -54,6 +54,6 @@ test('learnFromOutcome uses the current identity upsert helper', () => {
   const start = source.indexOf('async function learnFromOutcome(');
   const end = source.indexOf('\\n\\nmodule.exports=', start);
   const learn = start >= 0 && end >= 0 ? source.slice(start, end) : '';
-  assert.match(learn, /upsertIdentityValue\\(/);
-  assert.doesNotMatch(learn, /updateIdentityValue\\(/);
+  assert.match(learn, /upsertIdentityValue\(/);
+  assert.doesNotMatch(learn, /updateIdentityValue\(/);
 });
