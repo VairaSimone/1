@@ -51,7 +51,9 @@ test('learnFromOutcome uses the current identity upsert helper', () => {
   const fs = require('node:fs');
   const path = require('node:path');
   const source = fs.readFileSync(path.join(__dirname, '../src/services/cognitive-v2-service.js'), 'utf8');
-  const start = source.indexOf('async function learnFromOutcome(');\n  const end = source.indexOf('\\n\\nmodule.exports=', start);\n  const learn = start >= 0 && end >= 0 ? source.slice(start, end) : '';
+  const start = source.indexOf('async function learnFromOutcome(');
+  const end = source.indexOf('\\n\\nmodule.exports=', start);
+  const learn = start >= 0 && end >= 0 ? source.slice(start, end) : '';
   assert.match(learn, /upsertIdentityValue\\(/);
   assert.doesNotMatch(learn, /updateIdentityValue\\(/);
 });
