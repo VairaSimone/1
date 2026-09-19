@@ -1,6 +1,6 @@
 const test=require("node:test");
 const assert=require("node:assert/strict");
-const { getCriticalInterruptionNeed,getInterruptionReason }=require("../src/simulation/engine");
+const { getCriticalInterruptionNeed,getInterruptionReason,isExpectedEntityCondition }=require("../src/simulation/engine");
 test("critical interruption ignores healthy reserve values",()=>{assert.equal(getCriticalInterruptionNeed("WORKING",[{code:"ENERGY",value:.95},{code:"SAFETY",value:1}]),null);});
 test("critical interruption catches depleted energy",()=>{const result=getCriticalInterruptionNeed("WORKING",[{code:"ENERGY",value:.1}]);assert.equal(result.code,"ENERGY");});
 test("critical interruption catches unsafe state",()=>{const result=getCriticalInterruptionNeed("STUDYING",[{code:"SAFETY",value:.1}]);assert.equal(result.code,"SAFETY");});
@@ -38,3 +38,5 @@ test("interrupted movement update binds only movementId",()=>{
   assert.match(section,/status='ACTIVE'\`, \[movementId\]\)/);
   assert.doesNotMatch(section,/status='ACTIVE'\`, \[simulationTime, movementId\]\)/);
 });
+
+test("expected entity conditions are not simulation-level faults",()=>{assert.equal(isExpectedEntityCondition({code:"CRITICAL_RESOURCE_RECOVERY_UNAVAILABLE"}),true);assert.equal(isExpectedEntityCondition({code:"MOVEMENT_DESTINATION_UNREACHABLE"}),true);assert.equal(isExpectedEntityCondition({code:"DATABASE_ERROR"}),false);});
