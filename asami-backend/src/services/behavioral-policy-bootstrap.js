@@ -359,16 +359,37 @@ function circularHourStats(rows = []) {
 }
 
 function habitMaturity(evidence) {
-  if (!evidence || Number(evidence.observations || 0) < 14) return { mature: false, reasons: ["INSUFFICIENT_OBSERVATIONS"] };
+  if (!evidence || Number(evidence.observations || 0) < 12) {
+    return { mature: false, reasons: ["INSUFFICIENT_OBSERVATIONS"] };
+  }
+
   const reasons = [];
-  if (Number(evidence.distinctDays || 0) < 7) reasons.push("INSUFFICIENT_DISTINCT_DAYS");
-  if (Number(evidence.spanDays || 0) < 10) reasons.push("INSUFFICIENT_TEMPORAL_SPAN");
-  if (Number(evidence.maxGapDays || 0) > 4) reasons.push("TEMPORALLY_UNSTABLE");
-  if (Number(evidence.timeConcentration || 0) < 0.72) reasons.push("TIME_CONTEXT_UNSTABLE");
-  if (Number(evidence.contextConsistency || 0) < 0.62) reasons.push("LOCATION_CONTEXT_UNSTABLE");
-  if (Number(evidence.rewardRate || 0) < 0.72) reasons.push("WEAK_REWARD_SIGNAL");
-  if (Number(evidence.decisionDominance || 0) < 0.65) reasons.push("BETTER_ALTERNATIVES_EXIST");
-  return { mature: reasons.length === 0, reasons };
+  const observations = Number(evidence.observations || 0);
+  const distinctDays = Number(evidence.distinctDays || 0);
+  const spanDays = Number(evidence.spanDays || 0);
+  const maxGapDays = Number(evidence.maxGapDays || 0);
+  const timeConcentration = Number(evidence.timeConcentration || 0);
+  const contextConsistency = Number(evidence.contextConsistency || 0);
+  const rewardRate = Number(evidence.rewardRate || 0);
+  const decisionDominance = Number(evidence.decisionDominance || 0);
+
+  if (distinctDays < 4) reasons.push("INSUFFICIENT_DISTINCT_DAYS");
+  if (spanDays < 2) reasons.push("INSUFFICIENT_TEMPORAL_SPAN");
+  if (maxGapDays > 6) reasons.push("TEMPORALLY_UNSTABLE");
+
+  // A routine can be stable because of time OR because of place.
+  // Requiring both was too strict for naturally variable behavior.
+  const patternConsistency = Math.max(timeConcentration, contextConsistency);
+  if (patternConsistency < 0.55) reasons.push("PATTERN_CONTEXT_UNSTABLE");
+
+  if (rewardRate < 0.65) reasons.push("WEAK_REWARD_SIGNAL");
+  if (decisionDominance < 0.55) reasons.push("BETTER_ALTERNATIVES_EXIST");
+
+  return {
+    mature: reasons.length === 0,
+    reasons,
+    patternConsistency
+  };
 }
 
 async function loadHabitEvidence({ simulationId, entityId, simulationTime, actionType }) {
@@ -500,19 +521,20 @@ async function recordMatureHabit({ simulationId, entityId, simulationTime, actio
       rewardRate: Number(evidence.rewardRate.toFixed(3)),
       decisionDominance: Number(evidence.decisionDominance.toFixed(3)),
       contextConsistency: Number(evidence.contextConsistency.toFixed(3)),
-      timeConcentration: Number(evidence.timeConcentration.toFixed(3))
+      timeConcentration: Number(evidence.timeConcentration.toFixed(3)),
+      patternConsistency: Number(Math.max(evidence.timeConcentration, evidence.contextConsistency).toFixed(3))
     }
   };
   const actionDefinition = { actionType: action };
-  const computedStrength = clamp(
+  const rawStrength =
     0.42 +
-    Math.min(0.10, Math.max(0, evidence.observations - 14) * 0.008) +
+    Math.min(0.10, Math.max(0, evidence.observations - 12) * 0.008) +
     evidence.rewardRate * 0.10 +
     evidence.decisionDominance * 0.08 +
-    evidence.contextConsistency * 0.06,
-    0,
-    0.76
-  );
+    Math.max(evidence.timeConcentration, evidence.contextConsistency) * 0.06;
+  // A matured habit must cross the same activation gate used by the
+  // HABITUAL driver; otherwise it is created and immediately ignored.
+  const computedStrength = clamp(Math.max(0.70, rawStrength), 0, 0.86);
   const frequency = `${evidence.observations} repetitions across ${evidence.distinctDays} days with stable timing and context`;
 
   const [existing] = await pool.query(`
@@ -778,6 +800,7 @@ function install() {
   installed = true;
 }
 
+// Exported for deterministic regression tests; production uses it through the habit gate.
 module.exports = {
   install,
   ALL_DRIVERS,
