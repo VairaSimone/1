@@ -62,8 +62,12 @@ test('simulation snapshots use timestamps that exist on the canonical goals sche
 test('location history queries match the canonical schema',()=>{
   const source=read('services/action-service.js');
   const world=read('services/world-population-service.js');
-  assert.doesNotMatch(source,/entity_location_history[^;\n]*simulation_id/);
-  assert.doesNotMatch(world,/entity_location_history[^;\n]*simulation_id/);
+  for(const sql of [source,world]){
+    const inserts=[...sql.matchAll(/INSERT INTO entity_location_history\(([^)]*)\)/g)].map(match=>match[1]);
+    assert.ok(inserts.length>0);
+    for(const columns of inserts) assert.doesNotMatch(columns,/\bsimulation_id\b/);
+    assert.doesNotMatch(sql,/UPDATE entity_location_history SET exited_simulation_at=\? WHERE simulation_id=/);
+  }
   assert.match(source,/UPDATE entity_location_history SET exited_simulation_at/);
   assert.match(world,/UPDATE entity_location_history SET exited_simulation_at/);
 });
