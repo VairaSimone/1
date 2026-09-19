@@ -193,4 +193,17 @@ test("shared cognitive queue serializes per entity and retries optimistic locks"
 });
 
 test("critical thirst recovery overrides a walking recovery block",()=>{const result=decision.resolveCriticalResourceRecovery({needs:[{code:"THIRST",value:.93,priorityWeight:1}],resourceContext:{localResources:{water:0},actions:{DRINKING:{localAvailable:0,nearestLocation:{locationId:"water-source",travelMinutes:4}}},nearestResources:{water:{locationId:"water-source",travelMinutes:4}}},candidates:[{action:"WALKING",score:0,recoveryBlocked:true},{action:"SLEEPING",score:9}]});assert.equal(result.selectedAction,"WALKING");assert.equal(result.candidate.recoveryBlocked,false);assert.equal(result.candidate.targetLocationId,"water-source");});
-test("critical thirst protects WALKING even before a resource location is known",()=>{const actions=decision.criticalProtectedActions([{code:"THIRST",value:.93,priorityWeight:1}],{localResources:{water:0},actions:{DRINKING:{localAvailable:0,nearestLocation:null}}});assert.ok(actions.includes("WALKING"));});
+test("critical thirst overrides an energy recovery block on WALKING",()=>{
+  const protectedActions=decision.criticalProtectedActions(
+    [{code:"THIRST",value:.93,priorityWeight:1}],
+    {localResources:{water:0},actions:{DRINKING:{localAvailable:0,nearestLocation:null}}}
+  );
+  const candidates=decision.applyRecoveryBlocks(
+    [{action:"WALKING",score:1},{action:"SLEEPING",score:4}],
+    [{code:"ENERGY",needValue:.1,releaseBelow:.35,blockedActions:["WALKING"]}],
+    protectedActions
+  );
+  const walking=candidates.find(candidate=>candidate.action==="WALKING");
+  assert.equal(walking.recoveryBlocked,false);
+  assert.equal(walking.score,1);
+});
