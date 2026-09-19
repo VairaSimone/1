@@ -147,7 +147,7 @@ class SimulationEngine {
             const eventId = active.metadata?.eventId || null; const targetEntityId = active.metadata?.targetEntityId || null; const targetLocationId = active.metadata?.targetLocationId || null; const relationshipIntent = active.metadata?.relationshipIntent || "NONE";
             const wasCompleted = nextTime >= completionAt; const updateTime = wasCompleted ? completionAt : nextTime; const updateHours = Math.min(168, Math.max(0, (updateTime - previousTime) / 3600000));
             phase = "entity.perception"; const perception = await perceive(sim.id, entityId, nextTime);
-            phase = "entity.needs"; const needChanges = await updateNeeds(entityId, updateTime, updateHours, null, active.id, active.actionType, { significant: wasCompleted });
+            phase = "entity.needs"; const needChanges = await updateNeeds(entityId, updateTime, updateHours, null, active.id, active.actionType, { significant: wasCompleted, perception });
             phase = "entity.emotions"; await applyEmotions(entityId, updateTime, needChanges, null, active.id, active.actionType, updateHours);
             phase = "entity.interruption"; const interruption = !wasCompleted ? getInterruptionReason(active.actionType, await readNeeds(entityId), perception) : null;
             if (interruption) {
