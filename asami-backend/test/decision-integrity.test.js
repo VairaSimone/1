@@ -6,8 +6,10 @@ const {
   applyExplorationCommitment,
   criticalNeedAction,
   resolveCriticalDecisionRequirement,
-  validateCriticalDecision
+  validateCriticalDecision,
+  applyRecoveryBlocks
 } = require("../src/services/decision-service");
+const { physiologicalPressure } = require("../src/services/behavioral-policy-bootstrap");
 const {
   shouldCreateExperiencePreference,
   cognitiveExperienceModifier
@@ -155,4 +157,26 @@ test("critical routed recovery rejects a changed destination", () => {
       ),
     error => error?.code === "CRITICAL_DECISION_TARGET_MISMATCH"
   );
+});
+
+test("critical action cannot be blocked by its own recovery gate", () => {
+  const result = applyRecoveryBlocks(
+    [
+      { action: "SLEEPING", score: 1 },
+      { action: "READING", score: 2 }
+    ],
+    [{ code: "ENERGY", needValue: 0.05, releaseBelow: 0.35, blockedActions: ["SLEEPING", "READING"] }],
+    ["SLEEPING"]
+  );
+
+  assert.equal(result[0].recoveryBlocked, false);
+  assert.equal(result[0].recoveryBlock, null);
+  assert.equal(result[1].recoveryBlocked, true);
+});
+
+test("ENERGY uses the same critical action in decision and behavioral policy", () => {
+  const needs = [{ code: "ENERGY", value: 0.05, priorityWeight: 1 }];
+  assert.equal(criticalNeedAction(needs), "SLEEPING");
+  assert.equal(physiologicalPressure(needs)?.action, "SLEEPING");
+  assert.equal(physiologicalPressure(needs)?.direction, "LOW");
 });
