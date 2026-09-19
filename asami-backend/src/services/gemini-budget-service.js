@@ -3,6 +3,7 @@ const { env } = require("../config/env");
 
 let initialized = false;
 let providerBlockedUntil = 0;
+let providerBlockReason = null;
 
 async function ensureGeminiUsageTable() {
   if (initialized) return;
@@ -83,7 +84,7 @@ function emptyUsage(period_type, period_key) {
 async function reserve({ prompt, outputTokenCeiling, kind }) {
   await ensureGeminiUsageTable();
   const blockedMs = providerBlockRemainingMs();
-  if (blockedMs > 0) return { allowed: false, reason: "PROVIDER_RATE_LIMIT", retryAfterMs: blockedMs };
+  if (blockedMs > 0) return { allowed: false, reason: providerBlockReason || "PROVIDER_RATE_LIMIT", retryAfterMs: blockedMs };
   const now = new Date();
   const { day, month } = periodKeys(now);
   const inputTokens = estimateInputTokens(prompt);
@@ -144,4 +145,4 @@ async function restoreRejectedRequest(reservation) {
   await pool.query(`UPDATE gemini_usage SET requests=IF(requests > 0, requests - 1, 0) WHERE period_type='MONTH' AND period_key=?`, [month]);
 }
 
-module.exports = { ensureGeminiUsageTable, reserve, finalize, release, restoreRejectedRequest, getUsage, blockProvider, providerBlockRemainingMs, estimateInputTokens, estimateCostUsd, dailyPacedLimitUsd };
+module.exports = { ensureGeminiUsageTable, reserve, finalize, release, restoreRejectedRequest, getUsage, blockProvider, providerBlockRemainingMs, providerBlockStatus, estimateInputTokens, estimateCostUsd, dailyPacedLimitUsd };
