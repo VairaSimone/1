@@ -59,7 +59,7 @@ export default function App() {
         {view === 'analysis' && <Analysis simulationId={sim.simulation.id} entityId={sim.asamiId || sim.dashboard.entity.id} currentSimulationAt={sim.simulation.currentSimulationAt} onRefresh={() => void sim.refresh(true)} />}
         {view === 'timeline' && <Timeline items={sim.timeline} events={sim.events} />}
         {view === 'memory' && <Memory memories={sim.memories} />}
-        {view === 'mind' && <Mind simulationId={sim.simulation.id} entityId={sim.asamiId || sim.dashboard.entity.id} />}
+        {view === 'mind' && <Mind simulationId={sim.simulation.id} entityId={sim.asamiId || sim.dashboard.entity.id} currentSimulationAt={sim.simulation.currentSimulationAt} />}
         {view === 'relationships' && <Relationships relationships={sim.dashboard.relationships} />}
         {view === 'development' && <Development current={sim.development.current} history={sim.development.history} traits={sim.dashboard.traits} />}
         {view === 'chat' && <Chat messages={sim.messages} conversationState={sim.conversationState} asami={sim.dashboard.entity} senderId={sim.chatSenderId} onSenderId={sim.setChatSenderId} onSend={async (text) => { await sim.sendMessage(text) }} />}
