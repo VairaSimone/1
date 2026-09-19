@@ -199,6 +199,14 @@ function compactDecisionContext(context = {}) {
 
   return {
     schemaVersion: 2,
+    criticalNeed: normalizeAction(context.criticalNeed) || null,
+    criticalAction: normalizeAction(context.criticalAction) || null,
+    criticalResourceRecovery: context.criticalResourceRecovery ? {
+      code: normalizeAction(context.criticalResourceRecovery.code) || null,
+      resource: context.criticalResourceRecovery.resource || null,
+      mode: context.criticalResourceRecovery.mode || null,
+      targetLocationId: context.criticalResourceRecovery.targetLocationId || null
+    } : null,
     selectionMode: context.selectionMode || null,
     chosenAction: normalizeAction(context.chosenAction || context.selectedActionType) || null,
     individuality: compactNumber(context.individuality),
