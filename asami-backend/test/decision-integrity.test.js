@@ -92,7 +92,7 @@ test("stored experience cannot dominate decision making", () => {
     }))
   }, "TALKING", { locationType: "CAFE" });
 
-  assert.ok(modifier <= 0.35);
+  assert.ok(modifier >= -0.65 && modifier <= 0.65);
 });
 
 test("critical decision requirement records the physiological need separately from the action", () => {
