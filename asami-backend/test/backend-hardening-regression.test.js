@@ -202,3 +202,27 @@ test('mental state writes do not race need-history foreign-key writes on the ent
   const end=source.indexOf('\nasync function upsertPreference',start);
   assert.match(source.slice(start,end),/return withEntityStateLock\(entityId, async db =>/);
 });
+
+test('event creation is atomic and serialized per simulation',()=>{
+  const source=read('services/event-service.js');
+  assert.match(source,/async function withEventWriteLock\(simulationId, fn, db = pool\)/);
+  assert.match(source,/GET_LOCK\(\?,\?\)/);
+  assert.match(source,/await conn\.beginTransaction\(\)/);
+  assert.match(source,/await conn\.commit\(\)/);
+  assert.match(source,/INSERT INTO events/);
+  assert.match(source,/INSERT IGNORE INTO event_participants/);
+  assert.match(source,/SELECT RELEASE_LOCK/);
+});
+
+test('event retention shares the event write lock instead of deleting concurrently',()=>{
+  const source=read('services/safe-retention-service.js');
+  assert.match(source,/withEventWriteLock/);
+  assert.match(source,/deleteOldEvents\(conn, simulationId, mysqlSimulationTime\)/);
+});
+
+test('world event processing shares the event write lock',()=>{
+  const source=read('services/world-service.js');
+  assert.match(source,/withEventWriteLock/);
+  const start=source.indexOf('async function processWorldEffects');
+  assert.match(source.slice(start),/return withEventWriteLock\(simulationId/);
+});
