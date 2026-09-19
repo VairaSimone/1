@@ -40,6 +40,7 @@ const Env = z.object({
   WORLD_EVENT_RATE_PER_SIM_HOUR: z.coerce.number().nonnegative().default(0.25),
   ENGINE_VERSION: z.string().default("1.0.1"),
   ENGINE_INTERVAL_MS: z.coerce.number().int().positive().default(1000),
+  TICK_MAX_RUNNING_AGE_MS: z.coerce.number().int().min(60000).default(15*60*1000),
   DEFAULT_SPEED: z.coerce.number().nonnegative().default(60),
   SNAPSHOT_EVERY_TICKS: z.coerce.number().int().positive().default(60),
   MAX_ENTITIES_PER_TICK: z.coerce.number().int().positive().default(100),
