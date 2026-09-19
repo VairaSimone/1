@@ -66,13 +66,13 @@ async function assignLocation(simulationId,entityId,locationId,simulationTime,re
     }
     if(existing.length){
       const previousLocationId=existing[0].locationId;
-      await conn.query(`UPDATE entity_location_history SET exited_simulation_at=? WHERE entity_id=UUID_TO_BIN(?) AND location_id=UUID_TO_BIN(?) AND exited_simulation_at IS NULL AND entered_simulation_at<?`,[simulationTime,entityId,previousLocationId,simulationTime]);
+      await conn.query(`UPDATE entity_location_history SET exited_simulation_at=? WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND location_id=UUID_TO_BIN(?) AND exited_simulation_at IS NULL AND entered_simulation_at<?`,[simulationTime,simulationId,entityId,previousLocationId,simulationTime]);
       const [updated]=await conn.query(`UPDATE entity_locations_current SET location_id=UUID_TO_BIN(?),since_simulation_at=?,reason=?,version=version+1 WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND version=?`,[locationId,simulationTime,reason,simulationId,entityId,existing[0].version]);
       if(!updated.affectedRows)throw Object.assign(new Error("Location assignment changed concurrently"),{code:"OPTIMISTIC_LOCK"});
     }else{
       await conn.query(`INSERT INTO entity_locations_current(entity_id,simulation_id,location_id,since_simulation_at,reason,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,1)`,[entityId,simulationId,locationId,simulationTime,reason]);
     }
-    await conn.query(`INSERT INTO entity_location_history(id,entity_id,location_id,entered_simulation_at,reason,source_event_id) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,NULL)`,[uuid(),entityId,locationId,simulationTime,reason]);
+    await conn.query(`INSERT INTO entity_location_history(id,simulation_id,entity_id,location_id,entered_simulation_at,reason,source_event_id) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,NULL)`,[uuid(),simulationId,entityId,locationId,simulationTime,reason]);
     await conn.commit();
   }catch(err){
     try{await conn.rollback();}catch{}
