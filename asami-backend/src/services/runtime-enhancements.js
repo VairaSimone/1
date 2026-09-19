@@ -73,7 +73,7 @@ async function consolidateActionMemories(args) {
   const locationId = metadata.locationId || metadata.location?.id || args.locationId || null;
   if (!actionType) return;
   const [rows] = await pool.query(
-    `SELECT memory_type AS memoryType,content,importance,strength,confidence,created_simulation_at AS createdAt,metadata FROM memories WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND status='ACTIVE' AND JSON_UNQUOTE(JSON_EXTRACT(metadata,'$.actionType'))=? ORDER BY created_simulation_at DESC LIMIT 32`,
+    `SELECT memory_type AS memoryType,content,importance,strength,confidence,created_simulation_at AS createdAt,metadata FROM memories WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND status='ACTIVE' AND JSON_UNQUOTE(JSON_EXTRACT(metadata,'$.actionType'))=? AND JSON_UNQUOTE(JSON_EXTRACT(metadata,'$.kind')) IN ('action_outcome','resource_failure') ORDER BY created_simulation_at DESC LIMIT 32`,
     [args.simulationId, args.entityId, actionType]
   );
   const observations = rows.map(row => ({ ...row, metadata: memoryMetadata(row) })).filter(row => {
