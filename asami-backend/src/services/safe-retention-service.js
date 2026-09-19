@@ -1,5 +1,6 @@
 const { pool, normalizeSimulationTimestamp } = require("../db/pool");
 const logger = require("../lib/logger");
+const { withEventWriteLock } = require("./event-service");
 
 const TERMINAL_DECISION_STATUSES = new Set(["EXECUTED", "FAILED", "CANCELLED"]);
 const TERMINAL_ACTION_STATUSES = new Set(["COMPLETED", "CANCELLED", "INTERRUPTED", "FAILED"]);
@@ -460,7 +461,11 @@ async function runSafeRetention(simulationId, simulationTime) {
     const options = await deleteUnselectedDecisionOptions(lock.conn, simulationId, mysqlSimulationTime);
     // Events must be removed before actions because event_effects.target_action_id
     // deliberately uses ON DELETE RESTRICT.
-    const events = await deleteOldEvents(lock.conn, simulationId, mysqlSimulationTime);
+    const events = await withEventWriteLock(
+      simulationId,
+      conn => deleteOldEvents(conn, simulationId, mysqlSimulationTime),
+      lock.conn
+    );
     const actions = await deleteOldActions(lock.conn, simulationId, mysqlSimulationTime);
     const needs = await deleteOldNeedHistory(lock.conn, simulationId, mysqlSimulationTime);
     const emotions = await deleteOldEmotionHistory(lock.conn, simulationId, mysqlSimulationTime);
