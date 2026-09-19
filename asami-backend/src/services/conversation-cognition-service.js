@@ -1,11 +1,44 @@
 const { pool } = require("../db/pool");
 const { uuid } = require("../lib/ids");
+const { withEntityStateLock, persistNeedTransition } = require("./state-service");
 
 function round5(value) { return Math.round((Number(value) + Number.EPSILON) * 100000) / 100000; }
 function clamp01(value) { const n=Number(value); return Number.isFinite(n)?Math.max(0,Math.min(1,n)):0; }
 function clampDelta(value,maxAbs){const n=Number(value);if(!Number.isFinite(n))return 0;return Math.max(-maxAbs,Math.min(maxAbs,n));}
 function safeText(value,max=500){if(value===null||value===undefined)return"";return String(value).trim().slice(0,max);}
-async function applyNeedDeltas(entityId,simulationTime,deltas,causeEventId=null,causeActionId=null){if(!Array.isArray(deltas)||!deltas.length)return[];const[rows]=await pool.query(`SELECT BIN_TO_UUID(enc.need_id) AS needId,nd.code,enc.value,enc.version FROM entity_needs_current enc JOIN need_definitions nd ON nd.id=enc.need_id WHERE enc.entity_id=UUID_TO_BIN(?) AND nd.active=1`,[entityId]);const byCode=new Map(rows.map(row=>[row.code,row])),out=[];for(const item of deltas){const row=byCode.get(String(item?.code||"").toUpperCase());if(!row)continue;const rawDelta=clampDelta(item.delta,.15);if(!rawDelta)continue;const oldValue=round5(row.value),next=round5(clamp01(oldValue+rawDelta)),historyDelta=round5(next-oldValue);if(Math.abs(historyDelta)<.000001)continue;const[updated]=await pool.query(`UPDATE entity_needs_current SET value=?,updated_simulation_at=?,version=version+1 WHERE entity_id=UUID_TO_BIN(?) AND need_id=UUID_TO_BIN(?) AND version=?`,[next,simulationTime,entityId,row.needId,row.version]);if(!updated.affectedRows)continue;await pool.query(`INSERT INTO entity_need_history(id,entity_id,need_id,old_value,new_value,delta,simulation_time,cause_event_id,cause_action_id) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,?,UUID_TO_BIN(?),UUID_TO_BIN(?))`,[uuid(),entityId,row.needId,oldValue,next,historyDelta,simulationTime,causeEventId,causeActionId]);out.push({code:row.code,old:oldValue,new:next,delta:historyDelta});}return out;}
+async function applyNeedDeltas(entityId,simulationTime,deltas,causeEventId=null,causeActionId=null){
+  if(!Array.isArray(deltas)||!deltas.length)return[];
+  return withEntityStateLock(entityId, async db => {
+    const[rows]=await db.query(`SELECT BIN_TO_UUID(enc.need_id) AS needId,nd.code,enc.value,enc.version FROM entity_needs_current enc JOIN need_definitions nd ON nd.id=enc.need_id WHERE enc.entity_id=UUID_TO_BIN(?) AND nd.active=1`,[entityId]);
+    const byCode=new Map(rows.map(row=>[row.code,row])),out=[];
+    for(const item of deltas){
+      const row=byCode.get(String(item?.code||"").toUpperCase());
+      if(!row)continue;
+      const rawDelta=clampDelta(item.delta,.15);
+      if(!rawDelta)continue;
+      const oldValue=round5(row.value);
+      const nextValue=round5(clamp01(oldValue+rawDelta));
+      const historyDelta=round5(nextValue-oldValue);
+      if(Math.abs(historyDelta)<.000001)continue;
+      const transition=await persistNeedTransition({
+        entityId,
+        needId:row.needId,
+        code:row.code,
+        oldValue,
+        nextValue,
+        version:row.version,
+        simulationTime,
+        causeEventId,
+        causeActionId,
+        significant:true,
+        db
+      });
+      if(!transition)continue;
+      out.push(transition);
+    }
+    return out;
+  });
+}
 async function applyEmotionDeltas(entityId,simulationTime,deltas,causeEventId=null,causeActionId=null){if(!Array.isArray(deltas)||!deltas.length)return[];const[rows]=await pool.query(`SELECT BIN_TO_UUID(eec.emotion_id) AS emotionId,ed.code,eec.intensity,eec.version FROM entity_emotions_current eec JOIN emotion_definitions ed ON ed.id=eec.emotion_id WHERE eec.entity_id=UUID_TO_BIN(?) AND ed.active=1`,[entityId]);const byCode=new Map(rows.map(row=>[row.code,row])),out=[];for(const item of deltas){const row=byCode.get(String(item?.code||"").toUpperCase());if(!row)continue;const rawDelta=clampDelta(item.delta,.12);if(!rawDelta)continue;const oldValue=round5(row.intensity),next=round5(clamp01(oldValue+rawDelta)),historyDelta=round5(next-oldValue);if(Math.abs(historyDelta)<.000001)continue;const[updated]=await pool.query(`UPDATE entity_emotions_current SET intensity=?,updated_simulation_at=?,version=version+1 WHERE entity_id=UUID_TO_BIN(?) AND emotion_id=UUID_TO_BIN(?) AND version=?`,[next,simulationTime,entityId,row.emotionId,row.version]);if(!updated.affectedRows)continue;await pool.query(`INSERT INTO entity_emotion_history(id,entity_id,emotion_id,old_intensity,new_intensity,delta,simulation_time,cause_event_id,cause_action_id) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,?,UUID_TO_BIN(?),UUID_TO_BIN(?))`,[uuid(),entityId,row.emotionId,oldValue,next,historyDelta,simulationTime,causeEventId,causeActionId]);out.push({code:row.code,old:oldValue,new:next,delta:historyDelta});}return out;}
 async function applyTraitDeltas(entityId,simulationTime,deltas,causeEventId=null,causeActionId=null){if(!Array.isArray(deltas)||!deltas.length)return[];const[rows]=await pool.query(`SELECT BIN_TO_UUID(etc.trait_id) AS traitId,td.code,etc.value,etc.version FROM entity_traits_current etc JOIN trait_definitions td ON td.id=etc.trait_id WHERE etc.entity_id=UUID_TO_BIN(?) AND td.active=1`,[entityId]);const byCode=new Map(rows.map(row=>[row.code,row])),out=[];for(const item of deltas){const row=byCode.get(String(item?.code||"").toUpperCase());if(!row)continue;const rawDelta=clampDelta(item.delta,.01);if(!rawDelta)continue;const oldValue=round5(row.value),next=round5(clamp01(oldValue+rawDelta)),historyDelta=round5(next-oldValue);if(Math.abs(historyDelta)<.000001)continue;const[updated]=await pool.query(`UPDATE entity_traits_current SET value=?,updated_simulation_at=?,version=version+1 WHERE entity_id=UUID_TO_BIN(?) AND trait_id=UUID_TO_BIN(?) AND version=?`,[next,simulationTime,entityId,row.traitId,row.version]);if(!updated.affectedRows)continue;await pool.query(`INSERT INTO entity_trait_history(id,entity_id,trait_id,old_value,new_value,delta,changed_simulation_at,cause_event_id,cause_action_id,change_reason) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,?,UUID_TO_BIN(?),UUID_TO_BIN(?),?)`,[uuid(),entityId,row.traitId,oldValue,next,historyDelta,simulationTime,causeEventId,causeActionId,"conversation reinforcement"]);out.push({code:row.code,old:oldValue,new:next,delta:historyDelta});}return out;}
 async function applyRelationshipDeltas({simulationId,sourceEntityId,targetEntityId,simulationTime,deltas,sourceEventId=null}){if(!targetEntityId||sourceEntityId===targetEntityId||!deltas)return null;const{upsertInteractionRelationship}=require("./relationship-service"),normalized={};for(const key of["trust","affection","respect","familiarity","attraction","conflict","fear","admiration","jealousy","dependence","closeness","irritation"])normalized[key]=clampDelta(deltas[key],.03);return upsertInteractionRelationship({simulationId,sourceEntityId,targetEntityId,simulationAt:simulationTime,sourceEventId,deltas:normalized});}
