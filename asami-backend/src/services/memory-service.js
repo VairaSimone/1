@@ -134,9 +134,56 @@ function buildActionMemory({ actionType, outcome = "SUCCESS", perception = null,
 
 function buildFailureMemory({ locationId, simulationTime, actionType, perception, decision, needChanges, physical, failureReason, resourceLearning, strategyAlternative = null }) { const resource = physical?.resource ? String(physical.resource).toLowerCase() : null; const resourceState = Number.isFinite(Number(physical?.remaining)) ? Number(physical.remaining) : null; const normalizedLearning = resourceLearning ? { ...resourceLearning, type: resourceLearning.type || "RESOURCE_UNAVAILABLE" } : null; const memory = buildActionMemory({ actionType, outcome: "FAILURE", perception, decision, needChanges, simulationAt: simulationTime, completion: { failureReason: failureReason || "ACTION_FAILED", resource: physical || null, resourceLearning: normalizedLearning, strategyAlternative: strategyAlternative || (resource ? `go to another location with ${resource} available` : "choose another strategy") } }); memory.context.resource = { ...(memory.context.resource || {}), name: resource, remaining: resourceState }; memory.metadata.resource = physical || null; memory.metadata.locationId = locationId || memory.metadata.location?.id || null; memory.metadata.failureReason = failureReason || "ACTION_FAILED"; memory.metadata.resourceLearning = normalizedLearning; memory.metadata.strategyAlternative = strategyAlternative || memory.metadata.strategyAlternative; memory.metadata.source = "action_completion"; memory.metadata.kind = "resource_failure"; return memory; }
 
+function routineLocationKey(locationId, metadata = {}) {
+  const id = locationId || metadata?.locationId || metadata?.location?.id;
+  if (id) return String(id);
+  const type = normalizeText(metadata?.location?.type);
+  const label = normalizeText(metadata?.location?.label);
+  return [type, label].filter(Boolean).join(":") || "unknown";
+}
+function isSalientActionOutcome({ metadata = {}, importance = 0.5, emotionalIntensity = 0.2 } = {}) {
+  if (metadata?.kind !== "action_outcome") return true;
+  if (normalizeOutcome(metadata.outcome) !== "SUCCESS") return true;
+  const decision = metadata.decision || {};
+  if (decision.goalId || metadata.goalId || metadata.planId || metadata.planStepId) return true;
+  const actionType = normalizeText(metadata.actionType);
+  const relationshipIntent = normalizeText(metadata.relationshipIntent);
+  if (actionType === "talking" || (relationshipIntent && relationshipIntent !== "none")) return true;
+  const needChanges = Array.isArray(metadata.needChanges) ? metadata.needChanges : [];
+  if (needChanges.some(change => Math.abs(Number(change?.delta || 0)) >= 0.20)) return true;
+  return Number(emotionalIntensity) >= 0.45 || Number(importance) >= 0.68;
+}
+function routineMemoryContent(actionType, location, observationCount) {
+  const label = location?.label || location?.type || "the current place";
+  return "Routine pattern: I often " + actionLabel(actionType) + " at " + label + ". I have observed this routine " + observationCount + " time" + (observationCount === 1 ? "" : "s") + ".";
+}
+async function upsertRoutineActionMemory({ simulationId, entityId, locationId, importance, strength, confidence, emotionalIntensity, simulationAt, metadata }) {
+  const actionType = normalizeText(metadata?.actionType);
+  if (!actionType || !simulationAt) return null;
+  const routineKey = actionType + ":" + routineLocationKey(locationId, metadata) + ":SUCCESS";
+  const [rows] = await pool.query("SELECT BIN_TO_UUID(id) AS id,version,created_simulation_at AS createdAt,strength,confidence,importance,metadata FROM memories WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND status='ACTIVE' AND JSON_UNQUOTE(JSON_EXTRACT(metadata,'$.kind'))='action_routine' AND JSON_UNQUOTE(JSON_EXTRACT(metadata,'$.routineKey'))=? ORDER BY created_simulation_at DESC LIMIT 1", [simulationId, entityId, routineKey]);
+  const existing = rows[0] || null;
+  const previousMetadata = normalizeJson(existing?.metadata) || {};
+  const observationCount = Math.max(1, Number(previousMetadata.routineObservationCount || 1) + (existing ? 1 : 0));
+  const firstObservedSimulationAt = previousMetadata.firstObservedSimulationAt || existing?.createdAt || simulationAt;
+  const nextMetadata = { ...metadata, kind: "action_routine", schemaVersion: Math.max(1, Number(metadata.schemaVersion || 1)), routineKey, routineObservationCount: observationCount, firstObservedSimulationAt, lastObservedSimulationAt: simulationAt, aggregated: true };
+  if (!existing) return { isNew: true, metadata: nextMetadata, content: routineMemoryContent(metadata.actionType, metadata.location, observationCount), type: "SEMANTIC", importance: Math.min(0.55, Math.max(0.28, Number(importance) * 0.65)), strength: Math.min(0.90, Math.max(0.55, Number(strength) * 0.65)), confidence: Math.min(0.90, Math.max(0.55, Number(confidence) * 0.72)), emotionalIntensity: Math.min(0.20, Math.max(0.08, Number(emotionalIntensity) * 0.60)) };
+  const nextStrength = Math.min(0.92, Math.max(Number(existing.strength || 0), 0.50 + Math.log1p(observationCount) * 0.07));
+  const nextConfidence = Math.min(0.94, Math.max(Number(existing.confidence || 0), 0.55 + Math.log1p(observationCount) * 0.06));
+  const nextImportance = Math.min(0.55, Math.max(Number(existing.importance || 0.28), 0.28));
+  await pool.query("UPDATE memories SET content=?,memory_type='SEMANTIC',importance=?,strength=?,confidence=?,emotional_intensity=?,location_id=UUID_TO_BIN(?),created_simulation_at=?,last_recalled_simulation_at=?,metadata=?,status='ACTIVE',forgotten_simulation_at=NULL,version=version+1 WHERE id=UUID_TO_BIN(?) AND version=?", [routineMemoryContent(metadata.actionType, metadata.location, observationCount), nextImportance, nextStrength, nextConfidence, Math.min(0.20, Math.max(0.08, Number(emotionalIntensity) || 0.08)), locationId || metadata?.location?.id || null, simulationAt, simulationAt, JSON.stringify(nextMetadata), existing.id, existing.version]);
+  return existing.id;
+}
+
 async function createMemory({ simulationId, entityId, eventId = null, activityId = null, locationId = null, type = "EPISODIC", content, importance = 0.5, strength = 1, confidence = 0.8, emotionalIntensity = 0.2, simulationAt, metadata = null }) {
   metadata = compactMemoryMetadata(metadata);
   const memoryKind = metadata?.kind || null;
+  if (memoryKind === "action_outcome" && !isSalientActionOutcome({ metadata, importance, emotionalIntensity })) {
+    const routine = await upsertRoutineActionMemory({ simulationId, entityId, locationId, importance, strength, confidence, emotionalIntensity, simulationAt, metadata });
+    if (routine && routine.isNew) {
+      metadata = routine.metadata; content = routine.content; type = routine.type; importance = routine.importance; strength = routine.strength; confidence = routine.confidence; emotionalIntensity = routine.emotionalIntensity;
+    } else if (routine) return routine;
+  }
   if (memoryKind === "resource_failure") {
     const resource = metadata?.resource?.resource || metadata?.resource || null, resourceName = resource ? String(resource).trim().toLowerCase() : null, memoryLocationId = locationId || metadata?.locationId || metadata?.location?.id || null;
     if (resourceName && memoryLocationId) {
@@ -198,4 +245,4 @@ async function recallContext(simulationId, entityId, limit = 8, context = {}) {
   return memories;
 }
 
-module.exports = { createMemory, decayMemories, listMemories, recallContext, buildMemoryContext, buildActionMemory, buildFailureMemory, memoryRelevance, deriveRecallContext, compactMemoryMetadata };
+module.exports = { createMemory, decayMemories, listMemories, recallContext, buildMemoryContext, buildActionMemory, buildFailureMemory, memoryRelevance, deriveRecallContext, compactMemoryMetadata, isSalientActionOutcome, routineLocationKey };
