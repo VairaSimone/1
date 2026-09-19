@@ -37,7 +37,7 @@ test("resolved conflict is reopened instead of duplicating its fingerprint",asyn
     assert.equal(result.reopened,1);
     assert.equal(db.calls.length,2);
     assert.match(db.calls[1].sql,/status=\x27ACTIVE\x27/);
-    assert.equal(db.calls[1].values[0].includes(""type":"NEED""),true);
+    assert.equal(db.calls[1].values[0].includes('"type":"NEED"'),true);
   }finally{db.restore();}
 });
 
