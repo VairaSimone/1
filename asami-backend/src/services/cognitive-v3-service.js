@@ -127,7 +127,7 @@ async function evolveSelfModel({ simulationId, entityId, simulationTime, actionT
   const selfConcept = successRate >= 0.72 ? 'I learn through experience and tend to become more capable when I keep practicing.' : successRate <= 0.35 ? 'I learn through experience, including noticing what I cannot reliably do yet.' : self.self_concept;
   const [updated] = await pool.query(`UPDATE self_models SET self_concept=?,current_self_view=?,capabilities=?,limitations=?,updated_simulation_at=?,version=version+1 WHERE id=UUID_TO_BIN(?) AND version=?`, [selfConcept,currentSelfView,JSON.stringify(capabilities),JSON.stringify(limitations),simulationTime,self.id,self.version]);
   if (!updated.affectedRows) throw Object.assign(new Error("Optimistic lock conflict on self model evolution"), { code: "OPTIMISTIC_LOCK" });
-  await pool.query(`INSERT INTO self_model_snapshots(id,simulation_id,entity_id,simulation_time,trigger_type,self_view,capabilities,limitations,metrics,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,?,?,?,?,1)`, [uuid(),simulationId,entityId,simulationTime,decisionId?'DECISION_OUTCOME':'EXPERIENCE',currentSelfView,JSON.stringify(capabilities),JSON.stringify(limitations),JSON.stringify({recentActions:known,successRate:Number(successRate.toFixed(3)),actionType:action,outcome:normalize(outcome)})]);
+  await pool.query(`INSERT INTO self_model_snapshots(id,simulation_id,entity_id,simulation_time,trigger_type,self_view,capabilities,limitations,metrics,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,?,?,1)`, [uuid(),simulationId,entityId,simulationTime,decisionId?'DECISION_OUTCOME':'EXPERIENCE',currentSelfView,JSON.stringify(capabilities),JSON.stringify(limitations),JSON.stringify({recentActions:known,successRate:Number(successRate.toFixed(3)),actionType:action,outcome:normalize(outcome)})]);
   return { updated: Boolean(updated.affectedRows), currentSelfView, successRate, capabilities, limitations };
 }
 
@@ -200,7 +200,7 @@ async function evolveSocialGroup({ simulationId, entityId, simulationTime }) {
 
 async function branchCounterfactuals({ simulationId, entityId, simulationTime, decisionId, actionType }) {
   if (!decisionId) return [];
-  const [needRows] = await pool.query(`SELECT nd.code,enc.value FROM entity_needs_current enc JOIN need_definitions nd ON nd.id=enc.need_id WHERE enc.simulation_id=UUID_TO_BIN(?) AND enc.entity_id=UUID_TO_BIN(?) AND nd.active=1`, [simulationId,entityId]);
+  const [needRows] = await pool.query(`SELECT nd.code,enc.value FROM entity_needs_current enc JOIN need_definitions nd ON nd.id=enc.need_id WHERE enc.entity_id=UUID_TO_BIN(?) AND nd.active=1`, [entityId]);
   const baseline = { needs:Object.fromEntries(needRows.map(row => [normalize(row.code),Number(row.value)])), at:simulationTime };
   const [rows] = await pool.query(`SELECT alternative_action AS alternativeAction,predicted_outcome AS predictedOutcome,predicted_utility AS predictedUtility,regret_score AS regretScore FROM counterfactuals WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND decision_id=UUID_TO_BIN(?) ORDER BY predicted_utility DESC LIMIT 6`, [simulationId,entityId,decisionId]);
   const [[expectation]] = await pool.query(`SELECT prediction AS predictedOutcome,expected_utility AS predictedUtility FROM cognitive_expectations WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND decision_id=UUID_TO_BIN(?) LIMIT 1`, [simulationId,entityId,decisionId]);
