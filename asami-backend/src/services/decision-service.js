@@ -360,22 +360,6 @@ function resolveCriticalResourceRecovery(context = {}) {
   );
 
   if (localAvailable) {
-    if (directCandidate?.recoveryBlocked) {
-      throw Object.assign(
-        new Error(
-          "Critical " + critical.code +
-          " cannot be satisfied because " + directAction +
-          " is blocked by an active recovery constraint"
-        ),
-        {
-          code: "CRITICAL_RESOURCE_RECOVERY_UNAVAILABLE",
-          needCode: critical.code,
-          resource,
-          requiredAction: directAction
-        }
-      );
-    }
-
     return {
       critical,
       mode: "DIRECT",
@@ -400,22 +384,6 @@ function resolveCriticalResourceRecovery(context = {}) {
     resourceContext.nearestResources?.[resource] ||
     resourceActionContext.nearestLocation ||
     null;
-
-  if (!walkingCandidate && walkingBlocked) {
-    throw Object.assign(
-      new Error(
-        "Critical " + critical.code +
-        " requires " + resource +
-        ", but WALKING is blocked by an active recovery constraint"
-      ),
-      {
-        code: "CRITICAL_RESOURCE_RECOVERY_UNAVAILABLE",
-        needCode: critical.code,
-        resource,
-        requiredAction: "WALKING"
-      }
-    );
-  }
 
   if (nearest?.locationId) {
     const candidate = walkingCandidate
@@ -470,7 +438,9 @@ function criticalProtectedActions(needs=[],resourceContext={}){
     const action=normalizeAction(resourceCritical.action);
     const localAvailable=Number(resourceContext.localResources?.[resource] ?? resourceContext.actions?.[action]?.localAvailable ?? 0)>=1;
     if(localAvailable)protectedActions.add(action);
-    else if(resourceContext.nearestResources?.[resource]?.locationId || resourceContext.actions?.[action]?.nearestLocation?.locationId)protectedActions.add("WALKING");
+    // THIRST/HUNGER use WALKING as the resource-recovery action when the
+    // resource is remote. Protect it even before route discovery succeeds.
+    else protectedActions.add("WALKING");
   }
   return [...protectedActions];
 }
