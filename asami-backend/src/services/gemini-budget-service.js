@@ -54,12 +54,24 @@ function rowKey(type, key) {
   return `${type}:${key}`;
 }
 
-function blockProvider(delayMs = 60_000) {
-  providerBlockedUntil = Math.max(providerBlockedUntil, Date.now() + Math.max(10_000, Number(delayMs) || 60_000));
+function blockProvider(delayMs = 60_000, reason = "PROVIDER_RATE_LIMIT") {
+  const safeDelay = Math.max(10_000, Number(delayMs) || 60_000);
+  const nextBlockedUntil = Date.now() + safeDelay;
+  if (nextBlockedUntil >= providerBlockedUntil) {
+    providerBlockedUntil = nextBlockedUntil;
+    providerBlockReason = reason;
+  }
 }
 
 function providerBlockRemainingMs() {
-  return Math.max(0, providerBlockedUntil - Date.now());
+  const remaining = Math.max(0, providerBlockedUntil - Date.now());
+  if (!remaining) providerBlockReason = null;
+  return remaining;
+}
+
+function providerBlockStatus() {
+  const remainingMs = providerBlockRemainingMs();
+  return { remainingMs, reason: remainingMs > 0 ? providerBlockReason : null };
 }
 
 async function getUsage() {
