@@ -1,4 +1,9 @@
 import { useState } from 'react'
+
+function localDateTimeValue(date: Date) {
+  const local = new Date(date.getTime() - date.getTimezoneOffset() * 60000)
+  return local.toISOString().slice(0, 16)
+}
 import { ArrowRight, Gauge, Sparkles } from 'lucide-react'
 import { PageTitle, Panel } from '../components/Ui'
 
@@ -8,7 +13,7 @@ export function NewSimulation({ onCreate, onCancel }: { onCreate: (payload: Reco
   const [description, setDescription] = useState('Persona simulata autonoma')
   const [firstName, setFirstName] = useState('Asami')
   const [lastName, setLastName] = useState('')
-  const [start, setStart] = useState(() => new Date().toISOString().slice(0, 16))
+  const [start, setStart] = useState(() => localDateTimeValue(new Date()))
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const submit = async () => {
