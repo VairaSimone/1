@@ -8,6 +8,15 @@ test("retention policy protects against aggressive windows", () => {
   assert.ok(policy.decisionContextDays >= 1);
   assert.ok(policy.decisionOptionsDays >= 2);
   assert.ok(policy.cognitiveArtifactDays >= 14);
+  assert.ok(policy.needHistoryDays >= 1);
+  assert.ok(policy.emotionHistoryDays >= 1);
+  assert.ok(policy.actionDays >= 1);
+  assert.ok(policy.eventDays >= 1);
+  assert.ok(policy.importantEventDays >= 7);
+  assert.ok(policy.memoryArchiveDays >= 7);
+  assert.ok(policy.memoryDeleteDays >= 1);
+  assert.ok(policy.memoryArchiveImportanceMax >= 0 && policy.memoryArchiveImportanceMax <= 1);
+  assert.ok(policy.eventImportanceKeepThreshold >= 0 && policy.eventImportanceKeepThreshold <= 1);
   assert.ok(policy.batchSize >= 50);
   assert.ok(policy.maxDeletesPerTable >= 100);
 });
@@ -19,4 +28,44 @@ test("only terminal decisions are eligible for retention", () => {
   assert.equal(retention.isTerminalDecisionStatus("CREATED"), false);
   assert.equal(retention.isTerminalDecisionStatus("EVALUATED"), false);
   assert.equal(retention.isTerminalDecisionStatus(""), false);
+});
+
+
+test("retention exposes separate action terminal-state protection", () => {
+  assert.equal(retention.isTerminalActionStatus("COMPLETED"), true);
+  assert.equal(retention.isTerminalActionStatus("CANCELLED"), true);
+  assert.equal(retention.isTerminalActionStatus("INTERRUPTED"), true);
+  assert.equal(retention.isTerminalActionStatus("FAILED"), true);
+  assert.equal(retention.isTerminalActionStatus("ACTIVE"), false);
+  assert.equal(retention.isTerminalActionStatus("CREATED"), false);
+});
+
+test("retention wires all high-growth tables and deletes events before actions", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const source = fs.readFileSync(
+    path.join(__dirname, "../src/services/safe-retention-service.js"),
+    "utf8"
+  );
+
+  for (const helper of [
+    "deleteOldNeedHistory",
+    "deleteOldEmotionHistory",
+    "deleteOldEvents",
+    "deleteOldActions",
+    "archiveStaleMemories",
+    "deleteOldMemories"
+  ]) {
+    assert.match(source, new RegExp("function " + helper + "\\b"));
+    assert.match(source, new RegExp(helper + "\\("));
+  }
+
+  assert.ok(
+    source.indexOf("const events = await deleteOldEvents") <
+    source.indexOf("const actions = await deleteOldActions")
+  );
+  assert.match(
+    source,
+    /JSON_UNQUOTE\(JSON_EXTRACT\(m\.metadata,'\$\.kind'\)\).*resource_failure/
+  );
 });
