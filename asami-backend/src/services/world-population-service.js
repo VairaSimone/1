@@ -56,10 +56,30 @@ async function seedLocations(simulationId,simulationTime){
   return getLocationRows(simulationId);
 }
 async function assignLocation(simulationId,entityId,locationId,simulationTime,reason="WORLD_SPAWN"){
-  const [existing]=await pool.query(`SELECT entity_id FROM entity_locations_current WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) LIMIT 1`,[simulationId,entityId]);
-  if(existing.length){ await pool.query(`UPDATE entity_locations_current SET location_id=UUID_TO_BIN(?),since_simulation_at=?,reason=?,version=version+1 WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?)`,[locationId,simulationTime,reason,simulationId,entityId]); return; }
-  await pool.query(`INSERT INTO entity_locations_current(entity_id,simulation_id,location_id,since_simulation_at,reason,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,1)`,[entityId,simulationId,locationId,simulationTime,reason]);
-  await pool.query(`INSERT INTO entity_location_history(id,simulation_id,entity_id,location_id,entered_simulation_at,reason,source_event_id) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,NULL)`,[uuid(),simulationId,entityId,locationId,simulationTime,reason]);
+  const conn=await pool.getConnection();
+  try{
+    await conn.beginTransaction();
+    const [existing]=await conn.query(`SELECT BIN_TO_UUID(location_id) AS locationId,version FROM entity_locations_current WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) LIMIT 1 FOR UPDATE`,[simulationId,entityId]);
+    if(existing.length&&String(existing[0].locationId)===String(locationId)){
+      await conn.commit();
+      return;
+    }
+    if(existing.length){
+      const previousLocationId=existing[0].locationId;
+      await conn.query(`UPDATE entity_location_history SET exited_simulation_at=? WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND location_id=UUID_TO_BIN(?) AND exited_simulation_at IS NULL AND entered_simulation_at<?`,[simulationTime,simulationId,entityId,previousLocationId,simulationTime]);
+      const [updated]=await conn.query(`UPDATE entity_locations_current SET location_id=UUID_TO_BIN(?),since_simulation_at=?,reason=?,version=version+1 WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND version=?`,[locationId,simulationTime,reason,simulationId,entityId,existing[0].version]);
+      if(!updated.affectedRows)throw Object.assign(new Error("Location assignment changed concurrently"),{code:"OPTIMISTIC_LOCK"});
+    }else{
+      await conn.query(`INSERT INTO entity_locations_current(entity_id,simulation_id,location_id,since_simulation_at,reason,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,1)`,[entityId,simulationId,locationId,simulationTime,reason]);
+    }
+    await conn.query(`INSERT INTO entity_location_history(id,simulation_id,entity_id,location_id,entered_simulation_at,reason,source_event_id) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,NULL)`,[uuid(),simulationId,entityId,locationId,simulationTime,reason]);
+    await conn.commit();
+  }catch(err){
+    try{await conn.rollback();}catch{}
+    throw err;
+  }finally{
+    conn.release();
+  }
 }
 async function findAsami(simulationId){ const [rows]=await pool.query(`SELECT BIN_TO_UUID(id) AS id FROM entities WHERE simulation_id=UUID_TO_BIN(?) AND entity_type_id=UUID_TO_BIN(?) AND LOWER(display_name)='asami' AND status<>'DEAD' LIMIT 1`,[simulationId,PERSON_ENTITY_TYPE_ID]); return rows[0]?.id||null; }
 async function createPerson(simulationId,simulationTime,profile,randomSpawn=false){
