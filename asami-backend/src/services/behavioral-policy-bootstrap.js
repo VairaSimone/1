@@ -500,6 +500,19 @@ async function loadHabitEvidence({ simulationId, entityId, simulationTime, actio
   };
 }
 
+function habitStrengthFromEvidence(evidence = {}) {
+  const rawStrength =
+    0.42 +
+    Math.min(0.10, Math.max(0, Number(evidence.observations || 0) - 12) * 0.008) +
+    Number(evidence.rewardRate || 0) * 0.10 +
+    Number(evidence.decisionDominance || 0) * 0.08 +
+    Math.max(Number(evidence.timeConcentration || 0), Number(evidence.contextConsistency || 0)) * 0.06;
+
+  // A matured habit must cross the same activation gate used by the
+  // HABITUAL driver; otherwise it is created and immediately ignored.
+  return clamp(Math.max(0.70, rawStrength), 0, 0.86);
+}
+
 async function recordMatureHabit({ simulationId, entityId, simulationTime, actionType, evidence, development }) {
   const action = normalize(actionType);
   const maturity = evidence.maturity;
@@ -526,15 +539,7 @@ async function recordMatureHabit({ simulationId, entityId, simulationTime, actio
     }
   };
   const actionDefinition = { actionType: action };
-  const rawStrength =
-    0.42 +
-    Math.min(0.10, Math.max(0, evidence.observations - 12) * 0.008) +
-    evidence.rewardRate * 0.10 +
-    evidence.decisionDominance * 0.08 +
-    Math.max(evidence.timeConcentration, evidence.contextConsistency) * 0.06;
-  // A matured habit must cross the same activation gate used by the
-  // HABITUAL driver; otherwise it is created and immediately ignored.
-  const computedStrength = clamp(Math.max(0.70, rawStrength), 0, 0.86);
+  const computedStrength = habitStrengthFromEvidence(evidence);
   const frequency = `${evidence.observations} repetitions across ${evidence.distinctDays} days with stable timing and context`;
 
   const [existing] = await pool.query(`
@@ -812,5 +817,6 @@ module.exports = {
   classifyBehavioralDriver,
   buildProactivity,
   circularHourStats,
-  habitMaturity
+  habitMaturity,
+  habitStrengthFromEvidence
 };
