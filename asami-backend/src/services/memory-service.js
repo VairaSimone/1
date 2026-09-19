@@ -84,6 +84,26 @@ function compactMemoryMetadata(metadata) {
   return compact;
 }
 
+
+function assertSimulationTime(value) {
+  if (value === null || value === undefined || value === "") {
+    throw Object.assign(
+      new Error("Simulation time is required for cognitive memory operations"),
+      { code: "SIMULATION_TIME_REQUIRED" }
+    );
+  }
+
+  const date = value instanceof Date ? value : new Date(value);
+  if (!Number.isFinite(date.getTime())) {
+    throw Object.assign(
+      new Error("Invalid simulation time for cognitive memory operation"),
+      { code: "INVALID_SIMULATION_TIME" }
+    );
+  }
+
+  return value;
+}
+
 function normalizeJson(value) {
   if (Buffer.isBuffer(value)) value = value.toString();
   if (typeof value !== "string") return value;
@@ -134,7 +154,7 @@ async function decayMemories(simulationId, simulationTime) {
 }
 
 function memoryRelevance(memory, context = {}) {
-  const metadata = normalizeJson(memory.metadata) || {}, now = new Date(context.simulationTime || context.now || Date.now()).getTime(), created = new Date(memory.simulationAt || memory.createdSimulationAt || 0).getTime();
+  const metadata = normalizeJson(memory.metadata) || {}, now = new Date(assertSimulationTime(context?.simulationTime)).getTime(), created = new Date(memory.simulationAt || memory.createdSimulationAt || 0).getTime();
   const ageHours = Number.isFinite(now) && Number.isFinite(created) && now >= created ? (now - created) / 3600000 : 0, halfLife = Math.max(1, Number(context.recencyHalfLifeHours || 36)), recency = Math.exp(-ageHours / halfLife);
   const strength = clamp01(memory.strength, 0), importance = clamp01(memory.importance, 0), confidence = clamp01(memory.confidence, 0), locationId = context.locationId || null, locationType = normalizeText(context.locationType);
   const actionTypes = Array.isArray(context.candidateActionTypes) ? context.candidateActionTypes.map(normalizeText) : context.actionType ? [normalizeText(context.actionType)] : [];
@@ -146,6 +166,7 @@ function memoryRelevance(memory, context = {}) {
 
 async function deriveRecallContext(simulationId, entityId, baseContext = {}) {
   const context = { ...(baseContext || {}) };
+  context.simulationTime = assertSimulationTime(context.simulationTime);
   if (context.simulationTime && context.goalIds && context.locationId && context.candidateActionTypes) return context;
   const [[goalRows], [locationRows], [actionRows]] = await Promise.all([
     pool.query(`SELECT BIN_TO_UUID(id) AS id FROM goals WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND status IN ('DRAFT','ACTIVE','PAUSED') ORDER BY priority DESC LIMIT 8`, [simulationId, entityId]),
@@ -156,7 +177,6 @@ async function deriveRecallContext(simulationId, entityId, baseContext = {}) {
   if (!context.locationId) context.locationId = locationRows[0]?.locationId || null;
   if (!context.locationType) context.locationType = locationRows[0]?.locationType || null;
   if (!context.candidateActionTypes) context.candidateActionTypes = actionRows.map(row => row.actionType).filter(Boolean);
-  if (!context.simulationTime) context.simulationTime = new Date();
   return context;
 }
 
@@ -170,6 +190,7 @@ async function listMemories(simulationId, entityId, limit = 100, { includeForgot
 }
 
 async function recallContext(simulationId, entityId, limit = 8, context = {}) {
+  assertSimulationTime(context?.simulationTime);
   const effectiveContext = await deriveRecallContext(simulationId, entityId, context);
   const memories = await listMemories(simulationId, entityId, limit, { includeForgotten: false, context: effectiveContext });
   const recallAt = effectiveContext?.simulationTime || null;
