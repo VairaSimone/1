@@ -97,3 +97,22 @@ test('conversation failures are recorded on the communication attempt',()=>{
   assert.match(source,/UPDATE communication_intents[\s\S]*status='FAILED'/);
   assert.match(source,/status IN \('STARTED','DELIVERED'\)/);
 });
+
+test('movement completion closes all open history rows before recording arrival',()=>{
+  const source=read('services/action-service.js');
+  const start=source.indexOf('async function completeMovement');
+  const end=source.indexOf('async function startAction',start);
+  const section=source.slice(start,end);
+  assert.match(section,/UPDATE entity_location_history SET exited_simulation_at=\? WHERE entity_id=UUID_TO_BIN\(\?\) AND exited_simulation_at IS NULL/);
+});
+
+test('action completion does not create an event before core action commit',()=>{
+  const source=read('services/action-service.js');
+  const start=source.indexOf('async function completeAction');
+  const end=source.indexOf('async function executeAction',start);
+  const section=source.slice(start,end);
+  const transactionIndex=section.indexOf('await withTransaction');
+  const eventIndex=section.indexOf('eventId=await ensureEventId');
+  assert.ok(transactionIndex>=0);
+  assert.ok(eventIndex>transactionIndex);
+});
