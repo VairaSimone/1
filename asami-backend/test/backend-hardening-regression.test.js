@@ -80,7 +80,7 @@ test('movement creation binds every simulation-scoped placeholder',()=>{
   assert.match(section,/WHERE simulation_id=UUID_TO_BIN\(\?\) AND entity_id=UUID_TO_BIN\(\?\)/);
   assert.match(section,/\[simulationId,entityId\]/);
   assert.match(section,/INSERT INTO movements\(id,simulation_id,entity_id,/);
-  assert.match(section,/\[movementId,simulationId,entityId,origin,destination,simulationTime,expectedArrival\]/);
+  assert.match(section,/\[movementId,simulationId,entityId,origin,destination,startedSimulationAt,expectedArrival\]/);
 });
 
 test('failed action starts clean up persisted partial state',()=>{
@@ -163,4 +163,42 @@ test('raw mysql connections normalize simulation timestamps like pool.query',()=
   const source=read('db/pool.js');
   assert.match(source,/originalGetConnection = pool\.getConnection\.bind\(pool\)/);
   assert.match(source,/conn\.query = \(sql, values\) => originalConnectionQuery\(sql, normalizeMysqlValues\(values\)\)/);
+});
+
+test('entity need persistence is serialized and current plus history share one transaction',()=>{
+  const source=read('services/state-service.js');
+  assert.match(source,/async function withEntityStateLock\(entityId, fn\)/);
+  assert.match(source,/GET_LOCK\(\?,\?\)/);
+  assert.match(source,/await conn\.beginTransaction\(\)/);
+  assert.match(source,/await conn\.commit\(\)/);
+  assert.match(source,/SELECT RELEASE_LOCK/);
+  assert.match(source,/async function persistNeedTransition\([\s\S]*db = pool/);
+  const updateStart=source.indexOf('async function updateNeeds(');
+  const updateEnd=source.indexOf('\nfunction traitValue',updateStart);
+  const section=source.slice(updateStart,updateEnd);
+  assert.match(section,/return withEntityStateLock\(entityId, async db =>/);
+  assert.match(section,/readNeeds\(entityId,db\)/);
+  assert.match(section,/persistNeedTransition\([\s\S]*db/);
+});
+
+test('conversation need and entity writes use the same entity state serialization',()=>{
+  const source=read('services/conversation-cognition-service.js');
+  assert.match(source,/withEntityStateLock, persistNeedTransition/);
+  const needStart=source.indexOf('async function applyNeedDeltas(');
+  const needEnd=source.indexOf('\nasync function applyEmotionDeltas',needStart);
+  const needSection=source.slice(needStart,needEnd);
+  assert.match(needSection,/return withEntityStateLock\(entityId, async db =>/);
+  assert.match(needSection,/persistNeedTransition\(/);
+  assert.match(needSection,/db/);
+  const styleStart=source.indexOf('async function updateCommunicationStyle(');
+  const styleEnd=source.indexOf('\nasync function createGoalFromProposal',styleStart);
+  assert.match(source.slice(styleStart,styleEnd),/return withEntityStateLock\(entityId, async db =>/);
+});
+
+test('mental state writes do not race need-history foreign-key writes on the entity row',()=>{
+  const source=read('services/personality-service.js');
+  assert.match(source,/withEntityStateLock/);
+  const start=source.indexOf('async function updateMentalState(');
+  const end=source.indexOf('\nasync function upsertPreference',start);
+  assert.match(source.slice(start,end),/return withEntityStateLock\(entityId, async db =>/);
 });
