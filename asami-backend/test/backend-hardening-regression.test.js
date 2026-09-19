@@ -52,3 +52,9 @@ test('behavior feedback deduplication is bounded instead of an ever-growing Set'
   assert.match(source, /FEEDBACK_KEY_TTL_MS/);
   assert.match(source, /pruneFeedbackClaims/);
 });
+
+test('simulation snapshots use timestamps that exist on the canonical goals schema', () => {
+  const source = read('repositories/simulation-repo.js');
+  assert.match(source, /created_simulation_at AS createdSimulationAt,COALESCE\(g\.completed_simulation_at,g\.created_simulation_at\) AS updatedSimulationAt/);
+  assert.doesNotMatch(source, /g\.updated_simulation_at/);
+});
