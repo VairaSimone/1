@@ -66,7 +66,7 @@ async function assignLocation(simulationId,entityId,locationId,simulationTime,re
     }
     if(existing.length){
       const previousLocationId=existing[0].locationId;
-      await conn.query(`UPDATE entity_location_history SET exited_simulation_at=? WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND location_id=UUID_TO_BIN(?) AND exited_simulation_at IS NULL AND entered_simulation_at<?`,[simulationTime,simulationId,entityId,previousLocationId,simulationTime]);
+      await conn.query(`UPDATE entity_location_history SET exited_simulation_at=? WHERE entity_id=UUID_TO_BIN(?) AND location_id=UUID_TO_BIN(?) AND exited_simulation_at IS NULL AND entered_simulation_at<?`,[simulationTime,entityId,previousLocationId,simulationTime]);
       const [updated]=await conn.query(`UPDATE entity_locations_current SET location_id=UUID_TO_BIN(?),since_simulation_at=?,reason=?,version=version+1 WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND version=?`,[locationId,simulationTime,reason,simulationId,entityId,existing[0].version]);
       if(!updated.affectedRows)throw Object.assign(new Error("Location assignment changed concurrently"),{code:"OPTIMISTIC_LOCK"});
     }else{
