@@ -26,19 +26,19 @@ async function upsertInteractionRelationship({simulationId,sourceEntityId,target
   const [[type]] = await Promise.all([pool.query("SELECT BIN_TO_UUID(id) AS id,symmetric FROM relationship_types WHERE code=? AND active=1 LIMIT 1",[typeCode]).then(([r])=>[r[0]||null])]);
   if(!type) return null;
   let [rows]=await pool.query(`
-    SELECT BIN_TO_UUID(id) AS id,version,trust_score,affection_score,respect_score,familiarity_score,
-           attraction_score,conflict_score,fear_score,admiration_score,jealousy_score,dependence_score,
-           closeness_score,irritation_score
-    FROM relationships
-    WHERE simulation_id=UUID_TO_BIN(?) AND source_entity_id=UUID_TO_BIN(?)
-      AND target_entity_id=UUID_TO_BIN(?) AND relationship_type_id=UUID_TO_BIN(?) AND status='ACTIVE'
+    SELECT BIN_TO_UUID(r.id) AS id,r.version,r.trust_score,r.affection_score,r.respect_score,r.familiarity_score,
+           r.attraction_score,r.conflict_score,r.fear_score,r.admiration_score,r.jealousy_score,r.dependence_score,
+           r.closeness_score,r.irritation_score
+    FROM relationships r
+    WHERE r.simulation_id=UUID_TO_BIN(?) AND r.source_entity_id=UUID_TO_BIN(?)
+      AND r.target_entity_id=UUID_TO_BIN(?) AND r.relationship_type_id=UUID_TO_BIN(?) AND r.status='ACTIVE'
     LIMIT 1
   `,[simulationId,sourceEntityId,targetEntityId,type.id]);
   if(!rows.length && Number(type.symmetric)){
     [rows]=await pool.query(`
-      SELECT BIN_TO_UUID(id) AS id,version,trust_score,affection_score,respect_score,familiarity_score,
-             attraction_score,conflict_score,fear_score,admiration_score,jealousy_score,dependence_score,
-             closeness_score,irritation_score
+      SELECT BIN_TO_UUID(r.id) AS id,r.version,r.trust_score,r.affection_score,r.respect_score,r.familiarity_score,
+             r.attraction_score,r.conflict_score,r.fear_score,r.admiration_score,r.jealousy_score,r.dependence_score,
+             r.closeness_score,r.irritation_score
       FROM relationships r
       JOIN relationship_types rt ON rt.id=r.relationship_type_id
       WHERE r.simulation_id=UUID_TO_BIN(?)
