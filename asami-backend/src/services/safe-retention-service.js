@@ -2,6 +2,7 @@ const { pool, normalizeSimulationTimestamp } = require("../db/pool");
 const logger = require("../lib/logger");
 
 const TERMINAL_DECISION_STATUSES = new Set(["EXECUTED", "FAILED", "CANCELLED"]);
+const TERMINAL_ACTION_STATUSES = new Set(["COMPLETED", "CANCELLED", "INTERRUPTED", "FAILED"]);
 const lastRunAt = new Map();
 const running = new Set();
 
@@ -10,12 +11,26 @@ function positiveInt(value, fallback, minimum) {
   return Number.isFinite(n) ? Math.max(minimum, Math.floor(n)) : fallback;
 }
 
+function boundedNumber(value, fallback, minimum, maximum) {
+  const n = Number(value);
+  return Number.isFinite(n) ? Math.min(maximum, Math.max(minimum, n)) : fallback;
+}
+
 const POLICY = Object.freeze({
   enabled: !["0", "false", "no", "off"].includes(String(process.env.RETENTION_ENABLED || "true").trim().toLowerCase()),
   intervalMs: positiveInt(process.env.RETENTION_CHECK_INTERVAL_MS, 15 * 60 * 1000, 60 * 1000),
   decisionContextDays: positiveInt(process.env.RETENTION_DECISION_CONTEXT_DAYS, 2, 1),
   decisionOptionsDays: positiveInt(process.env.RETENTION_DECISION_OPTIONS_DAYS, 3, 2),
   cognitiveArtifactDays: positiveInt(process.env.RETENTION_COGNITIVE_ARTIFACT_DAYS, 30, 14),
+  needHistoryDays: positiveInt(process.env.RETENTION_NEED_HISTORY_DAYS, 7, 1),
+  emotionHistoryDays: positiveInt(process.env.RETENTION_EMOTION_HISTORY_DAYS, 7, 1),
+  actionDays: positiveInt(process.env.RETENTION_ACTION_DAYS, 7, 1),
+  eventDays: positiveInt(process.env.RETENTION_EVENT_DAYS, 7, 1),
+  importantEventDays: positiveInt(process.env.RETENTION_IMPORTANT_EVENT_DAYS, 30, 7),
+  memoryArchiveDays: positiveInt(process.env.RETENTION_MEMORY_ARCHIVE_DAYS, 30, 7),
+  memoryDeleteDays: positiveInt(process.env.RETENTION_MEMORY_DELETE_DAYS, 7, 1),
+  memoryArchiveImportanceMax: boundedNumber(process.env.RETENTION_MEMORY_ARCHIVE_IMPORTANCE_MAX, 0.75, 0, 1),
+  eventImportanceKeepThreshold: boundedNumber(process.env.RETENTION_EVENT_IMPORTANCE_KEEP_THRESHOLD, 0.8, 0, 1),
   batchSize: Math.min(2000, positiveInt(process.env.RETENTION_BATCH_SIZE, 500, 50)),
   maxDeletesPerTable: Math.min(10000, positiveInt(process.env.RETENTION_MAX_DELETES_PER_TABLE, 2000, 100)),
   dryRun: ["1", "true", "yes", "on"].includes(String(process.env.RETENTION_DRY_RUN || "false").trim().toLowerCase())
@@ -23,6 +38,10 @@ const POLICY = Object.freeze({
 
 function isTerminalDecisionStatus(status) {
   return TERMINAL_DECISION_STATUSES.has(String(status || "").trim().toUpperCase());
+}
+
+function isTerminalActionStatus(status) {
+  return TERMINAL_ACTION_STATUSES.has(String(status || "").trim().toUpperCase());
 }
 
 function cutoffDateTime(simulationTime, days) {
@@ -58,6 +77,195 @@ async function releaseLock(lock) {
     await lock.conn.query("SELECT RELEASE_LOCK(?)", [lock.lockName]);
   } catch {}
   lock.conn.release();
+}
+
+async function deleteSelectedRows(conn, {
+  selectSql,
+  selectParams,
+  countSql,
+  countParams = selectParams,
+  deleteTable,
+  resultKey
+}) {
+  if (POLICY.dryRun) {
+    const [rows] = await conn.query(countSql, countParams);
+    return { [resultKey]: 0, candidates: Number(rows[0]?.candidates || 0), dryRun: true };
+  }
+
+  let deleted = 0;
+  while (deleted < POLICY.maxDeletesPerTable) {
+    const [rows] = await conn.query(selectSql, selectParams);
+    if (!rows.length) break;
+    const ids = rows.map(row => row.id).filter(Boolean);
+    if (!ids.length) break;
+    const placeholders = ids.map(() => "UUID_TO_BIN(?)").join(",");
+    const [result] = await conn.query(
+      "DELETE FROM " + deleteTable + " WHERE id IN (" + placeholders + ")",
+      ids
+    );
+    const affected = Number(result.affectedRows || 0);
+    deleted += affected;
+    if (affected < rows.length) break;
+  }
+  return { [resultKey]: deleted };
+}
+
+async function deleteOldNeedHistory(conn, simulationId, simulationTime) {
+  const cutoff = cutoffDateTime(simulationTime, POLICY.needHistoryDays);
+  const selectSql =
+    "SELECT BIN_TO_UUID(h.id) AS id FROM entity_need_history h " +
+    "JOIN entities e ON e.id=h.entity_id " +
+    "WHERE e.simulation_id=UUID_TO_BIN(?) AND h.simulation_time < ? " +
+    "ORDER BY h.simulation_time ASC LIMIT " + POLICY.batchSize;
+  const countSql =
+    "SELECT COUNT(*) AS candidates FROM entity_need_history h " +
+    "JOIN entities e ON e.id=h.entity_id " +
+    "WHERE e.simulation_id=UUID_TO_BIN(?) AND h.simulation_time < ?";
+  return deleteSelectedRows(conn, {
+    selectSql,
+    selectParams: [simulationId, cutoff],
+    countSql,
+    deleteTable: "entity_need_history",
+    resultKey: "deleted"
+  });
+}
+
+async function deleteOldEmotionHistory(conn, simulationId, simulationTime) {
+  const cutoff = cutoffDateTime(simulationTime, POLICY.emotionHistoryDays);
+  const selectSql =
+    "SELECT BIN_TO_UUID(h.id) AS id FROM entity_emotion_history h " +
+    "JOIN entities e ON e.id=h.entity_id " +
+    "WHERE e.simulation_id=UUID_TO_BIN(?) AND h.simulation_time < ? " +
+    "ORDER BY h.simulation_time ASC LIMIT " + POLICY.batchSize;
+  const countSql =
+    "SELECT COUNT(*) AS candidates FROM entity_emotion_history h " +
+    "JOIN entities e ON e.id=h.entity_id " +
+    "WHERE e.simulation_id=UUID_TO_BIN(?) AND h.simulation_time < ?";
+  return deleteSelectedRows(conn, {
+    selectSql,
+    selectParams: [simulationId, cutoff],
+    countSql,
+    deleteTable: "entity_emotion_history",
+    resultKey: "deleted"
+  });
+}
+
+async function deleteOldEvents(conn, simulationId, simulationTime) {
+  const cutoff = cutoffDateTime(simulationTime, POLICY.eventDays);
+  const importantCutoff = cutoffDateTime(simulationTime, POLICY.importantEventDays);
+  const importanceThreshold = POLICY.eventImportanceKeepThreshold;
+  const selectSql =
+    "SELECT BIN_TO_UUID(e.id) AS id FROM events e " +
+    "WHERE e.simulation_id=UUID_TO_BIN(?) " +
+    "AND ((e.importance < ? AND e.simulation_at < ?) OR e.simulation_at < ?) " +
+    "ORDER BY e.simulation_at ASC LIMIT " + POLICY.batchSize;
+  const countSql =
+    "SELECT COUNT(*) AS candidates FROM events e " +
+    "WHERE e.simulation_id=UUID_TO_BIN(?) " +
+    "AND ((e.importance < ? AND e.simulation_at < ?) OR e.simulation_at < ?)";
+  return deleteSelectedRows(conn, {
+    selectSql,
+    selectParams: [simulationId, importanceThreshold, cutoff, importantCutoff],
+    countSql,
+    countParams: [simulationId, importanceThreshold, cutoff, importantCutoff],
+    deleteTable: "events",
+    resultKey: "deleted"
+  });
+}
+
+async function deleteOldActions(conn, simulationId, simulationTime) {
+  const cutoff = cutoffDateTime(simulationTime, POLICY.actionDays);
+  const selectSql =
+    "SELECT BIN_TO_UUID(a.id) AS id FROM actions a " +
+    "WHERE a.simulation_id=UUID_TO_BIN(?) " +
+    "AND a.status IN ('COMPLETED','CANCELLED','INTERRUPTED','FAILED') " +
+    "AND a.completed_simulation_at IS NOT NULL " +
+    "AND a.completed_simulation_at < ? " +
+    "AND NOT EXISTS (SELECT 1 FROM event_effects ee WHERE ee.target_action_id=a.id) " +
+    "ORDER BY a.completed_simulation_at ASC LIMIT " + POLICY.batchSize;
+  const countSql =
+    "SELECT COUNT(*) AS candidates FROM actions a " +
+    "WHERE a.simulation_id=UUID_TO_BIN(?) " +
+    "AND a.status IN ('COMPLETED','CANCELLED','INTERRUPTED','FAILED') " +
+    "AND a.completed_simulation_at IS NOT NULL " +
+    "AND a.completed_simulation_at < ? " +
+    "AND NOT EXISTS (SELECT 1 FROM event_effects ee WHERE ee.target_action_id=a.id)";
+  return deleteSelectedRows(conn, {
+    selectSql,
+    selectParams: [simulationId, cutoff],
+    countSql,
+    deleteTable: "actions",
+    resultKey: "deleted"
+  });
+}
+
+async function archiveStaleMemories(conn, simulationId, simulationTime) {
+  const cutoff = cutoffDateTime(simulationTime, POLICY.memoryArchiveDays);
+  const importanceMax = POLICY.memoryArchiveImportanceMax;
+  const selectSql =
+    "SELECT BIN_TO_UUID(m.id) AS id FROM memories m " +
+    "WHERE m.simulation_id=UUID_TO_BIN(?) " +
+    "AND m.memory_type='EPISODIC' " +
+    "AND m.status IN ('ACTIVE','FADING') " +
+    "AND m.created_simulation_at < ? " +
+    "AND m.importance < ? " +
+    "AND (m.last_recalled_simulation_at IS NULL OR m.last_recalled_simulation_at < ?) " +
+    "AND COALESCE(JSON_UNQUOTE(JSON_EXTRACT(m.metadata,'$.kind')),'') <> 'resource_failure' " +
+    "ORDER BY m.created_simulation_at ASC LIMIT " + POLICY.batchSize;
+  const countSql =
+    "SELECT COUNT(*) AS candidates FROM memories m " +
+    "WHERE m.simulation_id=UUID_TO_BIN(?) " +
+    "AND m.memory_type='EPISODIC' " +
+    "AND m.status IN ('ACTIVE','FADING') " +
+    "AND m.created_simulation_at < ? " +
+    "AND m.importance < ? " +
+    "AND (m.last_recalled_simulation_at IS NULL OR m.last_recalled_simulation_at < ?) " +
+    "AND COALESCE(JSON_UNQUOTE(JSON_EXTRACT(m.metadata,'$.kind')),'') <> 'resource_failure'";
+  if (POLICY.dryRun) {
+    const [rows] = await conn.query(countSql, [simulationId, cutoff, importanceMax, cutoff]);
+    return { candidates: Number(rows[0]?.candidates || 0), archived: 0, dryRun: true };
+  }
+  let archived = 0;
+  while (archived < POLICY.maxDeletesPerTable) {
+    const [rows] = await conn.query(selectSql, [simulationId, cutoff, importanceMax, cutoff]);
+    if (!rows.length) break;
+    const ids = rows.map(row => row.id).filter(Boolean);
+    if (!ids.length) break;
+    const placeholders = ids.map(() => "UUID_TO_BIN(?)").join(",");
+    const [result] = await conn.query(
+      "UPDATE memories SET status='ARCHIVED',forgotten_simulation_at=?,version=version+1 WHERE id IN (" +
+      placeholders + ") AND status IN ('ACTIVE','FADING')",
+      [simulationTime, ...ids]
+    );
+    const affected = Number(result.affectedRows || 0);
+    archived += affected;
+    if (affected < rows.length) break;
+  }
+  return { archived };
+}
+
+async function deleteOldMemories(conn, simulationId, simulationTime) {
+  const cutoff = cutoffDateTime(simulationTime, POLICY.memoryDeleteDays);
+  const selectSql =
+    "SELECT BIN_TO_UUID(m.id) AS id FROM memories m " +
+    "WHERE m.simulation_id=UUID_TO_BIN(?) " +
+    "AND m.status IN ('ARCHIVED','FORGOTTEN') " +
+    "AND COALESCE(m.forgotten_simulation_at,m.created_simulation_at) < ? " +
+    "AND NOT EXISTS (SELECT 1 FROM event_effects ee WHERE ee.target_memory_id=m.id) " +
+    "ORDER BY COALESCE(m.forgotten_simulation_at,m.created_simulation_at) ASC LIMIT " + POLICY.batchSize;
+  const countSql =
+    "SELECT COUNT(*) AS candidates FROM memories m " +
+    "WHERE m.simulation_id=UUID_TO_BIN(?) " +
+    "AND m.status IN ('ARCHIVED','FORGOTTEN') " +
+    "AND COALESCE(m.forgotten_simulation_at,m.created_simulation_at) < ? " +
+    "AND NOT EXISTS (SELECT 1 FROM event_effects ee WHERE ee.target_memory_id=m.id)";
+  return deleteSelectedRows(conn, {
+    selectSql,
+    selectParams: [simulationId, cutoff],
+    countSql,
+    deleteTable: "memories",
+    resultKey: "deleted"
+  });
 }
 
 async function compactOldDecisionContexts(conn, simulationId, simulationTime) {
@@ -250,6 +458,14 @@ async function runSafeRetention(simulationId, simulationTime) {
   try {
     const context = await compactOldDecisionContexts(lock.conn, simulationId, mysqlSimulationTime);
     const options = await deleteUnselectedDecisionOptions(lock.conn, simulationId, mysqlSimulationTime);
+    // Events must be removed before actions because event_effects.target_action_id
+    // deliberately uses ON DELETE RESTRICT.
+    const events = await deleteOldEvents(lock.conn, simulationId, mysqlSimulationTime);
+    const actions = await deleteOldActions(lock.conn, simulationId, mysqlSimulationTime);
+    const needs = await deleteOldNeedHistory(lock.conn, simulationId, mysqlSimulationTime);
+    const emotions = await deleteOldEmotionHistory(lock.conn, simulationId, mysqlSimulationTime);
+    const memoryArchive = await archiveStaleMemories(lock.conn, simulationId, mysqlSimulationTime);
+    const memories = await deleteOldMemories(lock.conn, simulationId, mysqlSimulationTime);
     const expectations = await deleteResolvedExpectations(lock.conn, simulationId, mysqlSimulationTime);
     const counterfactuals = await deleteResolvedCounterfactuals(lock.conn, simulationId, mysqlSimulationTime);
     const worlds = await deleteResolvedCounterfactualWorlds(lock.conn, simulationId, mysqlSimulationTime);
@@ -259,16 +475,41 @@ async function runSafeRetention(simulationId, simulationTime) {
       dryRun: POLICY.dryRun,
       decisionContextsCompacted: Number(context.updated || 0),
       decisionOptionsDeleted: Number(options.deleted || 0),
+      eventsDeleted: Number(events.deleted || 0),
+      actionsDeleted: Number(actions.deleted || 0),
+      needHistoryDeleted: Number(needs.deleted || 0),
+      emotionHistoryDeleted: Number(emotions.deleted || 0),
+      memoriesArchived: Number(memoryArchive.archived || 0),
+      memoriesDeleted: Number(memories.deleted || 0),
       expectationsDeleted: Number(expectations.deleted || 0),
       counterfactualsDeleted: Number(counterfactuals.deleted || 0),
       counterfactualWorldsDeleted: Number(worlds.deleted || 0),
       decisionContextCandidates: Number(context.candidates || 0),
       decisionOptionCandidates: Number(options.candidates || 0),
+      eventCandidates: Number(events.candidates || 0),
+      actionCandidates: Number(actions.candidates || 0),
+      needHistoryCandidates: Number(needs.candidates || 0),
+      emotionHistoryCandidates: Number(emotions.candidates || 0),
+      memoryArchiveCandidates: Number(memoryArchive.candidates || 0),
+      memoryDeleteCandidates: Number(memories.candidates || 0),
       expectationCandidates: Number(expectations.candidates || 0),
       counterfactualCandidates: Number(counterfactuals.candidates || 0),
       counterfactualWorldCandidates: Number(worlds.candidates || 0)
     };
-    if (summary.decisionContextsCompacted || summary.decisionOptionsDeleted || summary.expectationsDeleted || summary.counterfactualsDeleted || summary.counterfactualWorldsDeleted || POLICY.dryRun) {
+    if (
+      summary.decisionContextsCompacted ||
+      summary.decisionOptionsDeleted ||
+      summary.eventsDeleted ||
+      summary.actionsDeleted ||
+      summary.needHistoryDeleted ||
+      summary.emotionHistoryDeleted ||
+      summary.memoriesArchived ||
+      summary.memoriesDeleted ||
+      summary.expectationsDeleted ||
+      summary.counterfactualsDeleted ||
+      summary.counterfactualWorldsDeleted ||
+      POLICY.dryRun
+    ) {
       logger.info(summary, "safe retention cycle completed");
     }
     return summary;
@@ -296,12 +537,17 @@ async function maybeRunSafeRetention(simulationId, simulationTime) {
 }
 
 function getRetentionPolicy() {
-  return { ...POLICY, terminalDecisionStatuses: [...TERMINAL_DECISION_STATUSES] };
+  return {
+    ...POLICY,
+    terminalDecisionStatuses: [...TERMINAL_DECISION_STATUSES],
+    terminalActionStatuses: [...TERMINAL_ACTION_STATUSES]
+  };
 }
 
 module.exports = {
   getRetentionPolicy,
   isTerminalDecisionStatus,
+  isTerminalActionStatus,
   runSafeRetention,
   maybeRunSafeRetention
 };
