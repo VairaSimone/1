@@ -72,7 +72,7 @@ async function assignLocation(simulationId,entityId,locationId,simulationTime,re
     }else{
       await conn.query(`INSERT INTO entity_locations_current(entity_id,simulation_id,location_id,since_simulation_at,reason,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,1)`,[entityId,simulationId,locationId,simulationTime,reason]);
     }
-    await conn.query(`INSERT INTO entity_location_history(id,simulation_id,entity_id,location_id,entered_simulation_at,reason,source_event_id) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,NULL)`,[uuid(),simulationId,entityId,locationId,simulationTime,reason]);
+    await conn.query(`INSERT INTO entity_location_history(id,entity_id,location_id,entered_simulation_at,reason,source_event_id) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,NULL)`,[uuid(),entityId,locationId,simulationTime,reason]);
     await conn.commit();
   }catch(err){
     try{await conn.rollback();}catch{}
