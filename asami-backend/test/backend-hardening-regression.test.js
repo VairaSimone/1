@@ -226,3 +226,16 @@ test('world event processing shares the event write lock',()=>{
   const start=source.indexOf('async function processWorldEffects');
   assert.match(source.slice(start),/return withEventWriteLock\(simulationId/);
 });
+test('event write lock helper is exported for retention and world writers',()=>{
+  const source=read('services/event-service.js');
+  assert.match(source,/module\.exports=\{[^}]*withEventWriteLock/);
+});
+
+test('symmetric relationship lookup qualifies id after joining relationship types',()=>{
+  const source=read('services/relationship-service.js');
+  const start=source.indexOf('if(!rows.length && Number(type.symmetric))');
+  const end=source.indexOf('\n  if(!rows.length){',start);
+  const section=source.slice(start,end);
+  assert.match(section,/SELECT BIN_TO_UUID\(r\.id\) AS id,r\.version/);
+  assert.doesNotMatch(section,/SELECT BIN_TO_UUID\(id\) AS id,version/);
+});
