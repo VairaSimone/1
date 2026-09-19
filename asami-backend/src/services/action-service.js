@@ -54,7 +54,7 @@ async function startMovement({simulationId,entityId,origin,destination,simulatio
     const [locationRows]=await conn.query(
       `SELECT location_id FROM entity_locations_current
        WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) LIMIT 1 FOR UPDATE`,
-      [entityId]
+      [simulationId,entityId]
     );
     if(!locationRows.length){
       await conn.rollback();
@@ -62,7 +62,8 @@ async function startMovement({simulationId,entityId,origin,destination,simulatio
     }
     const [existing]=await conn.query(
       `SELECT id FROM movements
-       WHERE entity_id=UUID_TO_BIN(?) AND status IN ('PLANNED','ACTIVE')
+       WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?)
+         AND status IN ('PLANNED','ACTIVE')
        LIMIT 1 FOR UPDATE`,
       [simulationId,entityId]
     );
@@ -76,9 +77,9 @@ async function startMovement({simulationId,entityId,origin,destination,simulatio
       expectedArrival=new Date(new Date(simulationTime).getTime()+durationMinutes*60000),
       movementId=uuid();
     await conn.query(
-      `INSERT INTO movements(id,entity_id,origin_location_id,destination_location_id,started_simulation_at,expected_arrival_simulation_at,status,reason,source_activity_id,version)
-       VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,'ACTIVE','autonomous route',NULL,1)`,
-      [movementId,entityId,origin,destination,simulationTime,expectedArrival]
+      `INSERT INTO movements(id,simulation_id,entity_id,origin_location_id,destination_location_id,started_simulation_at,expected_arrival_simulation_at,status,reason,source_activity_id,version)
+       VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,'ACTIVE','autonomous route',NULL,1)`,
+      [movementId,simulationId,entityId,origin,destination,simulationTime,expectedArrival]
     );
     await conn.commit();
     return{movementId,durationMinutes,expectedArrival,distanceMeters:safeDistance,speedKmh:safeSpeed};
