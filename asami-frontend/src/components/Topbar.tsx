@@ -29,7 +29,7 @@ export function Topbar({ simulation, clockSpeed, wsConnected, refreshing, onPaus
       </div>
       <div className="topbar-actions">
         <div className="speed-control"><Gauge size={14} /><span>×</span><select value={String(clockSpeed)} onChange={(e) => onSpeed(Number(e.target.value))} disabled={!simulation} aria-label="Velocità della simulazione">
-          {[0.25, 0.5, 1, 2, 5, 10, 30, 60, 120].map((v) => <option key={v} value={v}>{v}</option>)}
+          {[0.25, 0.5, 1, 2, 5, 10, 30, 60, 120, 300].map((v) => <option key={v} value={v}>{v}</option>)}
         </select><span className="speed-label">velocità</span></div>
         {running ? <button className="icon-button" title="Metti in pausa" onClick={onPause}><Pause size={16} /></button> : <button className="icon-button primary" title="Riprendi" onClick={onResume} disabled={!simulation || simulation.status === 'STOPPED'}><Play size={16} /></button>}
         <button className="icon-button danger" title="Ferma" onClick={onStop} disabled={!simulation || simulation.status === 'STOPPED'}><Square size={15} /></button>
