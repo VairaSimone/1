@@ -39,16 +39,17 @@ async function upsertInteractionRelationship({simulationId,sourceEntityId,target
       SELECT BIN_TO_UUID(id) AS id,version,trust_score,affection_score,respect_score,familiarity_score,
              attraction_score,conflict_score,fear_score,admiration_score,jealousy_score,dependence_score,
              closeness_score,irritation_score
-      FROM relationships
-      WHERE simulation_id=UUID_TO_BIN(?)
-        AND ((source_entity_id=UUID_TO_BIN(?) AND target_entity_id=UUID_TO_BIN(?))
-          OR (source_entity_id=UUID_TO_BIN(?) AND target_entity_id=UUID_TO_BIN(?)))
-        AND status='ACTIVE'
-      ORDER BY CASE
-        WHEN relationship_type_id=UUID_TO_BIN((SELECT id FROM relationship_types WHERE code='PARTNER' LIMIT 1)) THEN 3
-        WHEN relationship_type_id=UUID_TO_BIN((SELECT id FROM relationship_types WHERE code='FRIEND' LIMIT 1)) THEN 2
+      FROM relationships r
+      JOIN relationship_types rt ON rt.id=r.relationship_type_id
+      WHERE r.simulation_id=UUID_TO_BIN(?)
+        AND ((r.source_entity_id=UUID_TO_BIN(?) AND r.target_entity_id=UUID_TO_BIN(?))
+          OR (r.source_entity_id=UUID_TO_BIN(?) AND r.target_entity_id=UUID_TO_BIN(?)))
+        AND r.status='ACTIVE'
+      ORDER BY CASE rt.code
+        WHEN 'PARTNER' THEN 3
+        WHEN 'FRIEND' THEN 2
         ELSE 1
-      END DESC, started_simulation_at DESC
+      END DESC, r.started_simulation_at DESC
       LIMIT 1
     `,[simulationId,sourceEntityId,targetEntityId,targetEntityId,sourceEntityId]);
   }
