@@ -45,3 +45,13 @@ test('world action profiles provide executable actions beyond the legacy reperto
     assert.ok(bootstrap.ACTION_FEEDBACK[action], `missing feedback for ${action}`);
   }
 });
+
+
+test('learnFromOutcome uses the current identity upsert helper', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const source = fs.readFileSync(path.join(__dirname, '../src/services/cognitive-v2-service.js'), 'utf8');
+  const learn = source.match(/async function learnFromOutcome\\([\\s\\S]*?\\n\\nmodule\\.exports=/)?.[0] || '';
+  assert.match(learn, /upsertIdentityValue\\(/);
+  assert.doesNotMatch(learn, /updateIdentityValue\\(/);
+});
