@@ -12,7 +12,6 @@ const { ping,close }=require("./db/pool");
 const { bootstrapCoreDefinitions }=require("./services/bootstrap-service");
 const { GeminiService }=require("./ai/gemini");
 const { RealtimeHub }=require("./realtime/hub");
-const { SimulationEngine }=require("./simulation/engine");
 const cognitiveV2=require("./services/cognitive-v2-bootstrap");
 const cognitiveV3=require("./services/cognitive-v3-bootstrap");
 
@@ -23,6 +22,7 @@ async function main(){
   const gemini=new GeminiService(); await gemini.init();
   await cognitiveV2.install({gemini});
   await cognitiveV3.install();
+  const { SimulationEngine }=require("./simulation/engine");
   const engine=new SimulationEngine({gemini,hub:new RealtimeHub()});
   await engine.start();
   logger.info("Asami simulation worker started");
