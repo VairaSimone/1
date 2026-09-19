@@ -11,7 +11,9 @@ function needPressure(code: string, value: number) {
 export function Overview({ simulation, dashboard, clockSpeed }: { simulation: Simulation; dashboard: Dashboard; clockSpeed: number }) {
   const topNeed = [...dashboard.needs].sort((a, b) => needPressure(b.code, b.value) - needPressure(a.code, a.value))[0]
   const topEmotion = dashboard.emotions[0]
-  const topGoal = [...dashboard.goals].sort((a, b) => Number(b.priority) - Number(a.priority))[0]
+  const activeGoals = dashboard.goals.filter((goal) => String(goal.status).toUpperCase() === 'ACTIVE')
+  const topGoal = [...activeGoals].sort((a, b) => Number(b.priority) - Number(a.priority))[0]
+  const orderedNeeds = [...dashboard.needs].sort((a, b) => needPressure(b.code, b.value) - needPressure(a.code, a.value))
   const action = dashboard.currentAction
   const strongestTraits = [...dashboard.traits].sort((a, b) => Number(b.value) - Number(a.value)).slice(0, 5)
   const loc = dashboard.location
@@ -32,7 +34,7 @@ export function Overview({ simulation, dashboard, clockSpeed }: { simulation: Si
 
     <div className="overview-grid">
       <Panel title="Pressione dei bisogni" eyebrow="STATO INTERNO">
-        <div className="list-stack">{dashboard.needs.map((n) => <ProgressBar key={n.code} value={needPressure(n.code, n.value)} label={labelize(n.name)} />)}</div>
+        <div className="list-stack">{orderedNeeds.map((n) => <ProgressBar key={n.code} value={needPressure(n.code, n.value)} label={labelize(n.name)} />)}</div>
       </Panel>
       <Panel title="Campo emotivo" eyebrow="EMOZIONI">
         <div className="emotion-grid">{dashboard.emotions.map((e) => <div className="emotion-tile" key={e.code}><div className="emotion-top"><span>{labelize(e.name)}</span><strong>{pct(e.intensity)}</strong></div><ProgressBar value={e.intensity} compact /></div>)}</div>
@@ -46,7 +48,7 @@ export function Overview({ simulation, dashboard, clockSpeed }: { simulation: Si
     </div>
 
     <Panel title="Obiettivi" eyebrow="INTENZIONI">
-      {dashboard.goals.length ? <div className="goal-table">{dashboard.goals.map((g) => <div className="goal-row" key={g.id}><div><strong>{g.title}</strong><span>{g.description || formatValue(g.motivation) || labelize(g.goalType)}</span></div><div className="goal-progress"><ProgressBar value={g.progress} compact /><small>{pct(g.progress)}</small></div><StatusPill value={g.status} /></div>)}</div> : <EmptyState icon={<Target size={20} />} title="Nessun obiettivo" text="Gli obiettivi vengono generati dal motore di autonomia a partire dai bisogni attuali." />}
+      {activeGoals.length ? <div className="goal-table">{activeGoals.map((g) => <div className="goal-row" key={g.id}><div><strong>{g.title}</strong><span>{g.description || formatValue(g.motivation) || labelize(g.goalType)}</span></div><div className="goal-progress"><ProgressBar value={g.progress} compact /><small>{pct(g.progress)}</small></div><StatusPill value={g.status} /></div>)}</div> : <EmptyState icon={<Target size={20} />} title="Nessun obiettivo" text="Gli obiettivi vengono generati dal motore di autonomia a partire dai bisogni attuali." />}
     </Panel>
   </>
 }
