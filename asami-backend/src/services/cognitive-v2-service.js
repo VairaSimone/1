@@ -136,7 +136,63 @@ async function buildAttentionContext({simulationId,entityId,context}) {
 function buildInterpretation(attention,context) { const primary=attention[0]||null,interpretations=[];if(primary)interpretations.push({type:'PRIMARY_DRIVE',statement:primary.type==='GOAL'?`An active goal is demanding attention: ${primary.title||primary.goalId}.`:primary.reason?`${primary.code||primary.type} is salient because of ${primary.reason}.`:`${primary.type} is currently salient.`,confidence:0.66+Math.min(0.28,Number(primary.intensity||0)*0.25)});if(context?.resourceContext?.actions){const constrained=Object.entries(context.resourceContext.actions).find(([,value])=>!value.locallyAvailable&&Number(value.nearestLocation?.travelMinutes)>=15);if(constrained)interpretations.push({type:'PHYSICAL_CONSTRAINT',statement:`${constrained[0]} requires travel before the desired outcome is feasible.`,confidence:0.83});}if((context?.cognitiveV2?.conflicts||[]).length)interpretations.push({type:'INTERNAL_CONFLICT',statement:'Multiple motives are competing for the same decision.',confidence:0.72});return interpretations.slice(0,6); }
 
 function buildConflicts({context,attention=[],identity}) { const drivers=[];for(const need of context?.needs||[]){const code=normalize(need.code),value=Number(need.value||0);if(!Number.isFinite(value))continue;const highPressure=['HUNGER','THIRST','SLEEPINESS','SOCIAL_NEED','BELONGING','FUN','CURIOSITY','ACHIEVEMENT'].includes(code)?value:1-value;if(highPressure>=0.45)drivers.push({type:'NEED',code,intensity:highPressure,weight:Number(need.priorityWeight||1)});}for(const goal of context?.goals||[])drivers.push({type:'GOAL',id:goal.id,intensity:Number(goal.priority||0)*(1-Number(goal.progress||0)),weight:1});for(const desire of identity?.desires||[])drivers.push({type:'DESIRE',id:desire.desireKey,intensity:Number(desire.priority||0)*(1-Number(desire.progress||0)),weight:1});drivers.sort((a,b)=>(b.intensity*b.weight)-(a.intensity*a.weight));if(drivers.length<2)return[];const conflicts=[],top=drivers[0];for(const other of drivers.slice(1,4)){const gap=Math.abs(top.intensity-other.intensity);if(gap<=0.24)conflicts.push({left:top,right:other,intensity:clamp01((top.intensity+other.intensity)/2),status:'ACTIVE'});}return conflicts.slice(0,3); }
-async function persistConflicts(simulationId,entityId,simulationTime,conflicts){for(const conflict of conflicts){const leftKey=`${conflict.left.type}:${conflict.left.code||conflict.left.id}`,rightKey=`${conflict.right.type}:${conflict.right.code||conflict.right.id}`,fingerprint=[leftKey,rightKey].sort().join('|');const[rows]=await pool.query(`SELECT BIN_TO_UUID(id) AS id,version FROM cognitive_conflicts WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND fingerprint=? AND status='ACTIVE' LIMIT 1`,[simulationId,entityId,fingerprint]);if(rows.length)await pool.query(`UPDATE cognitive_conflicts SET intensity=?,updated_simulation_at=?,version=version+1 WHERE id=UUID_TO_BIN(?) AND version=?`,[clamp01(conflict.intensity),simulationTime,rows[0].id,rows[0].version]);else await pool.query(`INSERT INTO cognitive_conflicts(id,simulation_id,entity_id,fingerprint,left_driver,right_driver,intensity,resolution,status,created_simulation_at,updated_simulation_at,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,?,NULL,'ACTIVE',?,?,1)`,[uuid(),simulationId,entityId,fingerprint,JSON.stringify(conflict.left),JSON.stringify(conflict.right),clamp01(conflict.intensity),simulationTime,simulationTime]);}}
+async function persistConflicts(simulationId,entityId,simulationTime,conflicts){
+  const current=Array.isArray(conflicts)?conflicts:[];
+  const fingerprints=new Map();
+  for(const conflict of current){
+    if(!conflict?.left||!conflict?.right)continue;
+    const leftKey=`${conflict.left.type}:${conflict.left.code||conflict.left.id}`,
+      rightKey=`${conflict.right.type}:${conflict.right.code||conflict.right.id}`,
+      fingerprint=[leftKey,rightKey].sort().join('|');
+    fingerprints.set(fingerprint,conflict);
+  }
+
+  const [rows]=await pool.query(
+    `SELECT BIN_TO_UUID(id) AS id,fingerprint,version,status
+     FROM cognitive_conflicts
+     WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?)`,
+    [simulationId,entityId]
+  );
+  const existingByFingerprint=new Map(rows.map(row=>[row.fingerprint,row]));
+  let resolved=0,reopened=0;
+
+  for(const row of rows){
+    if(row.status==='ACTIVE'&&!fingerprints.has(row.fingerprint)){
+      const [updated]=await pool.query(
+        `UPDATE cognitive_conflicts
+         SET intensity=0,resolution=?,status='RESOLVED',updated_simulation_at=?,version=version+1
+         WHERE id=UUID_TO_BIN(?) AND version=?`,
+        [JSON.stringify({reason:'DRIVERS_NO_LONGER_COMPETE',resolvedAt:simulationTime}),simulationTime,row.id,row.version]
+      );
+      if(updated.affectedRows)resolved+=1;
+    }
+  }
+
+  for(const [fingerprint,conflict] of fingerprints){
+    const leftKey=`${conflict.left.type}:${conflict.left.code||conflict.left.id}`,
+      rightKey=`${conflict.right.type}:${conflict.right.code||conflict.right.id}`,
+      row=existingByFingerprint.get(fingerprint);
+    if(row){
+      const wasResolved=row.status==='RESOLVED';
+      const [updated]=await pool.query(
+        `UPDATE cognitive_conflicts
+         SET left_driver=?,right_driver=?,intensity=?,resolution=NULL,status='ACTIVE',updated_simulation_at=?,version=version+1
+         WHERE id=UUID_TO_BIN(?) AND version=?`,
+        [JSON.stringify(conflict.left),JSON.stringify(conflict.right),clamp01(conflict.intensity),simulationTime,row.id,row.version]
+      );
+      if(updated.affectedRows&&wasResolved)reopened+=1;
+      continue;
+    }
+    const id=uuid();
+    await pool.query(
+      `INSERT INTO cognitive_conflicts
+       (id,simulation_id,entity_id,fingerprint,left_driver,right_driver,intensity,resolution,status,created_simulation_at,updated_simulation_at,version)
+       VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,?,NULL,'ACTIVE',?,?,1)`,
+      [id,simulationId,entityId,fingerprint,JSON.stringify(conflict.left),JSON.stringify(conflict.right),clamp01(conflict.intensity),simulationTime,simulationTime]
+    );
+  }
+  return {active:fingerprints.size,resolved,reopened};
+}
 
 async function saveCognitiveState(simulationId,entityId,simulationTime,attention,interpretation,conflicts){const[rows]=await pool.query(`SELECT BIN_TO_UUID(id) AS id,simulation_time AS simulationTime FROM cognitive_states WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) ORDER BY simulation_time DESC LIMIT 1`,[simulationId,entityId]);if(rows.length&&new Date(simulationTime)-new Date(rows[0].simulationTime)<15*60000){await pool.query(`UPDATE cognitive_states SET simulation_time=?,attention=?,interpretation=?,conflicts=? WHERE id=UUID_TO_BIN(?)`,[simulationTime,JSON.stringify(attention),JSON.stringify(interpretation),JSON.stringify(conflicts),rows[0].id]);return rows[0].id;}await pool.query(`INSERT INTO cognitive_states(id,simulation_id,entity_id,simulation_time,attention,interpretation,conflicts,created_at) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?, ?,CURRENT_TIMESTAMP(3))`,[uuid(),simulationId,entityId,simulationTime,JSON.stringify(attention),JSON.stringify(interpretation),JSON.stringify(conflicts)]);}
 
