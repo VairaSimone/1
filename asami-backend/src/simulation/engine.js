@@ -20,6 +20,8 @@ const { maybeRunSafeRetention } = require("../services/safe-retention-service");
 
 const INTERRUPTIBLE_ACTIONS = new Set(["SLEEPING", "WORKING", "STUDYING"]);
 const CRITICAL_EVENT_PATTERNS = /DANGER|EMERGENCY|ACCIDENT|THREAT|CRISIS|EVACUATION|ATTACK|FIRE/i;
+const EXPECTED_ENTITY_CONDITION_CODES = new Set(["CRITICAL_RESOURCE_RECOVERY_UNAVAILABLE","CRITICAL_ACTION_UNAVAILABLE","MOVEMENT_ORIGIN_REQUIRED","MOVEMENT_DESTINATION_REQUIRED","MOVEMENT_DESTINATION_UNREACHABLE","MOVEMENT_ALREADY_ACTIVE"]);
+function isExpectedEntityCondition(err){return EXPECTED_ENTITY_CONDITION_CODES.has(String(err?.code||"").toUpperCase());}
 
 function getNeedDirection(code) {
   const normalized = String(code || "").toUpperCase();
@@ -140,6 +142,7 @@ class SimulationEngine {
         if (maintenanceDue) { phase = "world.initialize"; await ensureWorld(sim.id, nextTime); phase = "world.physical"; await seedPhysicalWorld(sim.id, nextTime); phase = "world.relationships"; await evolveRelationships(sim.id, nextTime); this.worldMaintenanceAt.set(sim.id, nextTime.getTime()); }
         phase = "world.events"; await generateWorldEvents(sim.id, nextTime, tickId, elapsedMinutes); const actors = await autonomyService.findAutonomousActors(sim.id, env.MAX_ENTITIES_PER_TICK);
         for (const id of actors) {
+          try {
           entityId = id; actionType = null; phase = "entity.state"; await ensureEntityState(entityId, nextTime);
           const elapsedHours = Math.min(168, Math.max(0, (nextTime - previousTime) / 3600000)); const active = await actionService.getActiveAction(entityId, sim.id);
           if (active) {
@@ -201,6 +204,11 @@ class SimulationEngine {
             if (!started?.actionId) throw Object.assign(new Error("Autonomy action was not started"), { code: "AUTONOMY_ACTION_START_REQUIRED" });
             this.hub.publish(sim.id, "action.created", { entityId, decision, action: started });
           }
+          } catch (err) {
+            const errorContext={simulationId:sim.id,entityId,actionType,phase};
+            if(isExpectedEntityCondition(err)) logger.debug(logger.contextError(errorContext,err,"expected entity condition; actor skipped for this tick"));
+            else logger.error(logger.contextError(errorContext,err,"entity tick failed; actor skipped"));
+          }
         }
         phase = "world.decay"; await decayMemories(sim.id, nextTime); this.tickCounter.set(sim.id, Number(this.tickCounter.get(sim.id) || 0) + 1);
         const count = Number(this.tickCounter.get(sim.id) || 0); if (count % env.GEMINI_PROACTIVE_EVERY_TICKS === 0) { try { const asami = await getAsamiCandidate(sim.id); if (asami) await initiateConversation({ simulationId: sim.id, asamiEntityId: asami.id, simulationTime: nextTime.toISOString(), gemini: this.gemini, hub: this.hub }); } catch (err) { logger.warn({ simulationId: sim.id, phase: "proactive_conversation", err }, "proactive conversation attempt failed"); } } if (count % env.SNAPSHOT_EVERY_TICKS === 0) await simRepo.createSnapshot(sim.id, nextTime);
@@ -219,4 +227,4 @@ class SimulationEngine {
 
 async function getDecisionExpectedOutcome(decisionId) { const [rows] = await pool.query(`SELECT expected_outcome AS expectedOutcome FROM decision_options WHERE decision_id=UUID_TO_BIN(?) LIMIT 1`, [decisionId]); if (!rows.length) return null; const value = rows[0].expectedOutcome; if (value && typeof value === "object") return value; try { return JSON.parse(value); } catch { return null; } }
 
-module.exports = { SimulationEngine, getInterruptionReason, getCriticalInterruptionNeed, isCriticalNeed };
+module.exports = { SimulationEngine, getInterruptionReason, getCriticalInterruptionNeed, isCriticalNeed, isExpectedEntityCondition };
