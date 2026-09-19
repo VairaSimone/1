@@ -302,17 +302,43 @@ async function finishTick(tickId, status = "COMPLETED") {
   `, [finalStatus, tickId]);
 }
 
-async function createSnapshot(id, simulationTime, state, snapshotVersion = 1) {
-  const snapshotState = state === undefined || state === null
-    ? { simulationTime: simulationTime instanceof Date ? simulationTime.toISOString() : String(simulationTime || "") }
-    : state;
-  await pool.query(`
-    INSERT INTO simulation_snapshots
-      (id,simulation_id,simulation_time,snapshot_version,state)
-    VALUES (UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?)
-  `, [uuid(), id, simulationTime, snapshotVersion, JSON.stringify(snapshotState)]);
+function parseJson(value, fallback = null) {
+  if (value === null || value === undefined) return fallback;
+  if (typeof value === "object") return value;
+  try { return JSON.parse(value); } catch { return fallback; }
 }
 
+async function buildSimulationSnapshotState(id, simulationTime) {
+  const queries = [
+    pool.query("SELECT BIN_TO_UUID(e.id) AS entityId,e.display_name AS displayName,e.status,e.attributes FROM entities e WHERE e.simulation_id=UUID_TO_BIN(?) AND e.status='ACTIVE' ORDER BY e.id",[id]),
+    pool.query("SELECT BIN_TO_UUID(enc.entity_id) AS entityId,nd.code,enc.value,enc.version FROM entity_needs_current enc JOIN entities e ON e.id=enc.entity_id JOIN need_definitions nd ON nd.id=enc.need_id AND nd.active=1 WHERE e.simulation_id=UUID_TO_BIN(?) AND e.status='ACTIVE' ORDER BY enc.entity_id,nd.code",[id]),
+    pool.query("SELECT BIN_TO_UUID(eec.entity_id) AS entityId,ed.code,eec.intensity,eec.version FROM entity_emotions_current eec JOIN entities e ON e.id=eec.entity_id JOIN emotion_definitions ed ON ed.id=eec.emotion_id AND ed.active=1 WHERE e.simulation_id=UUID_TO_BIN(?) AND e.status='ACTIVE' ORDER BY eec.entity_id,ed.code",[id]),
+    pool.query("SELECT BIN_TO_UUID(etc.entity_id) AS entityId,td.code,etc.value,etc.version FROM entity_traits_current etc JOIN entities e ON e.id=etc.entity_id JOIN trait_definitions td ON td.id=etc.trait_id AND td.active=1 WHERE e.simulation_id=UUID_TO_BIN(?) AND e.status='ACTIVE' ORDER BY etc.entity_id,td.code",[id]),
+    pool.query("SELECT BIN_TO_UUID(es.entity_id) AS entityId,sd.code,es.proficiency,es.confidence,es.last_used_simulation_at AS lastUsedSimulationAt,es.version FROM entity_skills es JOIN entities e ON e.id=es.entity_id JOIN skill_definitions sd ON sd.id=es.skill_id AND sd.active=1 WHERE e.simulation_id=UUID_TO_BIN(?) AND e.status='ACTIVE' ORDER BY es.entity_id,sd.code",[id]),
+    pool.query("SELECT BIN_TO_UUID(ed.entity_id) AS entityId,BIN_TO_UUID(ed.development_stage_id) AS developmentStageId,ds.code AS stageCode,ed.physical_score AS physicalScore,ed.cognitive_score AS cognitiveScore,ed.social_score AS socialScore,ed.emotional_score AS emotionalScore,ed.education_score AS educationScore,ed.updated_simulation_at AS updatedSimulationAt,ed.version FROM entity_development ed JOIN entities e ON e.id=ed.entity_id LEFT JOIN development_stages ds ON ds.id=ed.development_stage_id WHERE e.simulation_id=UUID_TO_BIN(?) AND e.status='ACTIVE' ORDER BY ed.entity_id",[id]),
+    pool.query("SELECT BIN_TO_UUID(elc.entity_id) AS entityId,BIN_TO_UUID(elc.location_id) AS locationId,l.location_type AS locationType,elc.since_simulation_at AS sinceSimulationAt,elc.reason FROM entity_locations_current elc JOIN entities e ON e.id=elc.entity_id JOIN locations l ON l.entity_id=elc.location_id AND l.simulation_id=elc.simulation_id WHERE elc.simulation_id=UUID_TO_BIN(?) AND e.status='ACTIVE' ORDER BY elc.entity_id",[id]),
+    pool.query("SELECT BIN_TO_UUID(a.id) AS actionId,BIN_TO_UUID(a.entity_id) AS entityId,BIN_TO_UUID(a.decision_id) AS decisionId,a.action_type AS actionType,a.source_type AS sourceType,a.started_simulation_at AS startedSimulationAt,a.completed_simulation_at AS completedSimulationAt,a.status,a.target,a.parameters,a.result,a.version FROM actions a JOIN entities e ON e.id=a.entity_id WHERE a.simulation_id=UUID_TO_BIN(?) AND e.status='ACTIVE' AND a.status IN ('CREATED','ACTIVE') ORDER BY a.entity_id,a.started_simulation_at",[id]),
+    pool.query("SELECT BIN_TO_UUID(g.id) AS goalId,BIN_TO_UUID(g.entity_id) AS entityId,BIN_TO_UUID(g.parent_goal_id) AS parentGoalId,g.title,g.goal_type AS goalType,g.priority,g.status,g.progress,g.origin_event_id IS NOT NULL AS hasOriginEvent,g.origin_memory_id IS NOT NULL AS hasOriginMemory,g.created_simulation_at AS createdSimulationAt,g.updated_simulation_at AS updatedSimulationAt,g.version FROM goals g JOIN entities e ON e.id=g.entity_id WHERE e.simulation_id=UUID_TO_BIN(?) AND e.status='ACTIVE' AND g.status IN ('DRAFT','ACTIVE','PAUSED') ORDER BY g.entity_id,g.priority DESC,g.created_simulation_at",[id])
+  ];
+  const [entityRows,needRows,emotionRows,traitRows,skillRows,developmentRows,locationRows,actionRows,goalRows] = await Promise.all(queries);
+
+  const byEntity = new Map(entityRows[0].map(entity => [entity.entityId,{entityId:entity.entityId,displayName:entity.displayName,status:entity.status,attributes:parseJson(entity.attributes,{}),needs:{},emotions:{},traits:{},skills:{},development:null,location:null,activeActions:[],activeGoals:[]} ]));
+  for (const row of needRows[0]) { const entity=byEntity.get(row.entityId); if(entity) entity.needs[row.code]={value:Number(row.value),version:Number(row.version)}; }
+  for (const row of emotionRows[0]) { const entity=byEntity.get(row.entityId); if(entity) entity.emotions[row.code]={intensity:Number(row.intensity),version:Number(row.version)}; }
+  for (const row of traitRows[0]) { const entity=byEntity.get(row.entityId); if(entity) entity.traits[row.code]={value:Number(row.value),version:Number(row.version)}; }
+  for (const row of skillRows[0]) { const entity=byEntity.get(row.entityId); if(entity) entity.skills[row.code]={proficiency:Number(row.proficiency),confidence:Number(row.confidence),lastUsedSimulationAt:row.lastUsedSimulationAt,version:Number(row.version)}; }
+  for (const row of developmentRows[0]) { const entity=byEntity.get(row.entityId); if(entity) entity.development={developmentStageId:row.developmentStageId,stageCode:row.stageCode,physicalScore:Number(row.physicalScore),cognitiveScore:Number(row.cognitiveScore),socialScore:Number(row.socialScore),emotionalScore:Number(row.emotionalScore),educationScore:Number(row.educationScore),updatedSimulationAt:row.updatedSimulationAt,version:Number(row.version)}; }
+  for (const row of locationRows[0]) { const entity=byEntity.get(row.entityId); if(entity) entity.location={locationId:row.locationId,locationType:row.locationType,sinceSimulationAt:row.sinceSimulationAt,reason:row.reason}; }
+  for (const row of actionRows[0]) { const entity=byEntity.get(row.entityId); if(entity) entity.activeActions.push({actionId:row.actionId,decisionId:row.decisionId,actionType:row.actionType,sourceType:row.sourceType,startedSimulationAt:row.startedSimulationAt,completedSimulationAt:row.completedSimulationAt,status:row.status,target:parseJson(row.target,null),parameters:parseJson(row.parameters,null),result:parseJson(row.result,null),version:Number(row.version)}); }
+  for (const row of goalRows[0]) { const entity=byEntity.get(row.entityId); if(entity) entity.activeGoals.push({goalId:row.goalId,parentGoalId:row.parentGoalId,title:row.title,goalType:row.goalType,priority:Number(row.priority),status:row.status,progress:Number(row.progress),hasOriginEvent:Boolean(row.hasOriginEvent),hasOriginMemory:Boolean(row.hasOriginMemory),createdSimulationAt:row.createdSimulationAt,updatedSimulationAt:row.updatedSimulationAt,version:Number(row.version)}); }
+
+  return { schemaVersion:2, simulationTime:simulationTime instanceof Date ? simulationTime.toISOString() : String(simulationTime || ""), entities:[...byEntity.values()] };
+}
+
+async function createSnapshot(id, simulationTime, state, snapshotVersion = 2) {
+  const snapshotState = state === undefined || state === null ? await buildSimulationSnapshotState(id, simulationTime) : state;
+  await pool.query("INSERT INTO simulation_snapshots (id,simulation_id,simulation_time,snapshot_version,state) VALUES (UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?)",[uuid(),id,simulationTime,snapshotVersion,JSON.stringify(snapshotState)]);
+}
 module.exports = {
   listSimulations, getSimulation, createSimulation, setStatus, changeSpeed,
   getActiveClock, updateCurrentTimeOptimistic, advanceAndCreateTick, createTick, finishTick,
