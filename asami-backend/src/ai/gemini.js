@@ -16,12 +16,12 @@ function classifyGeminiError(err) {
   const explicitRate=/RATE.?LIMIT|TOO MANY REQUESTS/.test(providerText);
   const isQuota=explicitQuota;
   const isRateLimited=!isQuota && (status===429 || explicitRate);
-  const retryMatch=message.match(/retryDelay[^0-9]*(\\d+(?:\\.\\d+)?)s/i);
+  const retryMatch=message.match(/retryDelay[^0-9]*(\d+(?:\.\d+)?)s/i);
   const retryAfterHeader=typeof err?.response?.headers?.get==="function" ? err.response.headers.get("retry-after") : err?.response?.headers?.["retry-after"];
   const retryAfterSeconds=Number(retryAfterHeader);
   const retryAfterMs=Number.isFinite(retryAfterSeconds)&&retryAfterSeconds>0 ? Math.ceil(retryAfterSeconds*1000) : 0;
   const retryMs=retryAfterMs || (retryMatch ? Math.ceil(Number(retryMatch[1])*1000) : 0);
-  if(isQuota)return{kind:isRateLimited?"RATE_LIMIT":"QUOTA",retryAfterMs:retryMs};
+  if(isQuota)return{kind:"QUOTA",retryAfterMs:retryMs};
   if(err?.code==="AI_TIMEOUT")return{kind:"TIMEOUT",retryAfterMs:0};
   return{kind:"ERROR",retryAfterMs:0};
 }
