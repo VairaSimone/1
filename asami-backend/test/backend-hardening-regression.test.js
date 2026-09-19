@@ -116,3 +116,23 @@ test('action completion does not create an event before core action commit',()=>
   assert.ok(transactionIndex>=0);
   assert.ok(eventIndex>transactionIndex);
 });
+
+test('consolidated memory upserts are serialized with a database lock',()=>{
+  const source=read('services/runtime-enhancements.js');
+  const start=source.indexOf('async function upsertConsolidatedMemory');
+  const end=source.indexOf('async function consolidateActionMemories',start);
+  const section=source.slice(start,end);
+  assert.match(section,/GET_LOCK\(\?,5\)/);
+  assert.match(section,/RELEASE_LOCK/);
+  assert.match(section,/pool\.getConnection\(\)/);
+});
+
+test('conversation creation is serialized per simulation and entity pair',()=>{
+  const source=read('services/chat-service.js');
+  const start=source.indexOf('async function ensureConversation');
+  const end=source.indexOf('async function findExistingConversation',start);
+  const section=source.slice(start,end);
+  assert.match(section,/GET_LOCK\(\?,5\)/);
+  assert.match(section,/RELEASE_LOCK/);
+  assert.match(section,/sort\(\)\.join\('\|'\)/);
+});
