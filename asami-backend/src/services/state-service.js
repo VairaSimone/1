@@ -1,5 +1,6 @@
 const { pool } = require("../db/pool");
 const { uuid } = require("../lib/ids");
+const crypto = require("crypto");
 const { clamp } = require("./state-rules");
 
 function round5(value) { return Math.round((Number(value) + Number.EPSILON) * 100000) / 100000; }
@@ -12,6 +13,41 @@ const EMOTION_HISTORY_MIN_DELTA = Number.isFinite(Number(process.env.EMOTION_HIS
   : 0.01;
 const pendingNeedHistory = new Map();
 const pendingEmotionHistory = new Map();
+const ENTITY_STATE_LOCK_TIMEOUT_SECONDS = Number.isFinite(Number(process.env.ENTITY_STATE_LOCK_TIMEOUT_SECONDS))
+  ? Math.max(0, Math.min(15, Number(process.env.ENTITY_STATE_LOCK_TIMEOUT_SECONDS)))
+  : 5;
+
+function entityStateLockName(entityId) {
+  return "asami:entity-state:" + crypto.createHash("sha1").update(String(entityId)).digest("hex");
+}
+
+async function withEntityStateLock(entityId, fn) {
+  const conn = await pool.getConnection();
+  const lockName = entityStateLockName(entityId);
+  let locked = false;
+  let transactionStarted = false;
+  try {
+    const [rows] = await conn.query("SELECT GET_LOCK(?,?) AS acquired", [lockName, ENTITY_STATE_LOCK_TIMEOUT_SECONDS]);
+    locked = Number(rows[0]?.acquired) === 1;
+    if (!locked) {
+      throw Object.assign(new Error("Entity state lock unavailable"), { code: "ENTITY_STATE_LOCK_UNAVAILABLE", entityId, lockName });
+    }
+    await conn.beginTransaction();
+    transactionStarted = true;
+    const result = await fn(conn);
+    await conn.commit();
+    transactionStarted = false;
+    return result;
+  } catch (err) {
+    if (transactionStarted) {
+      try { await conn.rollback(); } catch {}
+    }
+    throw err;
+  } finally {
+    try { if (locked) await conn.query("SELECT RELEASE_LOCK(?)", [lockName]); } catch {}
+    conn.release();
+  }
+}
 
 const CRITICAL_NEED_THRESHOLDS = Object.freeze({
   THIRST: { direction: "HIGH", threshold: 0.8 },
@@ -43,7 +79,7 @@ function shouldPersistHistory({ delta, significant = false, critical = false, th
   return Boolean(significant || critical || Math.abs(Number(delta) || 0) >= threshold);
 }
 
-async function accumulateNeedHistory({ entityId, needId, code, oldValue, newValue, simulationTime, causeEventId = null, causeActionId = null, significant = false }) {
+async function accumulateNeedHistory({ entityId, needId, code, oldValue, newValue, simulationTime, causeEventId = null, causeActionId = null, significant = false, db = pool }) {
   const delta = round5(Number(newValue) - Number(oldValue));
   if (Math.abs(delta) < 0.000001) return false;
 
@@ -85,7 +121,7 @@ async function accumulateNeedHistory({ entityId, needId, code, oldValue, newValu
       : [];
 
   if (matchCondition) {
-    const [existingRows] = await pool.query(
+    const [existingRows] = await db.query(
       `SELECT BIN_TO_UUID(id) AS id,old_value AS oldValue
        FROM entity_need_history
        WHERE ${matchCondition}
@@ -96,7 +132,7 @@ async function accumulateNeedHistory({ entityId, needId, code, oldValue, newValu
     if (existingRows.length) {
       const existing = existingRows[0];
       const mergedDelta = round5(Number(pending.newValue) - Number(existing.oldValue));
-      await pool.query(
+      await db.query(
         `UPDATE entity_need_history
          SET new_value=?,delta=?,simulation_time=?,cause_event_id=COALESCE(UUID_TO_BIN(?),cause_event_id)
          WHERE id=UUID_TO_BIN(?)`,
@@ -113,7 +149,7 @@ async function accumulateNeedHistory({ entityId, needId, code, oldValue, newValu
     }
   }
 
-  await pool.query(
+  await db.query(
     `INSERT INTO entity_need_history
       (id,entity_id,need_id,old_value,new_value,delta,simulation_time,cause_event_id,cause_action_id)
      VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,?,UUID_TO_BIN(?),UUID_TO_BIN(?))`,
@@ -222,12 +258,12 @@ async function accumulateEmotionHistory({ entityId, emotionId, code, oldIntensit
   return true;
 }
 
-async function flushPendingNeedHistory(entityId, causeActionId) {
+async function flushPendingNeedHistory(entityId, causeActionId, db = pool) {
   if (!causeActionId) return 0;
   let count = 0;
   for (const pending of [...pendingNeedHistory.values()]) {
     if (String(pending.entityId) !== String(entityId) || String(pending.causeActionId || "") !== String(causeActionId)) continue;
-    const persisted = await accumulateNeedHistory({ ...pending, significant: true });
+    const persisted = await accumulateNeedHistory({ ...pending, significant: true, db });
     if (persisted) count += 1;
   }
   return count;
@@ -244,8 +280,8 @@ async function flushPendingEmotionHistory(entityId, causeActionId) {
   return count;
 }
 
-async function persistNeedTransition({ entityId, needId, code, oldValue, nextValue, version, simulationTime, causeEventId = null, causeActionId = null, significant = false }) {
-  const [updated] = await pool.query(
+async function persistNeedTransition({ entityId, needId, code, oldValue, nextValue, version, simulationTime, causeEventId = null, causeActionId = null, significant = false, db = pool }) {
+  const [updated] = await db.query(
     `UPDATE entity_needs_current
      SET value=?,updated_simulation_at=?,version=version+1
      WHERE entity_id=UUID_TO_BIN(?) AND need_id=UUID_TO_BIN(?) AND version=?`,
@@ -261,7 +297,8 @@ async function persistNeedTransition({ entityId, needId, code, oldValue, nextVal
     simulationTime,
     causeEventId,
     causeActionId,
-    significant
+    significant,
+    db
   });
   return { old: oldValue, new: nextValue, delta: round5(nextValue - oldValue) };
 }
@@ -326,48 +363,51 @@ const NEED_EMOTION_CURVES={HUNGER:{threshold:0.40,frustration:0.10,anger:0.055},
 const TRAIT_BEHAVIOR_LINKS={TALKING:{EXTRAVERSION:.60,SOCIABILITY:.70,EMPATHY:.25},EXPLORING:{OPENNESS:.55,CURIOSITY:.60,CONFIDENCE:.20},STUDYING:{CONSCIENTIOUSNESS:.60,DISCIPLINE:.70,PATIENCE:.25},WORKING:{CONSCIENTIOUSNESS:.55,DISCIPLINE:.55},PLAYING:{OPENNESS:.35,IMPULSIVITY:.25},READING:{OPENNESS:.35,CURIOSITY:.55},WALKING:{OPENNESS:.20},SLEEPING:{PATIENCE:.12,SELF_CARE:.15},RESTING:{PATIENCE:.12,SELF_CARE:.15},EATING:{SELF_CARE:.20},DRINKING:{SELF_CARE:.20},WATCHING:{OPENNESS:.12}};
 function pressureCurve(value,threshold=0.4){const v=clamp(value);if(v<=threshold)return 0;const normalized=(v-threshold)/(1-threshold);return normalized*normalized;}
 async function ensureEntityState(entityId,simulationTime){await Promise.all([pool.query(`INSERT IGNORE INTO entity_needs_current(entity_id,need_id,value,updated_simulation_at,version) SELECT UUID_TO_BIN(?),id,default_value,?,1 FROM need_definitions WHERE active=1`,[entityId,simulationTime]),pool.query(`INSERT IGNORE INTO entity_emotions_current(entity_id,emotion_id,intensity,updated_simulation_at,version) SELECT UUID_TO_BIN(?),id,default_value,?,1 FROM emotion_definitions WHERE active=1`,[entityId,simulationTime]),pool.query(`INSERT IGNORE INTO entity_traits_current(entity_id,trait_id,value,updated_simulation_at,version) SELECT UUID_TO_BIN(?),id,default_value,?,1 FROM trait_definitions WHERE active=1`,[entityId,simulationTime]),pool.query(`INSERT IGNORE INTO entity_skills(entity_id,skill_id,updated_simulation_at,version) SELECT UUID_TO_BIN(?),id,?,1 FROM skill_definitions WHERE active=1`,[entityId,simulationTime])]);}
-async function readNeeds(entityId){const [rows]=await pool.query(`SELECT BIN_TO_UUID(enc.need_id) AS needId,nd.code,nd.name,enc.value,enc.version,nd.decay_rate AS decayRate,nd.recovery_rate AS recoveryRate,nd.priority_weight AS priorityWeight,nd.parameters FROM entity_needs_current enc JOIN need_definitions nd ON nd.id=enc.need_id WHERE enc.entity_id=UUID_TO_BIN(?) AND nd.active=1`,[entityId]);return rows;}
+async function readNeeds(entityId, db = pool){const [rows]=await db.query(`SELECT BIN_TO_UUID(enc.need_id) AS needId,nd.code,nd.name,enc.value,enc.version,nd.decay_rate AS decayRate,nd.recovery_rate AS recoveryRate,nd.priority_weight AS priorityWeight,nd.parameters FROM entity_needs_current enc JOIN need_definitions nd ON nd.id=enc.need_id WHERE enc.entity_id=UUID_TO_BIN(?) AND nd.active=1`,[entityId]);return rows;}
 function actionDecayMultiplier(actionType,needCode){return Number(ACTION_DECAY_MULTIPLIERS[String(actionType||"").toUpperCase()]?.[needCode]??1);}
 function saturatedActionDelta(actionType,needCode,currentValue,hours){const rate=Number((ACTION_NEED_GAINS[actionType]||{})[needCode]||0);if(!rate)return 0;const value=clamp(currentValue),amount=Math.abs(rate)*hours;if(rate<0)return-amount*value;return amount*(1-value);}
 async function updateNeeds(entityId,simulationTime,deltaHours,causeEventId=null,causeActionId=null,activeActionType=null,historyContext=null){
-  const rows=await readNeeds(entityId),changes=[],hours=Math.min(Math.max(Number(deltaHours)||0,0),168),action=String(activeActionType||"").toUpperCase(),significant=Boolean(historyContext?.significant);
-  for(const r of rows){
-    const decayRate=Math.max(0,Number(r.decayRate)||0),recoveryRate=Math.max(0,Number(r.recoveryRate)||0),multiplier=actionDecayMultiplier(action,r.code);
-    let delta;
-    if(PRESSURE_NEEDS.has(r.code))delta=decayRate*hours*multiplier;
-    else if(r.code==="ENERGY")delta=-decayRate*hours*multiplier;
-    else if(r.code==="SAFETY")delta=safetyContextDelta({actionType:action,currentValue:r.value,recoveryRate,decayRate,hours,perception:historyContext?.perception});
-    else if(r.code==="COMFORT")delta=(recoveryRate*0.12*(1-clamp(r.value))-decayRate*0.04)*hours;
-    else delta=-decayRate*hours;
-    if(action){
-      const rawGain=saturatedActionDelta(action,r.code,r.value,hours),floor=ACTION_PRESSURE_FLOORS[action]?.[r.code];
-      if(PRESSURE_NEEDS.has(r.code)&&rawGain<0&&floor!==undefined)delta+=Math.max(rawGain,-Math.max(0,Number(r.value)-floor));
-      else if(PRESSURE_NEEDS.has(r.code)&&rawGain<0)delta+=Math.max(rawGain,-Number(r.value)*0.60);
-      else delta+=rawGain;
+  return withEntityStateLock(entityId, async db => {
+    const rows=await readNeeds(entityId,db),changes=[],hours=Math.min(Math.max(Number(deltaHours)||0,0),168),action=String(activeActionType||"").toUpperCase(),significant=Boolean(historyContext?.significant);
+    for(const r of rows){
+      const decayRate=Math.max(0,Number(r.decayRate)||0),recoveryRate=Math.max(0,Number(r.recoveryRate)||0),multiplier=actionDecayMultiplier(action,r.code);
+      let delta;
+      if(PRESSURE_NEEDS.has(r.code))delta=decayRate*hours*multiplier;
+      else if(r.code==="ENERGY")delta=-decayRate*hours*multiplier;
+      else if(r.code==="SAFETY")delta=safetyContextDelta({actionType:action,currentValue:r.value,recoveryRate,decayRate,hours,perception:historyContext?.perception});
+      else if(r.code==="COMFORT")delta=(recoveryRate*0.12*(1-clamp(r.value))-decayRate*0.04)*hours;
+      else delta=-decayRate*hours;
+      if(action){
+        const rawGain=saturatedActionDelta(action,r.code,r.value,hours),floor=ACTION_PRESSURE_FLOORS[action]?.[r.code];
+        if(PRESSURE_NEEDS.has(r.code)&&rawGain<0&&floor!==undefined)delta+=Math.max(rawGain,-Math.max(0,Number(r.value)-floor));
+        else if(PRESSURE_NEEDS.has(r.code)&&rawGain<0)delta+=Math.max(rawGain,-Number(r.value)*0.60);
+        else delta+=rawGain;
+      }
+      const oldValue=round5(r.value);
+      let next=round5(clamp(oldValue+delta));
+      const floor=ACTION_PRESSURE_FLOORS[action]?.[r.code];
+      if(PRESSURE_NEEDS.has(r.code)&&floor!==undefined&&action)next=Math.max(next,floor);
+      const historyDelta=round5(next-oldValue);
+      if(Math.abs(historyDelta)<0.000001)continue;
+      const transition=await persistNeedTransition({
+        entityId,
+        needId:r.needId,
+        code:r.code,
+        oldValue,
+        nextValue:next,
+        version:r.version,
+        simulationTime,
+        causeEventId,
+        causeActionId,
+        significant,
+        db
+      });
+      if(!transition)continue;
+      changes.push({code:r.code,old:oldValue,new:next,delta:historyDelta});
     }
-    const oldValue=round5(r.value);
-    let next=round5(clamp(oldValue+delta));
-    const floor=ACTION_PRESSURE_FLOORS[action]?.[r.code];
-    if(PRESSURE_NEEDS.has(r.code)&&floor!==undefined&&action)next=Math.max(next,floor);
-    const historyDelta=round5(next-oldValue);
-    if(Math.abs(historyDelta)<0.000001)continue;
-    const transition=await persistNeedTransition({
-      entityId,
-      needId:r.needId,
-      code:r.code,
-      oldValue,
-      nextValue:next,
-      version:r.version,
-      simulationTime,
-      causeEventId,
-      causeActionId,
-      significant
-    });
-    if(!transition)continue;
-    changes.push({code:r.code,old:oldValue,new:next,delta:historyDelta});
-  }
-  if (significant && causeActionId) await flushPendingNeedHistory(entityId, causeActionId);
-  return changes;
+    if(significant&&causeActionId)await flushPendingNeedHistory(entityId,causeActionId,db);
+    return changes;
+  });
 }
 function traitValue(traits,code,fallback=.5){const row=(traits||[]).find(t=>String(t.code||"").toUpperCase()===code);return row?clamp(row.value):fallback;}
 function emotionAppraisal(actionType,needs,context={}){const codes=["JOY","SADNESS","ANGER","FEAR","ANXIETY","FRUSTRATION","EXCITEMENT","CALM","DISGUST","SHAME"],deltas=Object.fromEntries(codes.map(c=>[c,0])),add=(c,v)=>{deltas[c]+=v;};const traits=context.traits||[],extraversion=traitValue(traits,"EXTRAVERSION"),sociability=traitValue(traits,"SOCIABILITY"),empathy=traitValue(traits,"EMPATHY"),openness=traitValue(traits,"OPENNESS"),neuroticism=traitValue(traits,"NEUROTICISM"),patience=traitValue(traits,"PATIENCE"),impulsivity=traitValue(traits,"IMPULSIVITY"),socialReactivity=.70+.65*((extraversion+sociability)/2),negativeSensitivity=.72+.62*neuroticism,patienceBuffer=.72+.45*patience;if(!context.event)for(const[c,v]of Object.entries(ACTION_EMOTION_EFFECTS[actionType]||{}))add(c,v);const p=Object.fromEntries((needs||[]).map(n=>[n.code,clamp(n.new??n.value)]));for(const[code,curve]of Object.entries(NEED_EMOTION_CURVES)){const pressure=pressureCurve(p[code]||0,curve.threshold);if(curve.frustration)add("FRUSTRATION",curve.frustration*pressure*negativeSensitivity);if(curve.anger)add("ANGER",curve.anger*pressure*(0.8+0.4*impulsivity));if(curve.sadness)add("SADNESS",curve.sadness*pressure*(1.1-neuroticism*.35));if(curve.anxiety)add("ANXIETY",curve.anxiety*pressure*negativeSensitivity);if(curve.excitement)add("EXCITEMENT",curve.excitement*pressure*(.75+openness*.5));}const physiologicalPressure=Math.max(p.HUNGER||0,p.THIRST||0,p.SLEEPINESS||0);if(physiologicalPressure>.55){const suppression=Math.min(1,(physiologicalPressure-.55)/.45);add("JOY",-.045*suppression);add("CALM",-.035*suppression);}const safety=p.SAFETY??1,energy=p.ENERGY??1;
