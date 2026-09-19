@@ -12,8 +12,10 @@ function classifyGeminiError(err) {
   const status=Number(err?.status||err?.code);
   const message=String(err?.message||"");
   const providerText=message.toUpperCase();
-  const isRateLimited=status===429 || /RATE.?LIMIT|TOO MANY REQUESTS/.test(providerText);
-  const isQuota=isRateLimited || /RESOURCE_EXHAUSTED|QUOTA EXCEEDED|QUOTA|EXCEEDED.*LIMIT/.test(providerText);
+  const explicitQuota=/RESOURCE_EXHAUSTED|QUOTA EXCEEDED|DAILY QUOTA|MONTHLY QUOTA|EXCEEDED.*QUOTA/.test(providerText);
+  const explicitRate=/RATE.?LIMIT|TOO MANY REQUESTS/.test(providerText);
+  const isQuota=explicitQuota;
+  const isRateLimited=!isQuota && (status===429 || explicitRate);
   const retryMatch=message.match(/retryDelay[^0-9]*(\\d+(?:\\.\\d+)?)s/i);
   const retryAfterHeader=typeof err?.response?.headers?.get==="function" ? err.response.headers.get("retry-after") : err?.response?.headers?.["retry-after"];
   const retryAfterSeconds=Number(retryAfterHeader);
