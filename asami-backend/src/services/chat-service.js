@@ -17,7 +17,20 @@ const {
   rememberableTopic
 } = require("./conversation-state-service");
 
-async function ensureConversation(simulationId,senderEntityId,asamiEntityId,conversationId,simulationTime){if(conversationId){const[rows]=await pool.query(`SELECT BIN_TO_UUID(id) AS id FROM conversations WHERE simulation_id=UUID_TO_BIN(?) AND id=UUID_TO_BIN(?) AND status='ACTIVE'`,[simulationId,conversationId]);if(!rows.length)throw Object.assign(new Error("Conversation not found"),{code:"NOT_FOUND"});for(const entityId of[senderEntityId,asamiEntityId])await pool.query(`INSERT IGNORE INTO conversation_participants(conversation_id,simulation_id,entity_id,joined_simulation_at) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?)`,[conversationId,simulationId,entityId,simulationTime]);return conversationId;}const id=uuid();await pool.query(`INSERT INTO conversations(id,simulation_id,channel,created_simulation_at,status,metadata,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),'CHAT',?,'ACTIVE',?,1)`,[id,simulationId,simulationTime,JSON.stringify({asamiEntityId,senderEntityId})]);for(const entityId of[senderEntityId,asamiEntityId])await pool.query(`INSERT INTO conversation_participants(conversation_id,simulation_id,entity_id,joined_simulation_at) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?)`,[id,simulationId,entityId,simulationTime]);return id;}
+async function ensureConversation(simulationId,senderEntityId,asamiEntityId,conversationId,simulationTime){
+  if(conversationId){
+    const[rows]=await pool.query(`SELECT BIN_TO_UUID(id) AS id FROM conversations WHERE simulation_id=UUID_TO_BIN(?) AND id=UUID_TO_BIN(?) AND status='ACTIVE'`,[simulationId,conversationId]);
+    if(!rows.length)throw Object.assign(new Error("Conversation not found"),{code:"NOT_FOUND"});
+    for(const entityId of[senderEntityId,asamiEntityId])await pool.query(`INSERT IGNORE INTO conversation_participants(conversation_id,simulation_id,entity_id,joined_simulation_at) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?)`,[conversationId,simulationId,entityId,simulationTime]);
+    return conversationId;
+  }
+  const existing=await findExistingConversation(simulationId,senderEntityId,asamiEntityId);
+  if(existing)return existing;
+  const id=uuid();
+  await pool.query(`INSERT INTO conversations(id,simulation_id,channel,created_simulation_at,status,metadata,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),'CHAT',?,'ACTIVE',?,1)`,[id,simulationId,simulationTime,JSON.stringify({asamiEntityId,senderEntityId})]);
+  for(const entityId of[senderEntityId,asamiEntityId])await pool.query(`INSERT INTO conversation_participants(conversation_id,simulation_id,entity_id,joined_simulation_at) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?)`,[id,simulationId,entityId,simulationTime]);
+  return id;
+}
 async function findExistingConversation(simulationId,entityA,entityB){const[rows]=await pool.query(`SELECT BIN_TO_UUID(c.id) AS id FROM conversations c JOIN conversation_participants p1 ON p1.conversation_id=c.id AND p1.entity_id=UUID_TO_BIN(?) JOIN conversation_participants p2 ON p2.conversation_id=c.id AND p2.entity_id=UUID_TO_BIN(?) WHERE c.simulation_id=UUID_TO_BIN(?) AND c.status='ACTIVE' AND p1.left_simulation_at IS NULL AND p2.left_simulation_at IS NULL ORDER BY c.created_simulation_at DESC LIMIT 1`,[entityA,entityB,simulationId]);return rows[0]?.id||null;}
 
 function clampDialogueDelta(value,maxAbs){const n=Number(value);return Number.isFinite(n)?Math.max(-maxAbs,Math.min(maxAbs,n)):0;}
