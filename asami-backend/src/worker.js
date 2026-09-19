@@ -18,6 +18,8 @@ const cognitiveV3=require("./services/cognitive-v3-bootstrap");
 async function main(){
   await ensureDatabase();
   await ping();
+  const staleTicks=await require("./repositories/simulation-repo").reconcileStaleRunningTicks();
+  if(staleTicks) logger.warn({staleTicks},"stale simulation ticks reconciled at startup");
   await bootstrapCoreDefinitions();
   const gemini=new GeminiService(); await gemini.init();
   await cognitiveV2.install({gemini});
