@@ -1,6 +1,7 @@
 const { pool } = require("../db/pool");
 const { env } = require("../config/env");
 const { generateEnvironmentalEvent, updateEnvironmentState } = require("./environment-service");
+const { withEventWriteLock } = require("./event-service");
 
 function eventProbability(elapsedSimulationMinutes, eventsPerSimulationHour = env.WORLD_EVENT_RATE_PER_SIM_HOUR) {
   const minutes = Math.max(0, Number(elapsedSimulationMinutes) || 0);
@@ -16,8 +17,10 @@ async function generateWorldEvents(simulationId,simulationTime,tickId,elapsedSim
 }
 
 async function processWorldEffects(simulationId,simulationTime){
-  const [rows]=await pool.query(`SELECT BIN_TO_UUID(id) AS id,metadata FROM events WHERE simulation_id=UUID_TO_BIN(?) AND simulation_at=? AND status='RECORDED' ORDER BY real_created_at`,[simulationId,simulationTime]);
-  if(rows.length)await pool.query(`UPDATE events SET status='PROCESSED' WHERE simulation_id=UUID_TO_BIN(?) AND simulation_at=? AND status='RECORDED'`,[simulationId,simulationTime]);
-  return rows;
+  return withEventWriteLock(simulationId, async conn => {
+    const [rows]=await conn.query(`SELECT BIN_TO_UUID(id) AS id,metadata FROM events WHERE simulation_id=UUID_TO_BIN(?) AND simulation_at=? AND status='RECORDED' ORDER BY real_created_at`,[simulationId,simulationTime]);
+    if(rows.length)await conn.query(`UPDATE events SET status='PROCESSED' WHERE simulation_id=UUID_TO_BIN(?) AND simulation_at=? AND status='RECORDED'`,[simulationId,simulationTime]);
+    return rows;
+  });
 }
 module.exports={generateWorldEvents,processWorldEffects,eventProbability,updateEnvironmentState};
