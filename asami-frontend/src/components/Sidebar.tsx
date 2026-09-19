@@ -47,7 +47,7 @@ export function Sidebar({ simulations, simulation, view, setView, onSimulationCh
         <div className="mini-stat"><Database size={15} /><span>MySQL come fonte dati</span></div>
         <div className="mini-stat"><Clock3 size={15} /><span>{simulation ? formatSimTime(simulation.currentSimulationAt) : '—'}</span></div>
         <div className="mini-stat"><Users size={15} /><span>Motore di autonomia</span></div>
-        <div className="version-chip">Frontend 1.1 · Cognizione v2</div>
+        <div className="version-chip">Frontend 1.1 · Cognizione v2 + v3</div>
       </div>
     </aside>
   )
