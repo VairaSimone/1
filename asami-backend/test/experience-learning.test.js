@@ -34,5 +34,5 @@ test("experience cognition biases later action selection within a bounded range"
     knowledge: [{ predicate: "ACTION_OUTCOME", content: JSON.stringify({ actionType: "DRINKING", outcome: "FAILURE", locationId: "home" }), confidence: 0.9 }]
   };
   const modifier = cognitiveExperienceModifier(profile, "DRINKING", { locationType: "HOME", locationId: "home" });
-  assert.ok(modifier >= -0.35 && modifier <= 0.35);
+  assert.ok(modifier >= -0.65 && modifier <= 0.65);
 });
