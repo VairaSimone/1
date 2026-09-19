@@ -65,11 +65,22 @@ test('location history queries match the canonical schema',()=>{
   for(const sql of [source,world]){
     const inserts=[...sql.matchAll(/INSERT INTO entity_location_history\(([^)]*)\)/g)].map(match=>match[1]);
     assert.ok(inserts.length>0);
-    for(const columns of inserts) assert.doesNotMatch(columns,/\bsimulation_id\b/);
-    assert.doesNotMatch(sql,/UPDATE entity_location_history SET exited_simulation_at=\? WHERE simulation_id=/);
+    for(const columns of inserts) assert.match(columns,/\bsimulation_id\b/);
+    assert.match(sql,/UPDATE entity_location_history SET exited_simulation_at=\? WHERE simulation_id=/);
   }
   assert.match(source,/UPDATE entity_location_history SET exited_simulation_at/);
   assert.match(world,/UPDATE entity_location_history SET exited_simulation_at/);
+});
+
+test('movement creation binds every simulation-scoped placeholder',()=>{
+  const source=read('services/action-service.js');
+  const start=source.indexOf('async function startMovement');
+  const end=source.indexOf('async function completeMovement',start);
+  const section=source.slice(start,end);
+  assert.match(section,/WHERE simulation_id=UUID_TO_BIN\(\?\) AND entity_id=UUID_TO_BIN\(\?\)/);
+  assert.match(section,/\[simulationId,entityId\]/);
+  assert.match(section,/INSERT INTO movements\(id,simulation_id,entity_id,/);
+  assert.match(section,/\[movementId,simulationId,entityId,origin,destination,simulationTime,expectedArrival\]/);
 });
 
 test('failed action starts clean up persisted partial state',()=>{
