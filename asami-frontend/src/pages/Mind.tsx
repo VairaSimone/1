@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Brain, Compass, GitBranch, HeartHandshake, Lightbulb, RefreshCw, Sparkles, Target, TriangleAlert } from 'lucide-react'
 import { EmptyState, Panel } from '../components/Ui'
 import { api } from '../lib/api'
@@ -15,17 +15,25 @@ function Metric({ label, value }: { label: string; value: number }) {
   return <div className="mind-metric"><span>{label}</span><strong>{pct(safe)}</strong><div className="mind-meter"><i style={{ width: `${safe * 100}%` }} /></div></div>
 }
 
-export function Mind({ simulationId, entityId, onRefresh }: { simulationId: string; entityId: string; onRefresh?: () => void }) {
+export function Mind({ simulationId, entityId, currentSimulationAt, onRefresh }: { simulationId: string; entityId: string; currentSimulationAt: string; onRefresh?: () => void }) {
   const [data, setData] = useState<MindData | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const loadKeyRef = useRef('')
 
-  const load = async () => {
+  const load = useCallback(async () => {
     setLoading(true); setError(null)
     try { setData(await api.mind(simulationId, entityId)); onRefresh?.() } catch (e) { setError(e instanceof Error ? e.message : 'Impossibile caricare la mente di Asami.') } finally { setLoading(false) }
-  }
+  }, [entityId, onRefresh, simulationId])
 
-  useEffect(() => { void load() }, [simulationId, entityId])
+  useEffect(() => {
+    const key = `${simulationId}:${entityId}`
+    const firstLoadForEntity = loadKeyRef.current !== key
+    loadKeyRef.current = key
+    let disposed = false
+    const timer = window.setTimeout(() => { if (!disposed) void load() }, firstLoadForEntity ? 0 : 700)
+    return () => { disposed = true; window.clearTimeout(timer) }
+  }, [currentSimulationAt, entityId, load, simulationId])
 
   if (loading && !data) return <div className="mind-loading"><Brain size={20} className="spin" /> Ricostruzione dello stato cognitivo…</div>
   if (error && !data) return <div className="mind-error"><TriangleAlert size={18} /><div><strong>Stato mentale non disponibile</strong><span>{error}</span></div><button className="ghost-button" onClick={() => void load()}><RefreshCw size={14} /> Riprova</button></div>
