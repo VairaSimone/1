@@ -158,3 +158,9 @@ test('movement start normalizes ISO simulation timestamps before using a raw DB 
   assert.match(section,/startedSimulationAt/);
   assert.match(section,/movementId,simulationId,entityId,origin,destination,startedSimulationAt,expectedArrival/);
 });
+
+test('raw mysql connections normalize simulation timestamps like pool.query',()=>{
+  const source=read('db/pool.js');
+  assert.match(source,/originalGetConnection = pool\.getConnection\.bind\(pool\)/);
+  assert.match(source,/conn\.query = \(sql, values\) => originalConnectionQuery\(sql, normalizeMysqlValues\(values\)\)/);
+});
