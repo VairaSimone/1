@@ -276,6 +276,46 @@ const ACTION_NEED_GAINS={
   WORKING:{ACHIEVEMENT:-0.70,ENERGY:-0.20,FUN:-0.10,COMFORT:-0.04,SAFETY:0.005},WATCHING:{FUN:-1.10,ENERGY:0.05,COMFORT:0.06,SAFETY:0.02},
   SCHOOL:{ACHIEVEMENT:-0.60,CURIOSITY:-0.40,ENERGY:-0.12,FUN:-0.05,COMFORT:-0.03,SAFETY:0.01}
 };
+const SAFETY_ACTION_EFFECTS=Object.freeze({
+  WALKING:0.008,
+  EXPLORING:0.018,
+  TRAVELLING:0.015,
+  WORKING:0.004,
+  PLAYING:0.003,
+  SCHOOL:0.002,
+  STUDYING:0.001,
+  READING:0.001,
+  TALKING:0,
+  WATCHING:0,
+  EATING:0,
+  DRINKING:0,
+  RESTING:-0.004,
+  SLEEPING:-0.006
+});
+const SAFETY_WEATHER_EFFECTS=Object.freeze({CLEAR:0,CLOUDY:0.001,RAIN:0.004,STORM:0.012,HEAT:0.003,COLD:0.003});
+const CRITICAL_WORLD_EVENT_SAFETY_PENALTY=0.035;
+
+function safetyContextDelta({actionType,currentValue,recoveryRate,decayRate,hours,perception}) {
+  const environment=perception?.location?.environment||{};
+  const weather=String(environment.weather||"CLEAR").toUpperCase();
+  let delta=(recoveryRate*0.06*(1-clamp(currentValue))-decayRate*0.05)*hours;
+  delta-=Number(SAFETY_ACTION_EFFECTS[String(actionType||"").toUpperCase()]||0)*hours;
+  delta-=Number(SAFETY_WEATHER_EFFECTS[weather]||0)*hours;
+  const daylight=Number(environment.daylight);
+  if(Number.isFinite(daylight)&&daylight<0.2) delta-=0.003*hours;
+  const visibility=Number(environment.visibility);
+  if(Number.isFinite(visibility)&&visibility<0.75) delta-=0.008*(0.75-visibility)/0.75*hours;
+  const noise=Number(environment.noise);
+  if(Number.isFinite(noise)&&noise>0.65) delta-=0.004*((noise-0.65)/0.35)*hours;
+  const events=Array.isArray(perception?.recentEvents)?perception.recentEvents:[];
+  const currentTime=perception?.simulationTime?new Date(perception.simulationTime).getTime():NaN;
+  if(Number.isFinite(currentTime)&&events.some(event=>{
+    const eventTime=new Date(event?.simulationAt||0).getTime();
+    return Number.isFinite(eventTime)&&Math.abs(eventTime-currentTime)<1000&&Number(event?.importance||0)>=0.85;
+  })) delta-=CRITICAL_WORLD_EVENT_SAFETY_PENALTY;
+  return delta;
+}
+
 const ACTION_DECAY_MULTIPLIERS={
   SLEEPING:{HUNGER:0.30,THIRST:0.28,SLEEPINESS:0.45,ENERGY:0.05,SOCIAL_NEED:0.75,FUN:0.70,CURIOSITY:0.65,ACHIEVEMENT:0.70,BELONGING:0.75},RESTING:{HUNGER:0.55,THIRST:0.50,SLEEPINESS:0.70,ENERGY:0.35,SOCIAL_NEED:0.80,FUN:0.80,CURIOSITY:0.75,ACHIEVEMENT:0.75,BELONGING:0.80},
   DRINKING:{HUNGER:0.85,THIRST:0.55,SLEEPINESS:0.85,ENERGY:0.80},EATING:{HUNGER:0.65,THIRST:0.75,SLEEPINESS:0.85,ENERGY:0.75},TALKING:{HUNGER:1.00,THIRST:1.00,ENERGY:1.00},PLAYING:{HUNGER:1.15,THIRST:1.20,ENERGY:1.35},STUDYING:{HUNGER:1.00,THIRST:1.00,ENERGY:1.20},
@@ -296,7 +336,7 @@ async function updateNeeds(entityId,simulationTime,deltaHours,causeEventId=null,
     let delta;
     if(PRESSURE_NEEDS.has(r.code))delta=decayRate*hours*multiplier;
     else if(r.code==="ENERGY")delta=-decayRate*hours*multiplier;
-    else if(r.code==="SAFETY")delta=(recoveryRate*0.10*(1-clamp(r.value))-decayRate*0.03)*hours;
+    else if(r.code==="SAFETY")delta=safetyContextDelta({actionType:action,currentValue:r.value,recoveryRate,decayRate,hours,perception:historyContext?.perception});
     else if(r.code==="COMFORT")delta=(recoveryRate*0.12*(1-clamp(r.value))-decayRate*0.04)*hours;
     else delta=-decayRate*hours;
     if(action){
@@ -330,10 +370,21 @@ async function updateNeeds(entityId,simulationTime,deltaHours,causeEventId=null,
   return changes;
 }
 function traitValue(traits,code,fallback=.5){const row=(traits||[]).find(t=>String(t.code||"").toUpperCase()===code);return row?clamp(row.value):fallback;}
-function emotionAppraisal(actionType,needs,context={}){const codes=["JOY","SADNESS","ANGER","FEAR","ANXIETY","FRUSTRATION","EXCITEMENT","CALM","DISGUST","SHAME"],deltas=Object.fromEntries(codes.map(c=>[c,0])),add=(c,v)=>{deltas[c]+=v;};const traits=context.traits||[],extraversion=traitValue(traits,"EXTRAVERSION"),sociability=traitValue(traits,"SOCIABILITY"),empathy=traitValue(traits,"EMPATHY"),openness=traitValue(traits,"OPENNESS"),neuroticism=traitValue(traits,"NEUROTICISM"),patience=traitValue(traits,"PATIENCE"),impulsivity=traitValue(traits,"IMPULSIVITY"),socialReactivity=.70+.65*((extraversion+sociability)/2),negativeSensitivity=.72+.62*neuroticism,patienceBuffer=.72+.45*patience;if(!context.event)for(const[c,v]of Object.entries(ACTION_EMOTION_EFFECTS[actionType]||{}))add(c,v);const p=Object.fromEntries((needs||[]).map(n=>[n.code,clamp(n.new??n.value)]));for(const[code,curve]of Object.entries(NEED_EMOTION_CURVES)){const pressure=pressureCurve(p[code]||0,curve.threshold);if(curve.frustration)add("FRUSTRATION",curve.frustration*pressure*negativeSensitivity);if(curve.anger)add("ANGER",curve.anger*pressure*(0.8+0.4*impulsivity));if(curve.sadness)add("SADNESS",curve.sadness*pressure*(1.1-neuroticism*.35));if(curve.anxiety)add("ANXIETY",curve.anxiety*pressure*negativeSensitivity);if(curve.excitement)add("EXCITEMENT",curve.excitement*pressure*(.75+openness*.5));}const physiologicalPressure=Math.max(p.HUNGER||0,p.THIRST||0,p.SLEEPINESS||0);if(physiologicalPressure>.55){const suppression=Math.min(1,(physiologicalPressure-.55)/.45);add("JOY",-.045*suppression);add("CALM",-.035*suppression);}const safety=p.SAFETY??1,energy=p.ENERGY??1;if(safety<0.45){add("FEAR",(0.45-safety)*.07*negativeSensitivity);add("ANXIETY",(0.45-safety)*.05*negativeSensitivity);}if(energy<0.3){add("FRUSTRATION",(.3-energy)*.05*negativeSensitivity);add("SADNESS",(.3-energy)*.03);}if(actionType==="TALKING"){add("EXCITEMENT",(socialReactivity-.7)*.018);if(context.targetEntityId){add("JOY",(socialReactivity-.7)*.016);add("CALM",empathy*.008);add("ANXIETY",(0.55-socialReactivity)*.02*negativeSensitivity);}}if(actionType==="EXPLORING")add("EXCITEMENT",openness*.018);if(actionType==="PLAYING")add("JOY",(0.75+openness*.35)*.012);if(context.event){const outcome=String(context.outcome||"SUCCESS").toUpperCase(),expected=String(context.expectedOutcome?.outcome||context.expectedOutcome?.status||context.expectedOutcome||"").toUpperCase(),mismatch=Boolean(expected&&expected!==outcome),impact=mismatch?1.35:1,relief=Math.min(1,(needs||[]).filter(change=>Number(change.delta??0)<0).reduce((sum,change)=>sum+Math.abs(Number(change.delta||0)),0)/.8);if(outcome==="SUCCESS"){if(relief>=.25){const meaningfulRelief=Math.min(1,Math.max(0,(relief-.15)/.85));add("JOY",.035*meaningfulRelief*impact);add("CALM",.022*meaningfulRelief);}if(context.meaning==="GOAL_PROGRESS"){add("JOY",.018);add("CALM",.008);}if(context.targetEntityId){add("JOY",.008*socialReactivity);add("CALM",.004+empathy*.004);}}else if(outcome==="PARTIAL"){add("FRUSTRATION",.06*impact*negativeSensitivity);add("ANXIETY",.022*impact*negativeSensitivity);add("SADNESS",.016*impact);}else{add("FRUSTRATION",.10*impact*negativeSensitivity);add("ANXIETY",.055*impact*negativeSensitivity);add("SADNESS",.035*impact*(1.1-neuroticism*.25));add("ANGER",.025*impact*(.85+impulsivity*.35));if(context.failureReason==="RESOURCE_UNAVAILABLE")add("DISGUST",.012*negativeSensitivity);}if(context.targetEntityId&&outcome==="FAILURE"){add("ANXIETY",.03*negativeSensitivity);add("SADNESS",.025);}if(context.meaning==="GOAL_BLOCKED"){add("FRUSTRATION",.04*negativeSensitivity*(1-patience*.25));add("ANXIETY",.02*negativeSensitivity);}}return deltas;}
+function emotionAppraisal(actionType,needs,context={}){const codes=["JOY","SADNESS","ANGER","FEAR","ANXIETY","FRUSTRATION","EXCITEMENT","CALM","DISGUST","SHAME"],deltas=Object.fromEntries(codes.map(c=>[c,0])),add=(c,v)=>{deltas[c]+=v;};const traits=context.traits||[],extraversion=traitValue(traits,"EXTRAVERSION"),sociability=traitValue(traits,"SOCIABILITY"),empathy=traitValue(traits,"EMPATHY"),openness=traitValue(traits,"OPENNESS"),neuroticism=traitValue(traits,"NEUROTICISM"),patience=traitValue(traits,"PATIENCE"),impulsivity=traitValue(traits,"IMPULSIVITY"),socialReactivity=.70+.65*((extraversion+sociability)/2),negativeSensitivity=.72+.62*neuroticism,patienceBuffer=.72+.45*patience;if(!context.event)for(const[c,v]of Object.entries(ACTION_EMOTION_EFFECTS[actionType]||{}))add(c,v);const p=Object.fromEntries((needs||[]).map(n=>[n.code,clamp(n.new??n.value)]));for(const[code,curve]of Object.entries(NEED_EMOTION_CURVES)){const pressure=pressureCurve(p[code]||0,curve.threshold);if(curve.frustration)add("FRUSTRATION",curve.frustration*pressure*negativeSensitivity);if(curve.anger)add("ANGER",curve.anger*pressure*(0.8+0.4*impulsivity));if(curve.sadness)add("SADNESS",curve.sadness*pressure*(1.1-neuroticism*.35));if(curve.anxiety)add("ANXIETY",curve.anxiety*pressure*negativeSensitivity);if(curve.excitement)add("EXCITEMENT",curve.excitement*pressure*(.75+openness*.5));}const physiologicalPressure=Math.max(p.HUNGER||0,p.THIRST||0,p.SLEEPINESS||0);if(physiologicalPressure>.55){const suppression=Math.min(1,(physiologicalPressure-.55)/.45);add("JOY",-.045*suppression);add("CALM",-.035*suppression);}const safety=p.SAFETY??1,energy=p.ENERGY??1;
+const safetyPressure=Math.max(0,.90-safety);
+if(safetyPressure>0)add("FEAR",safetyPressure*.045*negativeSensitivity);
+if(safety<0.45){add("FEAR",(0.45-safety)*.085*negativeSensitivity);add("ANXIETY",(0.45-safety)*.06*negativeSensitivity);}
+const riskExposure=Number(SAFETY_ACTION_EFFECTS[String(actionType||"").toUpperCase()]||0);
+if(riskExposure>0)add("FEAR",riskExposure*Math.max(.25,Number(context.deltaHours)||0)*.55);
+const environment=context.location?.environment||context.environment||{};
+const weather=String(environment.weather||"CLEAR").toUpperCase();
+if(weather==="STORM")add("FEAR",.028);
+else if(weather==="RAIN")add("FEAR",.006);
+else if(Number(environment.daylight)<.2)add("FEAR",.005);
+if(energy<0.3){add("FRUSTRATION",(.3-energy)*.05*negativeSensitivity);add("SADNESS",(.3-energy)*.03);}if(actionType==="TALKING"){add("EXCITEMENT",(socialReactivity-.7)*.018);if(context.targetEntityId){add("JOY",(socialReactivity-.7)*.016);add("CALM",empathy*.008);add("ANXIETY",(0.55-socialReactivity)*.02*negativeSensitivity);}}if(actionType==="EXPLORING")add("EXCITEMENT",openness*.018);if(actionType==="PLAYING")add("JOY",(0.75+openness*.35)*.012);if(context.event){const outcome=String(context.outcome||"SUCCESS").toUpperCase(),expected=String(context.expectedOutcome?.outcome||context.expectedOutcome?.status||context.expectedOutcome||"").toUpperCase(),mismatch=Boolean(expected&&expected!==outcome),impact=mismatch?1.35:1,relief=Math.min(1,(needs||[]).filter(change=>Number(change.delta??0)<0).reduce((sum,change)=>sum+Math.abs(Number(change.delta||0)),0)/.8);if(outcome==="SUCCESS"){if(relief>=.25){const meaningfulRelief=Math.min(1,Math.max(0,(relief-.15)/.85));add("JOY",.035*meaningfulRelief*impact);add("CALM",.022*meaningfulRelief);}if(context.meaning==="GOAL_PROGRESS"){add("JOY",.018);add("CALM",.008);}if(context.targetEntityId){add("JOY",.008*socialReactivity);add("CALM",.004+empathy*.004);}}else if(outcome==="PARTIAL"){add("FRUSTRATION",.06*impact*negativeSensitivity);add("ANXIETY",.022*impact*negativeSensitivity);add("SADNESS",.016*impact);}else{add("FRUSTRATION",.10*impact*negativeSensitivity);add("ANXIETY",.055*impact*negativeSensitivity);add("SADNESS",.035*impact*(1.1-neuroticism*.25));add("ANGER",.025*impact*(.85+impulsivity*.35));if(context.failureReason==="RESOURCE_UNAVAILABLE")add("DISGUST",.012*negativeSensitivity);}if(context.targetEntityId&&outcome==="FAILURE"){add("ANXIETY",.03*negativeSensitivity);add("SADNESS",.025);}if(context.meaning==="GOAL_BLOCKED"){add("FRUSTRATION",.04*negativeSensitivity*(1-patience*.25));add("ANXIETY",.02*negativeSensitivity);}}return deltas;}
 async function applyEmotions(entityId,simulationTime,changes,causeEventId=null,causeActionId=null,actionType=null,deltaHours=0,appraisalContext=null){
   const [rows]=await pool.query(`SELECT BIN_TO_UUID(eec.emotion_id) AS emotionId,ed.code,eec.intensity,eec.version,ed.decay_rate AS decayRate,ed.default_value AS defaultValue FROM entity_emotions_current eec JOIN emotion_definitions ed ON ed.id=eec.emotion_id WHERE eec.entity_id=UUID_TO_BIN(?) AND ed.active=1`,[entityId]);
-  const traits=appraisalContext?.traits||await getTraits(entityId),hours=Math.min(Math.max(Number(deltaHours)||0,0),168),appraisal=emotionAppraisal(actionType,changes,{...(appraisalContext||{}),deltaHours:hours,traits}),result=[],significant=Boolean(appraisalContext?.significant||appraisalContext?.event);
+  const traits=appraisalContext?.traits||await getTraits(entityId),hours=Math.min(Math.max(Number(deltaHours)||0,0),168),locationContext=appraisalContext?.perception?.location||null,appraisal=emotionAppraisal(actionType,changes,{...(appraisalContext||{}),deltaHours:hours,traits,location:locationContext,environment:locationContext?.environment||null}),result=[],significant=Boolean(appraisalContext?.significant||appraisalContext?.event);
   for(const row of rows){
     const oldIntensity=round5(row.intensity),baseline=clamp(row.defaultValue),decayCoefficient=Math.max(0,Number(row.decayRate)||0)*0.5,relaxation=hours>0?1-Math.exp(-decayCoefficient*hours):0,eventHomeostasis=appraisalContext?.event?0.10:0,passiveDecay=(baseline-oldIntensity)*Math.max(relaxation,eventHomeostasis),rawAppraisal=Number(appraisal[row.code]||0),positiveEmotion=new Set(["JOY","CALM","EXCITEMENT"]).has(row.code),stimulusScale=appraisalContext?.event?(positiveEmotion?Math.max(.06,1-.90*oldIntensity):Math.max(.35,1-.25*oldIntensity)):hours,next=round5(clamp(oldIntensity+passiveDecay+rawAppraisal*stimulusScale)),historyDelta=round5(next-oldIntensity);
     if(Math.abs(historyDelta)<0.000001)continue;
