@@ -5,6 +5,81 @@ const behavioral = require("../src/services/behavioral-policy-bootstrap");
 const decision = require("../src/services/decision-service");
 const queue = require("../src/services/cognitive-queue");
 
+
+test("critical thirst hard-forces drinking even when sleeping has the highest score", () => {
+  const recovery = decision.resolveCriticalResourceRecovery({
+    needs: [
+      { code: "THIRST", value: 0.95, priorityWeight: 1 },
+      { code: "SLEEPINESS", value: 0.99, priorityWeight: 1 }
+    ],
+    resourceContext: {
+      localResources: { water: 3 },
+      actions: { DRINKING: { localAvailable: 3 } }
+    },
+    candidates: [
+      { action: "SLEEPING", score: 8 },
+      { action: "DRINKING", score: 1 },
+      { action: "WALKING", score: 2 }
+    ]
+  });
+
+  assert.equal(recovery.selectedAction, "DRINKING");
+  assert.equal(recovery.mode, "DIRECT");
+  assert.equal(recovery.candidate.action, "DRINKING");
+});
+
+test("critical hunger routes walking to a known resource when food is not local", () => {
+  const recovery = decision.resolveCriticalResourceRecovery({
+    needs: [{ code: "HUNGER", value: 0.92, priorityWeight: 1 }],
+    resourceContext: {
+      localResources: { food: 0 },
+      actions: {
+        EATING: {
+          localAvailable: 0,
+          nearestLocation: {
+            locationId: "food-market",
+            travelMinutes: 7
+          }
+        }
+      },
+      nearestResources: {
+        food: {
+          locationId: "food-market",
+          travelMinutes: 7
+        }
+      }
+    },
+    candidates: [
+      { action: "SLEEPING", score: 6 },
+      { action: "WALKING", score: 0.2 }
+    ]
+  });
+
+  assert.equal(recovery.selectedAction, "WALKING");
+  assert.equal(recovery.candidate.targetLocationId, "food-market");
+  assert.equal(recovery.candidate.resourceIntent.resource, "food");
+  assert.equal(recovery.candidate.resourceIntent.destinationLocationId, "food-market");
+  assert.equal(recovery.candidate.resourceIntent.reason, "CRITICAL_NEED_RESOURCE_RECOVERY");
+});
+
+test("critical resource recovery fails closed instead of falling back to sleep", () => {
+  assert.throws(
+    () => decision.resolveCriticalResourceRecovery({
+      needs: [{ code: "THIRST", value: 0.91, priorityWeight: 1 }],
+      resourceContext: {
+        localResources: { water: 0 },
+        actions: { DRINKING: { localAvailable: 0, nearestLocation: null } },
+        nearestResources: { water: null }
+      },
+      candidates: [
+        { action: "SLEEPING", score: 10 },
+        { action: "WALKING", score: 1 }
+      ]
+    }),
+    error => error?.code === "CRITICAL_RESOURCE_RECOVERY_UNAVAILABLE"
+  );
+});
+
 test("active plan with JSON motivation is classified as goal-directed", () => {
   const classification = behavioral.classifyBehavioralDriver({
     needs: [{ code: "HUNGER", value: 0.62 }],
