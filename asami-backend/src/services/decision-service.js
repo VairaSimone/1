@@ -438,6 +438,74 @@ function resolveCriticalResourceRecovery(context = {}) {
   );
 }
 
+
+function resolveCriticalDecisionRequirement(needs = [], recovery = null) {
+  if (recovery?.critical) {
+    return {
+      needCode: normalizeAction(recovery.critical.code),
+      requiredAction: normalizeAction(recovery.selectedAction),
+      resource: recovery.critical.resource || null,
+      targetLocationId: recovery.candidate?.targetLocationId || null,
+      mode: recovery.mode
+    };
+  }
+
+  const critical = criticalNeedState(needs);
+  if (!critical) return null;
+
+  return {
+    needCode: normalizeAction(critical.code),
+    requiredAction: normalizeAction(critical.action),
+    resource: CRITICAL_NEED_ACTIONS[normalizeAction(critical.code)]?.resource || null,
+    targetLocationId: null,
+    mode: "DIRECT"
+  };
+}
+
+function validateCriticalDecision(needs = [], actionType, targetLocationId = null, recovery = null) {
+  const requirement = resolveCriticalDecisionRequirement(needs, recovery);
+  if (!requirement) return null;
+
+  const action = normalizeAction(actionType);
+  if (action !== requirement.requiredAction) {
+    throw Object.assign(
+      new Error(
+        "Critical need " + requirement.needCode +
+        " requires " + requirement.requiredAction +
+        " but decision selected " + action
+      ),
+      {
+        code: "CRITICAL_DECISION_ACTION_MISMATCH",
+        needCode: requirement.needCode,
+        requiredAction: requirement.requiredAction,
+        actualAction: action
+      }
+    );
+  }
+
+  if (
+    requirement.mode === "ROUTING" &&
+    requirement.targetLocationId &&
+    String(targetLocationId || "") !== String(requirement.targetLocationId)
+  ) {
+    throw Object.assign(
+      new Error(
+        "Critical resource recovery for " + requirement.needCode +
+        " must target " + requirement.targetLocationId
+      ),
+      {
+        code: "CRITICAL_DECISION_TARGET_MISMATCH",
+        needCode: requirement.needCode,
+        requiredAction: requirement.requiredAction,
+        expectedTargetLocationId: requirement.targetLocationId,
+        actualTargetLocationId: targetLocationId || null
+      }
+    );
+  }
+
+  return requirement;
+}
+
 async function makeDecision({
   simulationId,
   entityId,
@@ -473,9 +541,12 @@ async function makeDecision({
   }
 
   const committed = resolvePlanCommitment({ ...context, candidates });
-  const criticalAction =
-    criticalResourceRecovery?.selectedAction ||
-    criticalNeedAction(context?.needs || []);
+  const criticalRequirement = resolveCriticalDecisionRequirement(
+    context?.needs || [],
+    criticalResourceRecovery
+  );
+  const criticalAction = criticalRequirement?.requiredAction || null;
+  const criticalNeedCode = criticalRequirement?.needCode || null;
 
   const aiAction = normalizeAction(aiChoice?.selectedActionType);
   const aiCandidate = candidates.find(
@@ -549,6 +620,7 @@ async function makeDecision({
     selectionMode === "AI_DELIBERATION"
       ? aiChoice?.targetLocationId || chosenCandidate.targetLocationId || null
       : chosenCandidate.targetLocationId || null;
+  validateCriticalDecision(context?.needs || [], chosen, selectedTargetLocationId, criticalResourceRecovery);
   const needPriority = needPriorityState(context?.needs || []);
   const mysqlSimulationTime = effectiveSimulationTimeString(simulationTime);
 
@@ -601,11 +673,14 @@ async function makeDecision({
           needPriority,
           selectionMode,
           chosenAction: chosen,
+          criticalNeed: criticalNeedCode,
+          criticalAction,
           criticalResourceRecovery: criticalResourceRecovery
             ? {
                 code: criticalResourceRecovery.critical.code,
                 resource: criticalResourceRecovery.critical.resource,
-                mode: criticalResourceRecovery.mode
+                mode: criticalResourceRecovery.mode,
+                targetLocationId: criticalResourceRecovery.candidate?.targetLocationId || null
               }
             : null,
           individuality: individualityBias(entityId, chosen),
@@ -638,12 +713,14 @@ async function makeDecision({
           validAiAction &&
           !aiBlockedByCritical &&
           selectionMode === "AI_DELIBERATION",
-        criticalNeed: criticalAction,
+        criticalNeed: criticalNeedCode,
+        criticalAction,
         criticalResourceRecovery: criticalResourceRecovery
           ? {
               code: criticalResourceRecovery.critical.code,
               resource: criticalResourceRecovery.critical.resource,
-              mode: criticalResourceRecovery.mode
+              mode: criticalResourceRecovery.mode,
+              targetLocationId: criticalResourceRecovery.candidate?.targetLocationId || null
             }
           : null,
         needPriority,
@@ -718,4 +795,4 @@ async function makeDecision({
 }
 
 function effectiveSimulationTimeString(value){const date=value instanceof Date?value:new Date(value);if(!Number.isFinite(date.getTime()))throw Object.assign(new Error("Invalid simulation time"),{code:"INVALID_SIMULATION_TIME"});const pad=n=>String(n).padStart(2,"0"),ms=String(date.getUTCMilliseconds()).padStart(3,"0");return `${date.getUTCFullYear()}-${pad(date.getUTCMonth()+1)}-${pad(date.getUTCDate())} ${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}:${pad(date.getUTCSeconds())}.${ms}`;}
-module.exports={ACTIONS,RESOURCE_REQUIREMENTS,scoreAction,buildDecisionContext,makeDecision,applyLocationBias,LOCATION_ACTION_BIAS,loadResourceContext,findNearestResourceLocation,shortestRoute,deriveProactivity,applyProactiveOpportunityBias,applyPlanCommitment,applyExplorationCommitment,applyRecoveryBlocks,recoveryBlockForInterruption,activeRecoveryBlocks,criticalNeedState,criticalNeedAction,criticalResourceNeedState,resolveCriticalResourceRecovery,applyRecentActionPenalty,individualityBias,chooseStochasticCandidate,resolvePlanCommitment,chooseSocialTargetCandidate,applySocialFeasibility,compactDecisionContext};
+module.exports={ACTIONS,RESOURCE_REQUIREMENTS,scoreAction,buildDecisionContext,makeDecision,applyLocationBias,LOCATION_ACTION_BIAS,loadResourceContext,findNearestResourceLocation,shortestRoute,deriveProactivity,applyProactiveOpportunityBias,applyPlanCommitment,applyExplorationCommitment,applyRecoveryBlocks,recoveryBlockForInterruption,activeRecoveryBlocks,criticalNeedState,criticalNeedAction,criticalResourceNeedState,resolveCriticalResourceRecovery,resolveCriticalDecisionRequirement,validateCriticalDecision,applyRecentActionPenalty,individualityBias,chooseStochasticCandidate,resolvePlanCommitment,chooseSocialTargetCandidate,applySocialFeasibility,compactDecisionContext};
