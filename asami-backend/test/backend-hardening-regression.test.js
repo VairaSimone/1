@@ -86,3 +86,10 @@ test('movement creation serializes on the entity location row',()=>{
   assert.match(section,/entity_locations_current[\s\S]*FOR UPDATE/);
   assert.match(section,/movements[\s\S]*status IN \('PLANNED','ACTIVE'\)[\s\S]*FOR UPDATE/);
 });
+
+test('conversation failures are recorded on the communication attempt',()=>{
+  const source=read('services/chat-service.js');
+  assert.match(source,/SET status='FAILED',result=\?/);
+  assert.match(source,/UPDATE communication_intents[\s\S]*status='FAILED'/);
+  assert.match(source,/status IN \('STARTED','DELIVERED'\)/);
+});
