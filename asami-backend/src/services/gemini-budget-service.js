@@ -110,7 +110,7 @@ async function reserve({ prompt, outputTokenCeiling, kind }) {
       return { allowed: false, reason: dailyBlocked ? "DAILY_BUDGET" : "MONTHLY_BUDGET", estimatedUsd, pacedDailyLimit };
     }
     await conn.query(`UPDATE gemini_usage SET reserved_usd=reserved_usd+?,requests=requests+1 WHERE period_type='DAY' AND period_key=?`, [estimatedUsd, day]);
-    await conn.query(`UPDATE gemini_usage SET reserved_usd=reserved_usd+? WHERE period_type='MONTH' AND period_key=?`, [estimatedUsd, month]);
+    await conn.query(`UPDATE gemini_usage SET reserved_usd=reserved_usd+?,requests=requests+1 WHERE period_type='MONTH' AND period_key=?`, [estimatedUsd, month]);
     await conn.commit();
     return { allowed: true, inputTokens, estimatedUsd, day, month, kind };
   } catch (err) {
