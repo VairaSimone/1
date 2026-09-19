@@ -4,7 +4,9 @@ const {
   deriveProactivity,
   applyPlanCommitment,
   applyExplorationCommitment,
-  criticalNeedAction
+  criticalNeedAction,
+  resolveCriticalDecisionRequirement,
+  validateCriticalDecision
 } = require("../src/services/decision-service");
 const {
   shouldCreateExperiencePreference,
@@ -89,4 +91,68 @@ test("stored experience cannot dominate decision making", () => {
   }, "TALKING", { locationType: "CAFE" });
 
   assert.ok(modifier <= 0.35);
+});
+
+test("critical decision requirement records the physiological need separately from the action", () => {
+  const routed = {
+    critical: { code: "THIRST", resource: "water" },
+    selectedAction: "WALKING",
+    mode: "ROUTING",
+    candidate: { targetLocationId: "water-source" }
+  };
+
+  const requirement = resolveCriticalDecisionRequirement(
+    [{ code: "THIRST", value: 0.94 }],
+    routed
+  );
+
+  assert.equal(requirement.needCode, "THIRST");
+  assert.equal(requirement.requiredAction, "WALKING");
+  assert.equal(requirement.mode, "ROUTING");
+  assert.equal(requirement.targetLocationId, "water-source");
+  assert.equal(
+    validateCriticalDecision(
+      [{ code: "THIRST", value: 0.94 }],
+      "WALKING",
+      "water-source",
+      routed
+    ).needCode,
+    "THIRST"
+  );
+});
+
+test("critical decision invariant rejects an incoherent final action", () => {
+  assert.throws(
+    () =>
+      validateCriticalDecision(
+        [{ code: "THIRST", value: 0.94 }],
+        "SLEEPING",
+        null,
+        {
+          critical: { code: "THIRST", resource: "water" },
+          selectedAction: "DRINKING",
+          mode: "DIRECT",
+          candidate: null
+        }
+      ),
+    error => error?.code === "CRITICAL_DECISION_ACTION_MISMATCH"
+  );
+});
+
+test("critical routed recovery rejects a changed destination", () => {
+  assert.throws(
+    () =>
+      validateCriticalDecision(
+        [{ code: "HUNGER", value: 0.92 }],
+        "WALKING",
+        "wrong-location",
+        {
+          critical: { code: "HUNGER", resource: "food" },
+          selectedAction: "WALKING",
+          mode: "ROUTING",
+          candidate: { targetLocationId: "food-source" }
+        }
+      ),
+    error => error?.code === "CRITICAL_DECISION_TARGET_MISMATCH"
+  );
 });
