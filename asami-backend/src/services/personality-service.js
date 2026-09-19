@@ -1,6 +1,7 @@
 const { pool } = require('../db/pool');
 const { uuid } = require('../lib/ids');
 const { recordHabitEvidence: recordHabitEvidenceShared } = require('./habit-service');
+const { withEntityStateLock } = require('./state-service');
 
 function clamp01(value, fallback = 0.5) {
   const n = Number(value);
@@ -54,26 +55,27 @@ async function getCognitiveProfile(simulationId, entityId) {
 }
 
 async function updateMentalState(simulationId, entityId, simulationTime, patch = {}) {
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    const [rows] = await pool.query(`SELECT attributes,version FROM entities WHERE simulation_id=UUID_TO_BIN(?) AND id=UUID_TO_BIN(?) LIMIT 1`, [simulationId, entityId]);
-    if (!rows.length) return null;
-    const attributes = parseJson(rows[0].attributes, {}) || {};
-    const previous = attributes.mentalState && typeof attributes.mentalState === 'object' ? attributes.mentalState : {};
-    attributes.mentalState = {
-      currentFocus: patch.currentFocus !== undefined ? safeText(patch.currentFocus,180)||null : previous.currentFocus||null,
-      currentConcern: patch.currentConcern !== undefined ? safeText(patch.currentConcern,180)||null : previous.currentConcern||null,
-      recentThought: patch.recentThought !== undefined ? safeText(patch.recentThought,300)||null : previous.recentThought||null,
-      mentalLoad: clamp01(patch.mentalLoad ?? previous.mentalLoad ?? .2),
-      rumination: clamp01(patch.rumination ?? previous.rumination ?? .1),
-      certainty: clamp01(patch.certainty ?? previous.certainty ?? .5),
-      updatedSimulationAt: simulationTime
-    };
-    const [updated] = await pool.query(`UPDATE entities SET attributes=?,version=version+1 WHERE simulation_id=UUID_TO_BIN(?) AND id=UUID_TO_BIN(?) AND version=?`, [JSON.stringify(attributes),simulationId,entityId,rows[0].version]);
-    if (updated.affectedRows) return attributes.mentalState;
-  }
-  return null;
+  return withEntityStateLock(entityId, async db => {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const [rows] = await db.query(`SELECT attributes,version FROM entities WHERE simulation_id=UUID_TO_BIN(?) AND id=UUID_TO_BIN(?) LIMIT 1`, [simulationId, entityId]);
+      if (!rows.length) return null;
+      const attributes = parseJson(rows[0].attributes, {}) || {};
+      const previous = attributes.mentalState && typeof attributes.mentalState === 'object' ? attributes.mentalState : {};
+      attributes.mentalState = {
+        currentFocus: patch.currentFocus !== undefined ? safeText(patch.currentFocus,180)||null : previous.currentFocus||null,
+        currentConcern: patch.currentConcern !== undefined ? safeText(patch.currentConcern,180)||null : previous.currentConcern||null,
+        recentThought: patch.recentThought !== undefined ? safeText(patch.recentThought,300)||null : previous.recentThought||null,
+        mentalLoad: clamp01(patch.mentalLoad ?? previous.mentalLoad ?? .2),
+        rumination: clamp01(patch.rumination ?? previous.rumination ?? .1),
+        certainty: clamp01(patch.certainty ?? previous.certainty ?? .5),
+        updatedSimulationAt: simulationTime
+      };
+      const [updated] = await db.query(`UPDATE entities SET attributes=?,version=version+1 WHERE simulation_id=UUID_TO_BIN(?) AND id=UUID_TO_BIN(?) AND version=?`, [JSON.stringify(attributes),simulationId,entityId,rows[0].version]);
+      if (updated.affectedRows) return attributes.mentalState;
+    }
+    return null;
+  });
 }
-
 async function upsertPreference({ simulationId, entityId, simulationTime, item }) {
   const targetType=normalizeKey(item?.targetType||item?.topic||'TOPIC',50),rawTargetEntityId=item?.targetEntityId||null,targetEntityId=await resolveEntityIdInSimulation(simulationId,rawTargetEntityId),value=clampSigned(item?.value??item?.preferenceValue,1,0),strength=clamp01(item?.strength,.5),confidence=clamp01(item?.confidence,.5);if(!targetType||rawTargetEntityId&&!targetEntityId)return null;
   let rows;
