@@ -15,41 +15,50 @@ function eventWriteLockName(simulationId) {
   return "asami:event-write:" + crypto.createHash("sha1").update(String(simulationId)).digest("hex");
 }
 
-async function createEvent({simulationId,eventTypeCode,title,description,simulationAt,importance=0.5,sourceTickId=null,sourceActionId=null,metadata=null,participants=[]}) {
-  if (!simulationId) throw new Error("Event simulationId is required");
-  const conn=await pool.getConnection();
+async function withEventWriteLock(simulationId, fn, db = pool) {
+  const ownsConnection=db===pool;
+  const conn=ownsConnection?await pool.getConnection():db;
   const lockName=eventWriteLockName(simulationId);
   let locked=false;
   try{
     const [lockRows]=await conn.query("SELECT GET_LOCK(?,?) AS acquired",[lockName,EVENT_WRITE_LOCK_TIMEOUT_SECONDS]);
     locked=Number(lockRows[0]?.acquired)===1;
     if(!locked)throw Object.assign(new Error("Event write lock unavailable"),{code:"EVENT_WRITE_LOCK_UNAVAILABLE",simulationId,lockName});
-    await conn.beginTransaction();
-    const eventTypeId=await getEventTypeId(eventTypeCode,conn);
-    if(!eventTypeId)throw new Error(`Missing event type: ${eventTypeCode}`);
-    const eventId=uuid();
-    await conn.query(`
-      INSERT INTO events
-        (id,simulation_id,event_type_id,title,description,simulation_at,importance,status,source_tick_id,source_action_id,metadata)
-      VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),?, ?, ?, ?, ?, 'RECORDED',
-             UUID_TO_BIN(?), UUID_TO_BIN(?), ?)
-    `,[eventId,simulationId,eventTypeId,title,description||null,simulationAt,importance,sourceTickId,sourceActionId,metadata?JSON.stringify(metadata):null]);
-
-    for(const p of participants){
-      await conn.query(`
-        INSERT IGNORE INTO event_participants(event_id,simulation_id,entity_id,role)
-        VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?)
-      `,[eventId,simulationId,p.entityId,p.role]);
-    }
-    await conn.commit();
-    return eventId;
-  }catch(err){
-    try{await conn.rollback();}catch{}
-    throw err;
+    return await fn(conn);
   }finally{
     try{if(locked)await conn.query("SELECT RELEASE_LOCK(?)",[lockName]);}catch{}
-    conn.release();
+    if(ownsConnection)conn.release();
   }
+}
+
+async function createEvent({simulationId,eventTypeCode,title,description,simulationAt,importance=0.5,sourceTickId=null,sourceActionId=null,metadata=null,participants=[]}) {
+  if (!simulationId) throw new Error("Event simulationId is required");
+  return withEventWriteLock(simulationId, async conn => {
+    await conn.beginTransaction();
+    try{
+      const eventTypeId=await getEventTypeId(eventTypeCode,conn);
+      if(!eventTypeId)throw new Error(`Missing event type: ${eventTypeCode}`);
+      const eventId=uuid();
+      await conn.query(`
+        INSERT INTO events
+          (id,simulation_id,event_type_id,title,description,simulation_at,importance,status,source_tick_id,source_action_id,metadata)
+        VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),?, ?, ?, ?, ?, 'RECORDED',
+               UUID_TO_BIN(?), UUID_TO_BIN(?), ?)
+      `,[eventId,simulationId,eventTypeId,title,description||null,simulationAt,importance,sourceTickId,sourceActionId,metadata?JSON.stringify(metadata):null]);
+
+      for(const p of participants){
+        await conn.query(`
+          INSERT IGNORE INTO event_participants(event_id,simulation_id,entity_id,role)
+          VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?)
+        `,[eventId,simulationId,p.entityId,p.role]);
+      }
+      await conn.commit();
+      return eventId;
+    }catch(err){
+      try{await conn.rollback();}catch{}
+      throw err;
+    }
+  });
 }
 
 async function addEffect({simulationId,eventId,effectType,targetEntityId=null,targetRelationshipId=null,targetActivityId=null,targetMemoryId=null,targetGoalId=null,targetActionId=null,beforeState=null,afterState=null,magnitude=null,createdSimulationAt}) {
