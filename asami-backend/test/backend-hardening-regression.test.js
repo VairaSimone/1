@@ -114,7 +114,7 @@ test('movement completion closes all open history rows before recording arrival'
   const start=source.indexOf('async function completeMovement');
   const end=source.indexOf('async function startAction',start);
   const section=source.slice(start,end);
-  assert.match(section,/UPDATE entity_location_history SET exited_simulation_at=\? WHERE entity_id=UUID_TO_BIN\(\?\) AND exited_simulation_at IS NULL/);
+  assert.match(section,/UPDATE entity_location_history SET exited_simulation_at=\? WHERE simulation_id=UUID_TO_BIN\(\?\) AND entity_id=UUID_TO_BIN\(\?\) AND exited_simulation_at IS NULL/);
 });
 
 test('action completion does not create an event before core action commit',()=>{
