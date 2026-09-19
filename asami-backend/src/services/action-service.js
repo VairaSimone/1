@@ -1,4 +1,4 @@
-const { pool, withTransaction } = require("../db/pool");
+const { pool, withTransaction, normalizeSimulationTimestamp } = require("../db/pool");
 const { uuid } = require("../lib/ids");
 const { createEvent, addEffect } = require("./event-service");
 const { processSocialInteraction } = require("./social-relationship-service");
@@ -71,7 +71,8 @@ async function startMovement({simulationId,entityId,origin,destination,simulatio
       await conn.rollback();
       return null;
     }
-    const safeDistance=Math.max(5,Number(distanceMeters)||5),
+    const startedSimulationAt=normalizeSimulationTimestamp(simulationTime),
+      safeDistance=Math.max(5,Number(distanceMeters)||5),
       safeSpeed=Math.max(1,Number(speedKmh)||WALKING_SPEED_KMH),
       durationMinutes=Math.max(2,(safeDistance/1000/safeSpeed)*60),
       expectedArrival=new Date(new Date(simulationTime).getTime()+durationMinutes*60000),
@@ -79,7 +80,7 @@ async function startMovement({simulationId,entityId,origin,destination,simulatio
     await conn.query(
       `INSERT INTO movements(id,simulation_id,entity_id,origin_location_id,destination_location_id,started_simulation_at,expected_arrival_simulation_at,status,reason,source_activity_id,version)
        VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,'ACTIVE','autonomous route',NULL,1)`,
-      [movementId,simulationId,entityId,origin,destination,simulationTime,expectedArrival]
+      [movementId,simulationId,entityId,origin,destination,startedSimulationAt,expectedArrival]
     );
     await conn.commit();
     return{movementId,durationMinutes,expectedArrival,distanceMeters:safeDistance,speedKmh:safeSpeed};
