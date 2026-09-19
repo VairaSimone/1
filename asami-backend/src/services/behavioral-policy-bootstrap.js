@@ -1,6 +1,6 @@
 const { pool } = require("../db/pool");
 const { uuid } = require("../lib/ids");
-const { criticalNeedState, CRITICAL_NEED_ACTIONS } = require("./decision-rules");
+const { CRITICAL_NEED_ACTIONS } = require("./decision-rules");
 
 const PHYSIOLOGICAL_NEEDS = new Set(["HUNGER", "THIRST", "SLEEPINESS", "ENERGY", "SAFETY"]);
 const PHYSIOLOGICAL_ACTIONS = new Set(["EATING", "DRINKING", "SLEEPING", "RESTING"]);
@@ -189,10 +189,20 @@ function allowedActionSet(profile, allActions) {
 }
 
 function physiologicalPressure(needs = []) {
-  const critical = criticalNeedState(needs);
-  if (!critical) return null;
-  const policy = CRITICAL_NEED_ACTIONS[normalize(critical.code)] || {};
-  return { ...critical, direction: policy.direction || null };
+  const values = new Map((needs || []).map(need => [normalize(need.code), Number(need.value)]));
+  let highest = null;
+  for (const [code, policy] of Object.entries(CRITICAL_NEED_ACTIONS)) {
+    const value = values.get(code);
+    if (!Number.isFinite(value)) continue;
+    const critical = policy.direction === "HIGH" ? value >= policy.threshold : value <= policy.threshold;
+    if (!critical) continue;
+    const urgency = policy.direction === "HIGH"
+      ? 1 + (value - policy.threshold) / Math.max(0.01, 1 - policy.threshold)
+      : 1 + (policy.threshold - value) / Math.max(0.01, policy.threshold);
+    const candidate = { code, direction: policy.direction, threshold: policy.threshold, action: policy.action, value, urgency };
+    if (!highest || candidate.urgency > highest.urgency) highest = candidate;
+  }
+  return highest;
 }
 function getNeedValue(needs, code) {
   return Number((needs || []).find(need => normalize(need.code) === normalize(code))?.value || 0);
