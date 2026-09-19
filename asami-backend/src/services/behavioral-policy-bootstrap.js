@@ -1,5 +1,6 @@
 const { pool } = require("../db/pool");
 const { uuid } = require("../lib/ids");
+const { criticalNeedState, CRITICAL_NEED_ACTIONS } = require("./decision-rules");
 
 const PHYSIOLOGICAL_NEEDS = new Set(["HUNGER", "THIRST", "SLEEPINESS", "ENERGY", "SAFETY"]);
 const PHYSIOLOGICAL_ACTIONS = new Set(["EATING", "DRINKING", "SLEEPING", "RESTING"]);
@@ -188,28 +189,11 @@ function allowedActionSet(profile, allActions) {
 }
 
 function physiologicalPressure(needs = []) {
-  const values = new Map((needs || []).map(need => [normalize(need.code), Number(need.value)]));
-  const rules = [
-    { code: "THIRST", direction: "HIGH", threshold: 0.8, action: "DRINKING" },
-    { code: "HUNGER", direction: "HIGH", threshold: 0.8, action: "EATING" },
-    { code: "SLEEPINESS", direction: "HIGH", threshold: 0.85, action: "SLEEPING" },
-    { code: "ENERGY", direction: "LOW", threshold: 0.15, action: "RESTING" },
-    { code: "SAFETY", direction: "LOW", threshold: 0.2, action: "RESTING" }
-  ];
-  let highest = null;
-  for (const rule of rules) {
-    const value = values.get(rule.code);
-    if (!Number.isFinite(value)) continue;
-    const critical = rule.direction === "HIGH" ? value >= rule.threshold : value <= rule.threshold;
-    if (!critical) continue;
-    const urgency = rule.direction === "HIGH"
-      ? 1 + (value - rule.threshold) / Math.max(0.01, 1 - rule.threshold)
-      : 1 + (rule.threshold - value) / Math.max(0.01, rule.threshold);
-    if (!highest || urgency > highest.urgency) highest = { ...rule, value, urgency };
-  }
-  return highest;
+  const critical = criticalNeedState(needs);
+  if (!critical) return null;
+  const policy = CRITICAL_NEED_ACTIONS[normalize(critical.code)] || {};
+  return { ...critical, direction: policy.direction || null };
 }
-
 function getNeedValue(needs, code) {
   return Number((needs || []).find(need => normalize(need.code) === normalize(code))?.value || 0);
 }
@@ -816,6 +800,7 @@ module.exports = {
   normalizeStageProfile,
   classifyBehavioralDriver,
   buildProactivity,
+  physiologicalPressure,
   circularHourStats,
   habitMaturity,
   habitStrengthFromEvidence
