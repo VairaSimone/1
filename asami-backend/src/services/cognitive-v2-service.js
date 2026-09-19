@@ -42,7 +42,6 @@ async function ensureIdentity(simulationId, entityId, simulationTime) {
   const key = `${simulationId}:${entityId}`;
   if (initializedIdentity.has(key)) return;
   const [existing] = await pool.query(`SELECT id FROM self_models WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) LIMIT 1`, [simulationId, entityId]);
-  if (existing.length) { initializedIdentity.add(key); return; }
   const traits = await loadTraits(simulationId, entityId);
   await pool.query(`INSERT IGNORE INTO self_models(id,simulation_id,entity_id,identity_summary,self_concept,capabilities,aspirations,limitations,current_self_view,version,created_simulation_at,updated_simulation_at) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,?,?,?,1,?,?)`, [uuid(),simulationId,entityId,'A developing person with a persistent history, preferences, relationships and goals.','I am still learning who I am through what I choose, experience and remember.',JSON.stringify({adaptive:true,domains:['social','learning','navigation','self-care']}),JSON.stringify(DEFAULT_DESIRES.map(d=>d[0])),JSON.stringify([]),'I am still forming a stable understanding of myself.',simulationTime,simulationTime]);
   for (const [code,label,fallbackImportance] of DEFAULT_VALUES) {
@@ -53,14 +52,14 @@ async function ensureIdentity(simulationId, entityId, simulationTime) {
     await pool.query(`INSERT IGNORE INTO long_term_desires(id,simulation_id,entity_id,desire_key,title,description,desire_type,priority,persistence,progress,status,origin,created_simulation_at,updated_simulation_at,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,?,?,?,0,'ACTIVE','INITIAL',?,?,1)`, [uuid(),simulationId,entityId,keyName,title,description,desireType,priority,0.86,simulationTime,simulationTime]);
   }
   const [beliefs] = await pool.query(`SELECT id FROM self_beliefs WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) LIMIT 1`, [simulationId,entityId]);
-  if (!beliefs.length) {
+  {
     const t = traitMap(traits), defaults = [
       ['CURIOUS','I am a curious person.',clamp01(0.45+(t.get('CURIOSITY')??0.5)*0.45)],
       ['CAPABLE_OF_LEARNING','I can learn from experience.',clamp01(0.52+(t.get('OPENNESS')??0.5)*0.35)],
       ['SOCIAL_CAPABILITY','I can build connections with people.',clamp01(0.42+(t.get('SOCIABILITY')??0.5)*0.38)],
       ['AGENCY','My choices can change what happens next.',clamp01(0.48+(t.get('CONFIDENCE')??0.5)*0.35)],
     ];
-    for (const [beliefKey,statement,confidence] of defaults) await pool.query(`INSERT INTO self_beliefs(id,simulation_id,entity_id,belief_key,statement,confidence,importance,source_type,source_ref,status,created_simulation_at,updated_simulation_at,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,?,?,NULL,'ACTIVE',?,?,1)`, [uuid(),simulationId,entityId,beliefKey,statement,confidence,0.65,'INITIAL',simulationTime,simulationTime]);
+    for (const [beliefKey,statement,confidence] of defaults) await pool.query(`INSERT IGNORE INTO self_beliefs(id,simulation_id,entity_id,belief_key,statement,confidence,importance,source_type,source_ref,status,created_simulation_at,updated_simulation_at,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,?,?,NULL,'ACTIVE',?,?,1)`, [uuid(),simulationId,entityId,beliefKey,statement,confidence,0.65,'INITIAL',simulationTime,simulationTime]);
   }
   const [narrative] = await pool.query(`SELECT id FROM life_narratives WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) LIMIT 1`, [simulationId,entityId]);
   if (!narrative.length) await pool.query(`INSERT INTO life_narratives(id,simulation_id,entity_id,chapter_index,title,summary,importance,event_id,created_simulation_at,updated_simulation_at,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),1,'Beginning','My story is only beginning. I learn who I am through what happens to me and what I choose to do next.',0.82,NULL,?,?,1)`, [uuid(),simulationId,entityId,simulationTime,simulationTime]);
