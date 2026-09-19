@@ -147,3 +147,14 @@ test('conversation creation is serialized per simulation and entity pair',()=>{
   assert.match(section,/RELEASE_LOCK/);
   assert.match(section,/sort\(\)\.join\('\|'\)/);
 });
+
+
+test('movement start normalizes ISO simulation timestamps before using a raw DB connection',()=>{
+  const source=read('services/action-service.js');
+  const start=source.indexOf('async function startMovement');
+  const end=source.indexOf('async function completeMovement',start);
+  const section=source.slice(start,end);
+  assert.match(section,/normalizeSimulationTimestamp\(simulationTime\)/);
+  assert.match(section,/startedSimulationAt/);
+  assert.match(section,/movementId,simulationId,entityId,origin,destination,startedSimulationAt,expectedArrival/);
+});
