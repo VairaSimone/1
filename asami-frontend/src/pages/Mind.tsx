@@ -10,6 +10,15 @@ type AttentionItem = { type?: string; title?: string; reason?: string; code?: st
 type ConflictItem = { left?: { code?: string; id?: string }; right?: { code?: string; id?: string }; intensity?: number }
 type CommitmentItem = PromiseItem & { kind: string }
 
+function numeric(value: unknown, fallback = 0): number {
+  const n = typeof value === 'number' ? value : Number(value)
+  return Number.isFinite(n) ? n : fallback
+}
+
+function fixed(value: unknown, digits = 3): string {
+  return numeric(value).toFixed(digits)
+}
+
 function Metric({ label, value }: { label: string; value: number }) {
   const safe = Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 0
   return <div className="mind-metric"><span>{label}</span><strong>{pct(safe)}</strong><div className="mind-meter"><i style={{ width: `${safe * 100}%` }} /></div></div>
@@ -94,10 +103,10 @@ export function Mind({ simulationId, entityId, currentSimulationAt, onRefresh }:
 
     <div className="mind-grid two">
       <Panel title="Aspettativa → esito" eyebrow="ERRORE DI PREVISIONE">
-        {latestExpectation ? <div className="mind-expectation"><div className="expectation-head"><span>{labelize(latestExpectation.actionType)}</span><b>{labelize(latestExpectation.status)}</b></div><div className="expectation-values"><Metric label="Utilità prevista" value={latestExpectation.expectedUtility} /><Metric label="Probabilità di successo prevista" value={latestExpectation.expectedSuccessProbability} /></div><div className="mind-outcome-row"><div><span>Errore di previsione</span><strong>{latestExpectation.predictionError === null ? 'aperto' : latestExpectation.predictionError.toFixed(3)}</strong></div><div><span>Rammarico</span><strong>{latestExpectation.regretScore === null ? 'aperto' : latestExpectation.regretScore.toFixed(3)}</strong></div></div></div> : <EmptyState title="Nessuna previsione risolta" text="Le prossime decisioni produrranno aspettative ed errori di previsione persistenti." />}
+        {latestExpectation ? <div className="mind-expectation"><div className="expectation-head"><span>{labelize(latestExpectation.actionType)}</span><b>{labelize(latestExpectation.status)}</b></div><div className="expectation-values"><Metric label="Utilità prevista" value={numeric(latestExpectation.expectedUtility)} /><Metric label="Probabilità di successo prevista" value={numeric(latestExpectation.expectedSuccessProbability)} /></div><div className="mind-outcome-row"><div><span>Errore di previsione</span><strong>{latestExpectation.predictionError === null || latestExpectation.predictionError === undefined ? 'aperto' : fixed(latestExpectation.predictionError)}</strong></div><div><span>Rammarico</span><strong>{latestExpectation.regretScore === null || latestExpectation.regretScore === undefined ? 'aperto' : fixed(latestExpectation.regretScore)}</strong></div></div></div> : <EmptyState title="Nessuna previsione risolta" text="Le prossime decisioni produrranno aspettative ed errori di previsione persistenti." />}
       </Panel>
       <Panel title="Controfattuali" eyebrow="COS'ALTRO AVREI POTUTO FARE">
-        <div className="mind-counterfactuals">{data.counterfactuals.length ? data.counterfactuals.slice(0, 6).map(c => <div className="mind-counterfactual" key={c.id}><Target size={14} /><div><strong>{labelize(c.alternativeAction)}</strong><span>Utilità prevista {c.predictedUtility.toFixed(2)}</span></div><b>rammarico {c.regretScore.toFixed(2)}</b></div>) : <EmptyState title="Nessun controfattuale" text="Il sistema salva alternative rilevanti quando Asami prende una decisione." />}</div>
+        <div className="mind-counterfactuals">{data.counterfactuals.length ? data.counterfactuals.slice(0, 6).map(c => <div className="mind-counterfactual" key={c.id}><Target size={14} /><div><strong>{labelize(c.alternativeAction)}</strong><span>Utilità prevista {fixed(c.predictedUtility, 2)}</span></div><b>rammarico {fixed(c.regretScore, 2)}</b></div>) : <EmptyState title="Nessun controfattuale" text="Il sistema salva alternative rilevanti quando Asami prende una decisione." />}</div>
       </Panel>
     </div>
 
@@ -109,7 +118,7 @@ export function Mind({ simulationId, entityId, currentSimulationAt, onRefresh }:
       <Panel title="Traiettoria causale" eyebrow="COME IL CAMBIAMENTO PERSISTE">
         <div className="mind-causal-explain">
           <div><span>Ultima causa</span><strong>{causalActivations[0] ? `${labelize(causalActivations[0].sourceType)} → ${labelize(causalActivations[0].targetType)}` : '—'}</strong></div>
-          <div><span>Propagazione più profonda</span><strong>{causalActivations.length ? `${Math.max(...causalActivations.map(a => Number(a.depth || 0)))} livelli` : '—'}</strong></div>
+          <div><span>Propagazione più profonda</span><strong>{causalActivations.length ? `${Math.max(...causalActivations.map(a => numeric(a.depth)))} livelli` : '—'}</strong></div>
           <div><span>Collegamento più rinforzato</span><strong>{causalLinks[0] ? `${labelize(causalLinks[0].sourceKey)} → ${labelize(causalLinks[0].targetKey)}` : '—'}</strong></div>
         </div>
       </Panel>
@@ -129,7 +138,7 @@ export function Mind({ simulationId, entityId, currentSimulationAt, onRefresh }:
         <div className="mind-narrative">{data.emergent.consolidations.length ? data.emergent.consolidations.map(item => <div key={item.id}><span>{item.sourceCount} esperienze</span><strong>{item.summary}</strong><small>{formatSimTime(item.createdAt)}</small></div>) : <EmptyState title="Nessuna regola consolidata" text="Le esperienze ripetute verranno trasformate in conoscenza più stabile." />}</div>
       </Panel>
       <Panel title="Mondi controfattuali" eyebrow="FUTURI ALTERNATIVI">
-        <div className="mind-counterfactuals">{data.emergent.worlds.length ? data.emergent.worlds.slice(0, 6).map(world => <div className="mind-counterfactual" key={world.id}><Target size={14} /><div><strong>{labelize(world.worldKey)}</strong><span>{labelize(world.status)} · utilità {world.predictedUtility.toFixed(2)}</span></div><b>{world.selected ? 'scelto' : `rammarico ${world.regretScore.toFixed(2)}`}</b></div>) : <EmptyState title="Nessun ramo alternativo" text="Ogni decisione importante può lasciare una traccia delle alternative non scelte." />}</div>
+        <div className="mind-counterfactuals">{data.emergent.worlds.length ? data.emergent.worlds.slice(0, 6).map(world => <div className="mind-counterfactual" key={world.id}><Target size={14} /><div><strong>{labelize(world.worldKey)}</strong><span>{labelize(world.status)} · utilità {fixed(world.predictedUtility, 2)}</span></div><b>{world.selected ? 'scelto' : `rammarico ${fixed(world.regretScore, 2)}`}</b></div>) : <EmptyState title="Nessun ramo alternativo" text="Ogni decisione importante può lasciare una traccia delle alternative non scelte." />}</div>
       </Panel>
     </div>
 
