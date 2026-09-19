@@ -1,5 +1,6 @@
 const { pool } = require("../db/pool");
 const { uuid } = require("../lib/ids");
+const crypto = require("crypto");
 
 const MAX_MEMORY_POLICY_BIAS = 0.32;
 const MEMORY_TYPES = new Set(["EPISODIC", "SEMANTIC", "PROCEDURAL"]);
@@ -47,24 +48,35 @@ function humanizeActionMemory(args, originalContent) {
 }
 
 async function upsertConsolidatedMemory({ simulationId, entityId, simulationAt, locationId, kind, uniqueKey, type, content, importance, strength, confidence, emotionalIntensity, metadata }) {
-  const [existingRows] = await pool.query(
-    `SELECT BIN_TO_UUID(id) AS id,version FROM memories WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND status='ACTIVE' AND JSON_UNQUOTE(JSON_EXTRACT(metadata,'$.kind'))=? AND JSON_UNQUOTE(JSON_EXTRACT(metadata,'$.uniqueKey'))=? ORDER BY created_simulation_at DESC LIMIT 1`,
-    [simulationId, entityId, kind, uniqueKey]
-  );
-  if (existingRows.length) {
-    const existing = existingRows[0];
-    await pool.query(
-      `UPDATE memories SET content=?,memory_type=?,importance=?,strength=?,confidence=?,emotional_intensity=?,location_id=UUID_TO_BIN(?),created_simulation_at=?,metadata=?,forgotten_simulation_at=NULL,status='ACTIVE',version=version+1 WHERE id=UUID_TO_BIN(?) AND version=?`,
-      [content, type, importance, strength, confidence, emotionalIntensity, locationId || null, simulationAt, JSON.stringify(metadata), existing.id, existing.version]
+  const lockKey="asami:memory:"+crypto.createHash("sha1").update([simulationId,entityId,kind,uniqueKey].join("|")).digest("hex");
+  const conn=await pool.getConnection();
+  let locked=false;
+  try{
+    const [lockRows]=await conn.query("SELECT GET_LOCK(?,5) AS acquired",[lockKey]);
+    locked=Number(lockRows[0]?.acquired)===1;
+    if(!locked)return null;
+    const [existingRows]=await conn.query(
+      `SELECT BIN_TO_UUID(id) AS id,version FROM memories WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND status='ACTIVE' AND JSON_UNQUOTE(JSON_EXTRACT(metadata,'$.kind'))=? AND JSON_UNQUOTE(JSON_EXTRACT(metadata,'$.uniqueKey'))=? ORDER BY created_simulation_at DESC LIMIT 1`,
+      [simulationId,entityId,kind,uniqueKey]
     );
-    return existing.id;
+    if(existingRows.length){
+      const existing=existingRows[0];
+      await conn.query(
+        `UPDATE memories SET content=?,memory_type=?,importance=?,strength=?,confidence=?,emotional_intensity=?,location_id=UUID_TO_BIN(?),created_simulation_at=?,metadata=?,forgotten_simulation_at=NULL,status='ACTIVE',version=version+1 WHERE id=UUID_TO_BIN(?) AND version=?`,
+        [content,type,importance,strength,confidence,emotionalIntensity,locationId||null,simulationAt,JSON.stringify(metadata),existing.id,existing.version]
+      );
+      return existing.id;
+    }
+    const id=uuid();
+    await conn.query(
+      `INSERT INTO memories (id,simulation_id,entity_id,memory_type,content,importance,strength,confidence,emotional_intensity,source_event_id,source_activity_id,location_id,created_simulation_at,status,metadata,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,?,?,?,NULL,NULL,UUID_TO_BIN(?),?,'ACTIVE',?,1)`,
+      [id,simulationId,entityId,type,content,importance,strength,confidence,emotionalIntensity,locationId||null,simulationAt,JSON.stringify(metadata)]
+    );
+    return id;
+  }finally{
+    try{if(locked)await conn.query("SELECT RELEASE_LOCK(?)",[lockKey]);}catch{}
+    conn.release();
   }
-  const id = uuid();
-  await pool.query(
-    `INSERT INTO memories (id,simulation_id,entity_id,memory_type,content,importance,strength,confidence,emotional_intensity,source_event_id,source_activity_id,location_id,created_simulation_at,status,metadata,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,?,?,?,NULL,NULL,UUID_TO_BIN(?),?,'ACTIVE',?,1)`,
-    [id, simulationId, entityId, type, content, importance, strength, confidence, emotionalIntensity, locationId || null, simulationAt, JSON.stringify(metadata)]
-  );
-  return id;
 }
 
 async function consolidateActionMemories(args) {
