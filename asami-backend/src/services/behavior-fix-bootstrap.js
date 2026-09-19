@@ -36,5 +36,77 @@ async function patchAnalysisResult(result, simulationId, entityId, actualFrom, a
   const memoryParams = [simulationId, actualFrom, actualTo], memoryEntityClause = effectiveEntityId ? " AND m.entity_id=UUID_TO_BIN(?)" : ""; if (effectiveEntityId) memoryParams.push(effectiveEntityId); const [learningRows] = await pool.query(`SELECT COUNT(*) AS total FROM memories m WHERE m.simulation_id=UUID_TO_BIN(?) AND m.created_simulation_at>=? AND m.created_simulation_at<=?${memoryEntityClause} AND LOWER(COALESCE(JSON_UNQUOTE(JSON_EXTRACT(m.metadata,'$.kind')),'')) IN ('resource_failure','action_failure','action_interruption')`, memoryParams); const learningSignals = Number(learningRows[0]?.total || 0);
   result.kpis.actions.completed = technicalCompleted; result.kpis.actions.successful = successful; result.kpis.actions.failed = problematic; result.kpis.actions.problematic = problematic; result.kpis.actions.unsettled = unsettled; result.kpis.actions.technicalCompletionRate = result.kpis.actions.total ? Math.round((technicalCompleted / result.kpis.actions.total) * 1000) / 10 : 0; result.kpis.actions.successRate = settled ? Math.round((successful / settled) * 1000) / 10 : 0; result.kpis.decisions.executed = executedDecisions; result.kpis.decisions.successful = successfulDecisions; result.kpis.decisions.failed = problematicDecisions; result.kpis.decisions.problematic = problematicDecisions; result.kpis.decisions.outcomeCoverage = decisionRows.length ? Math.round((decisionsWithOutcome / decisionRows.length) * 1000) / 10 : 0; result.kpis.decisions.adaptationRate = Math.round(adaptation.rate * 1000) / 10; result.kpis.decisions.learningSignals = learningSignals;
   if (problematic > 0) result.anomalies.push({ id: "actual-action-outcomes", severity: problematic >= 4 ? "WARNING" : "INFO", title: "Esiti azione problematici", detail: `${problematic} azioni hanno avuto outcome FAILURE o PARTIAL, indipendentemente dallo status tecnico.`, count: problematic, evidence: { successful, problematic, technicalCompleted, unsettled } }); if (problematicDecisions > 0) result.anomalies.push({ id: "actual-decision-outcomes", severity: problematicDecisions >= 4 ? "WARNING" : "INFO", title: "Decisioni con conseguenza problematica", detail: `${problematicDecisions} decisioni sono collegate a un esito FAILURE/PARTIAL reale.`, count: problematicDecisions, evidence: { executedDecisions, problematicDecisions, outcomeCoverage: result.kpis.decisions.outcomeCoverage } }); const loopPattern = createFailureLoopPattern(problematicDecisions || problematic, adaptation.rate); if (loopPattern) result.patterns.unshift(loopPattern); return result; }
-function install() { if (installed) return; const originalGetActiveAction = actionService.getActiveAction; actionService.getActiveAction = async function patchedGetActiveAction(entityId, simulationId) { const action = await originalGetActiveAction(entityId, simulationId); return enrichActiveAction(action, simulationId, entityId); }; const originalCompleteAction = actionService.completeAction; actionService.completeAction = async function patchedCompleteAction(args = {}) { const result = await originalCompleteAction(args); if (result?.completed && result?.outcome && args?.actionId && claimFeedback(args.actionId)) { try { await applyActionOutcomeNeedFeedback({ entityId: args.entityId, actionId: args.actionId, actionType: args.actionType, simulationTime: args.simulationTime, outcome: result.outcome }); } catch { feedbackApplied.delete(args.actionId); } } if (result?.completed && args?.simulationId && args?.entityId) { try { const locationId = await actionService.currentLocation(args.entityId, args.simulationId); return { ...result, locationId }; } catch { return result; } } return result; }; const originalBuildDecisionContext = decisionService.buildDecisionContext; decisionService.buildDecisionContext = async function patchedBuildDecisionContext(simulationId, entityId, simulationTime) { let context = await originalBuildDecisionContext(simulationId, entityId, simulationTime); context.recentOutcomes = await loadRecentOutcomes(simulationId, entityId, simulationTime); context = await strengthenResourceReasoning(context, simulationId, entityId, simulationTime); context.candidates = applyFailurePenalty(context.candidates || [], context.recentOutcomes); return context; }; const originalMakeDecision = decisionService.makeDecision; decisionService.makeDecision = async function patchedMakeDecision(args = {}) { const sourceContext = args.context || {}; let context = { ...sourceContext, candidates: (sourceContext.candidates || []).map((candidate) => ({ ...candidate })) }; const localResources = context.resourceContext?.localResources || {}, thirstBlocked = needValue(context.needs, "THIRST") >= 0.8 && Number(localResources.water || 0) < 1, hungerBlocked = needValue(context.needs, "HUNGER") >= 0.8 && Number(localResources.food || 0) < 1, blockedResources = []; if (thirstBlocked) blockedResources.push("THIRST"); if (hungerBlocked) blockedResources.push("HUNGER"); if (blockedResources.length) { context.needs = (context.needs || []).map((need) => blockedResources.includes(normalize(need.code)) ? { ...need, value: 0.799 } : need); if (context.activePlanStep) { const stepAction = normalize(context.activePlanStep.actionType || context.activePlanStep.result?.actionType); if ((stepAction === "DRINKING" && thirstBlocked) || (stepAction === "EATING" && hungerBlocked)) context.activePlanStep = null; } const walking = context.candidates.find((candidate) => normalize(candidate.action) === "WALKING"); if (walking) walking.score = Math.max(Number(walking.score || 0), 4.0 + blockedResources.length * 0.6); context.candidates.sort((a, b) => Number(b.score || 0) - Number(a.score || 0)); } return originalMakeDecision({ ...args, context }); }; const originalAnalyzeSimulation = analysisService.analyzeSimulation; analysisService.analyzeSimulation = async function patchedAnalyzeSimulation(simulationId, options = {}) { const result = await originalAnalyzeSimulation(simulationId, options); return patchAnalysisResult(result, simulationId, options.entityId, result.range.from, result.range.to); }; installed = true; }
+function install() { if (installed) return; const originalGetActiveAction = actionService.getActiveAction; actionService.getActiveAction = async function patchedGetActiveAction(entityId, simulationId) { const action = await originalGetActiveAction(entityId, simulationId); return enrichActiveAction(action, simulationId, entityId); }; const originalCompleteAction = actionService.completeAction; actionService.completeAction = async function patchedCompleteAction(args = {}) { const result = await originalCompleteAction(args); if (result?.completed && result?.outcome && args?.actionId && claimFeedback(args.actionId)) { try { await applyActionOutcomeNeedFeedback({ entityId: args.entityId, actionId: args.actionId, actionType: args.actionType, simulationTime: args.simulationTime, outcome: result.outcome }); } catch { feedbackApplied.delete(args.actionId); } } if (result?.completed && args?.simulationId && args?.entityId) { try { const locationId = await actionService.currentLocation(args.entityId, args.simulationId); return { ...result, locationId }; } catch { return result; } } return result; }; const originalBuildDecisionContext = decisionService.buildDecisionContext; decisionService.buildDecisionContext = async function patchedBuildDecisionContext(simulationId, entityId, simulationTime) { let context = await originalBuildDecisionContext(simulationId, entityId, simulationTime); context.recentOutcomes = await loadRecentOutcomes(simulationId, entityId, simulationTime); context = await strengthenResourceReasoning(context, simulationId, entityId, simulationTime); context.candidates = applyFailurePenalty(context.candidates || [], context.recentOutcomes); return context; }; 
+const originalMakeDecision = decisionService.makeDecision;
+decisionService.makeDecision = async function patchedMakeDecision(args = {}) {
+  const sourceContext = args.context || {};
+  const context = {
+    ...sourceContext,
+    candidates: (sourceContext.candidates || []).map(candidate => ({ ...candidate }))
+  };
+
+  /*
+   * Do not lower a real physiological value below the critical threshold to
+   * make the decision engine forget an unresolved emergency. The central
+   * decision service now enforces the actual recovery action.
+   */
+  const localResources = context.resourceContext?.localResources || {};
+  const blockedResources = [];
+
+  if (needValue(context.needs, "THIRST") >= 0.8 && Number(localResources.water || 0) < 1) {
+    blockedResources.push("THIRST");
+  }
+  if (needValue(context.needs, "HUNGER") >= 0.8 && Number(localResources.food || 0) < 1) {
+    blockedResources.push("HUNGER");
+  }
+
+  if (blockedResources.length) {
+    if (context.activePlanStep) {
+      const stepAction = normalize(
+        context.activePlanStep.actionType || context.activePlanStep.result?.actionType
+      );
+      if (
+        (stepAction === "DRINKING" && blockedResources.includes("THIRST")) ||
+        (stepAction === "EATING" && blockedResources.includes("HUNGER"))
+      ) {
+        context.activePlanStep = null;
+      }
+    }
+
+    const walking = context.candidates.find(
+      candidate => normalize(candidate.action) === "WALKING"
+    );
+
+    for (const code of blockedResources) {
+      const resource = code === "THIRST" ? "water" : "food";
+      const directAction = code === "THIRST" ? "DRINKING" : "EATING";
+      const nearest =
+        context.resourceContext?.nearestResources?.[resource] ||
+        context.resourceContext?.actions?.[directAction]?.nearestLocation ||
+        null;
+
+      if (walking && nearest?.locationId) {
+        walking.targetLocationId = nearest.locationId;
+        walking.resourceIntent = {
+          ...(walking.resourceIntent || {}),
+          resource,
+          reason: "CRITICAL_NEED_RESOURCE_RECOVERY",
+          destinationLocationId: nearest.locationId,
+          expectedTravelMinutes: Number.isFinite(Number(nearest.travelMinutes))
+            ? Number(nearest.travelMinutes)
+            : null
+        };
+        walking.score = Math.max(
+          Number(walking.score || 0),
+          4.0 + blockedResources.length * 0.6
+        );
+      }
+    }
+
+    context.candidates.sort((a, b) => Number(b.score || 0) - Number(a.score || 0));
+  }
+
+  return originalMakeDecision({ ...args, context });
+};
+ const originalAnalyzeSimulation = analysisService.analyzeSimulation; analysisService.analyzeSimulation = async function patchedAnalyzeSimulation(simulationId, options = {}) { const result = await originalAnalyzeSimulation(simulationId, options); return patchAnalysisResult(result, simulationId, options.entityId, result.range.from, result.range.to); }; installed = true; }
 module.exports = { install, claimFeedback, pruneFeedbackClaims };
