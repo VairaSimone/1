@@ -145,7 +145,7 @@ test('conversation creation is serialized per simulation and entity pair',()=>{
   const section=source.slice(start,end);
   assert.match(section,/GET_LOCK\(\?,5\)/);
   assert.match(section,/RELEASE_LOCK/);
-  assert.match(section,/sort\(\)\.join\('\|'\)/);
+  assert.match(section,/sort\(\)\.join\(["']\|["']\)/);
 });
 
 
