@@ -22,6 +22,7 @@ function classifyGeminiError(err) {
   const retryAfterMs=Number.isFinite(retryAfterSeconds)&&retryAfterSeconds>0 ? Math.ceil(retryAfterSeconds*1000) : 0;
   const retryMs=retryAfterMs || (retryMatch ? Math.ceil(Number(retryMatch[1])*1000) : 0);
   if(isQuota)return{kind:"QUOTA",retryAfterMs:retryMs};
+  if(isRateLimited)return{kind:"RATE_LIMIT",retryAfterMs:retryMs};
   if(err?.code==="AI_TIMEOUT")return{kind:"TIMEOUT",retryAfterMs:0};
   return{kind:"ERROR",retryAfterMs:0};
 }
