@@ -48,6 +48,14 @@ const pool = mysql.createPool({
 const originalPoolQuery = pool.query.bind(pool);
 pool.query = (sql, values) => originalPoolQuery(sql, normalizeMysqlValues(values));
 
+const originalGetConnection = pool.getConnection.bind(pool);
+pool.getConnection = async () => {
+  const conn = await originalGetConnection();
+  const originalConnectionQuery = conn.query.bind(conn);
+  conn.query = (sql, values) => originalConnectionQuery(sql, normalizeMysqlValues(values));
+  return conn;
+};
+
 async function ping() {
   const [rows] = await pool.query("SELECT 1 AS ok");
   return rows[0]?.ok === 1;
@@ -55,8 +63,6 @@ async function ping() {
 
 async function withTransaction(fn) {
   const conn = await pool.getConnection();
-  const originalConnectionQuery = conn.query.bind(conn);
-  conn.query = (sql, values) => originalConnectionQuery(sql, normalizeMysqlValues(values));
   try {
     await conn.beginTransaction();
     const result = await fn(conn);
