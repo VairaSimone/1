@@ -374,6 +374,14 @@ class SimulationEngine {
 
                 if (retry?.decision?.actionType && retry?.started?.actionId) {
                   actionType = retry.decision.actionType;
+                  actorHadActivity=true;
+                  await refreshMentalStateFromSimulation({
+                    simulationId: sim.id,
+                    entityId: id,
+                    simulationTime: nextTime,
+                    needs: await readNeeds(id),
+                    activeActionType: retry.started.actionType||retry.decision.actionType
+                  });
                   this.hub.publish(sim.id, "action.created", {
                     entityId: id,
                     decision: retry.decision,
