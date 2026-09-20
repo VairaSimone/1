@@ -76,6 +76,53 @@ async function updateMentalState(simulationId, entityId, simulationTime, patch =
     return null;
   });
 }
+function deriveMentalPressure(needs=[]){
+  const policies={
+    THIRST:{direction:"HIGH",threshold:.8,label:"thirst"},
+    HUNGER:{direction:"HIGH",threshold:.8,label:"hunger"},
+    SLEEPINESS:{direction:"HIGH",threshold:.85,label:"sleepiness"},
+    ENERGY:{direction:"LOW",threshold:.15,label:"low energy"},
+    SAFETY:{direction:"LOW",threshold:.2,label:"safety"}
+  };
+  let highest=null;
+  for(const need of needs||[]){
+    const code=normalizeKey(need?.code,50),policy=policies[code];
+    if(!policy)continue;
+    const value=Number(need?.value);
+    if(!Number.isFinite(value))continue;
+    const pressure=policy.direction==="HIGH"
+      ? Math.max(0,(value-policy.threshold)/Math.max(.01,1-policy.threshold))
+      : Math.max(0,(policy.threshold-value)/Math.max(.01,policy.threshold));
+    if(pressure<=0)continue;
+    if(!highest||pressure>highest.pressure)highest={code,label:policy.label,value,pressure};
+  }
+  return highest;
+}
+
+function deriveMentalLoad(needs=[],actionType=null){
+  const pressure=deriveMentalPressure(needs)?.pressure||0;
+  const action=normalizeKey(actionType,50);
+  const actionLoad={
+    SLEEPING:.05,RESTING:.08,EATING:.18,DRINKING:.10,TALKING:.30,
+    PLAYING:.35,READING:.40,STUDYING:.65,WORKING:.75,EXPLORING:.45,
+    WALKING:.30,WATCHING:.25
+  }[action]||.10;
+  return clamp01(.10+(pressure*.72)+(actionLoad*.18),.10);
+}
+
+async function refreshMentalStateFromSimulation({simulationId,entityId,simulationTime,needs=[],activeActionType=null}={}){
+  const pressure=deriveMentalPressure(needs);
+  const currentFocus=activeActionType
+    ? normalizeKey(activeActionType,50).toLowerCase().replaceAll("_"," ")
+    : null;
+  const currentConcern=pressure?.label||null;
+  return updateMentalState(simulationId,entityId,simulationTime,{
+    currentFocus,
+    currentConcern,
+    mentalLoad:deriveMentalLoad(needs,activeActionType)
+  });
+}
+
 async function upsertPreference({ simulationId, entityId, simulationTime, item }) {
   const targetType=normalizeKey(item?.targetType||item?.topic||'TOPIC',50),rawTargetEntityId=item?.targetEntityId||null,targetEntityId=await resolveEntityIdInSimulation(simulationId,rawTargetEntityId),value=clampSigned(item?.value??item?.preferenceValue,1,0),strength=clamp01(item?.strength,.5),confidence=clamp01(item?.confidence,.5);if(!targetType||rawTargetEntityId&&!targetEntityId)return null;
   let rows;
@@ -111,4 +158,4 @@ async function applyDialogueCognition({ simulationId, entityId, simulationTime, 
 
 function cognitiveDecisionModifier(profile, actionType) { if(!profile||!actionType)return 0;const key=`ACTION:${normalizeKey(actionType,50)}`;let modifier=0;for(const p of profile.preferences||[])if(normalizeKey(p.targetType,50)===key)modifier+=Number(p.preferenceValue||0)*Number(p.strength||0)*Number(p.confidence||0)*.8;for(const habit of profile.habits||[]){const habitAction=normalizeKey(habit.actionDefinition?.actionType,50);if(habitAction===normalizeKey(actionType,50))modifier+=Number(habit.strength||0)*.25;}return Math.max(-1.5,Math.min(1.5,modifier));}
 
-module.exports={clamp01,clampSigned,safeText,parseJson,normalizeKey,getCognitiveProfile,updateMentalState,upsertPreference,upsertBelief,upsertKnowledge,recordHabitEvidence:recordHabitEvidenceShared,createPlanFromProposal,applyDialogueCognition,cognitiveDecisionModifier};
+module.exports={clamp01,clampSigned,safeText,parseJson,normalizeKey,getCognitiveProfile,updateMentalState,refreshMentalStateFromSimulation,deriveMentalPressure,deriveMentalLoad,upsertPreference,upsertBelief,upsertKnowledge,recordHabitEvidence:recordHabitEvidenceShared,createPlanFromProposal,applyDialogueCognition,cognitiveDecisionModifier};
