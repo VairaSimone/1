@@ -244,7 +244,25 @@ class SimulationEngine {
             phase = "entity.interruption"; const interruption = !wasCompleted ? getInterruptionReason(active.actionType, await readNeeds(entityId), perception) : null;
             if (interruption) {
               const interrupted = await interruptActiveAction({ simulationId: sim.id, entityId, active, simulationTime: updateTime, interruption, needChanges, perception });
-              if (interrupted) { phase = "entity.publish"; this.hub.publish(sim.id, "entity.state", { entityId, action: { ...active, status: "INTERRUPTED", interrupted: true }, status: "INTERRUPTED", interruption, needChanges }); continue; }
+              if (interrupted) {
+                phase = "entity.mental_state";
+                await refreshMentalStateFromSimulation({
+                  simulationId: sim.id,
+                  entityId,
+                  simulationTime: updateTime,
+                  needs: await readNeeds(entityId),
+                  activeActionType: null
+                });
+                phase = "entity.publish";
+                this.hub.publish(sim.id, "entity.state", {
+                  entityId,
+                  action: { ...active, status: "INTERRUPTED", interrupted: true },
+                  status: "INTERRUPTED",
+                  interruption,
+                  needChanges
+                });
+                continue;
+              }
             }
             if (wasCompleted) {
               phase = "entity.action.complete";
@@ -316,7 +334,6 @@ class SimulationEngine {
               needs: latestNeeds,
               activeActionType: started.actionType||decision.actionType
             });
-            actorHadActivity=true;
             this.hub.publish(sim.id, "action.created", { entityId, decision, action: started });
           }
           } catch (err) {
