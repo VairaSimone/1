@@ -198,6 +198,94 @@ async function deleteOldEvents(conn, simulationId, simulationTime) {
   });
 }
 
+async function compactOldActionDecisionSummaries(conn, simulationId, simulationTime) {
+  const cutoff = cutoffDateTime(simulationTime, POLICY.actionDays);
+  const limit = POLICY.batchSize;
+  const maxUpdates = POLICY.maxDeletesPerTable;
+  const selectSql =
+    `SELECT BIN_TO_UUID(a.id) AS actionId, BIN_TO_UUID(d.id) AS decisionId,
+            a.action_type AS actionType, a.source_type AS sourceType,
+            a.status, a.started_simulation_at AS startedAt,
+            a.completed_simulation_at AS completedAt,
+            a.target, a.parameters, a.result
+     FROM actions a
+     JOIN decisions d ON d.id=a.decision_id
+     WHERE a.simulation_id=UUID_TO_BIN(?)
+       AND a.decision_id IS NOT NULL
+       AND a.status IN ('COMPLETED','CANCELLED','INTERRUPTED','FAILED')
+       AND a.completed_simulation_at IS NOT NULL
+       AND a.completed_simulation_at < ?
+       AND JSON_EXTRACT(d.actual_outcome,'$.actionSummary') IS NULL
+     ORDER BY a.completed_simulation_at ASC
+     LIMIT ${limit}`;
+  if (POLICY.dryRun) {
+    const [rows] = await conn.query(
+      `SELECT COUNT(*) AS candidates
+       FROM actions a
+       JOIN decisions d ON d.id=a.decision_id
+       WHERE a.simulation_id=UUID_TO_BIN(?)
+         AND a.decision_id IS NOT NULL
+         AND a.status IN ('COMPLETED','CANCELLED','INTERRUPTED','FAILED')
+         AND a.completed_simulation_at IS NOT NULL
+         AND a.completed_simulation_at < ?
+         AND JSON_EXTRACT(d.actual_outcome,'$.actionSummary') IS NULL`,
+      [simulationId, cutoff]
+    );
+    return { candidates: Number(rows[0]?.candidates || 0), updated: 0, dryRun: true };
+  }
+  let updated = 0;
+  while (updated < maxUpdates && retentionBudgetAvailable(simulationId)) {
+    const [rows] = await conn.query(selectSql, [simulationId, cutoff]);
+    if (!rows.length) break;
+    for (const row of rows) {
+      if (!retentionBudgetAvailable(simulationId) || updated >= maxUpdates) break;
+      const actionSummary = {
+        schemaVersion: 1,
+        actionId: row.actionId,
+        decisionId: row.decisionId,
+        actionType: row.actionType,
+        sourceType: row.sourceType,
+        status: row.status,
+        startedSimulationAt: row.startedAt || null,
+        completedSimulationAt: row.completedAt || null,
+        target: parseJson(row.target, null),
+        parameters: parseJson(row.parameters, null),
+        result: parseJson(row.result, null)
+      };
+      const [result] = await conn.query(
+        `UPDATE decisions
+         SET actual_outcome=JSON_SET(
+           COALESCE(actual_outcome,JSON_OBJECT()),
+           '$.actionSummary',CAST(? AS JSON)
+         )
+         WHERE id=UUID_TO_BIN(?)
+           AND simulation_id=UUID_TO_BIN(?)
+           AND JSON_EXTRACT(actual_outcome,'$.actionSummary') IS NULL`,
+        [JSON.stringify(actionSummary), row.decisionId, simulationId]
+      );
+      updated += Number(result.affectedRows || 0);
+    }
+    if (rows.length < limit) break;
+  }
+  const [backlog] = await conn.query(
+    `SELECT COUNT(*) AS candidates
+     FROM actions a
+     JOIN decisions d ON d.id=a.decision_id
+     WHERE a.simulation_id=UUID_TO_BIN(?)
+       AND a.decision_id IS NOT NULL
+       AND a.status IN ('COMPLETED','CANCELLED','INTERRUPTED','FAILED')
+       AND a.completed_simulation_at IS NOT NULL
+       AND a.completed_simulation_at < ?
+       AND JSON_EXTRACT(d.actual_outcome,'$.actionSummary') IS NULL`,
+    [simulationId, cutoff]
+  );
+  return {
+    candidates: Number(backlog[0]?.candidates || 0) + updated,
+    updated,
+    remainingCandidates: Number(backlog[0]?.candidates || 0)
+  };
+}
+
 async function deleteOldActions(conn, simulationId, simulationTime) {
   const cutoff = cutoffDateTime(simulationTime, POLICY.actionDays);
   const selectSql =
@@ -206,6 +294,9 @@ async function deleteOldActions(conn, simulationId, simulationTime) {
     "AND a.status IN ('COMPLETED','CANCELLED','INTERRUPTED','FAILED') " +
     "AND a.completed_simulation_at IS NOT NULL " +
     "AND a.completed_simulation_at < ? " +
+    "AND (a.decision_id IS NULL OR EXISTS (" +
+      "SELECT 1 FROM decisions d WHERE d.id=a.decision_id " +
+      "AND JSON_EXTRACT(d.actual_outcome,'$.actionSummary') IS NOT NULL)) " +
     "AND NOT EXISTS (SELECT 1 FROM event_effects ee WHERE ee.target_action_id=a.id) " +
     "ORDER BY a.completed_simulation_at ASC LIMIT " + POLICY.batchSize;
   const countSql =
@@ -214,6 +305,9 @@ async function deleteOldActions(conn, simulationId, simulationTime) {
     "AND a.status IN ('COMPLETED','CANCELLED','INTERRUPTED','FAILED') " +
     "AND a.completed_simulation_at IS NOT NULL " +
     "AND a.completed_simulation_at < ? " +
+    "AND (a.decision_id IS NULL OR EXISTS (" +
+      "SELECT 1 FROM decisions d WHERE d.id=a.decision_id " +
+      "AND JSON_EXTRACT(d.actual_outcome,'$.actionSummary') IS NOT NULL)) " +
     "AND NOT EXISTS (SELECT 1 FROM event_effects ee WHERE ee.target_action_id=a.id)";
   return deleteSelectedRows(conn, {
     selectSql,
@@ -491,6 +585,7 @@ async function runSafeRetention(simulationId, simulationTime) {
       conn => deleteOldEvents(conn, simulationId, mysqlSimulationTime),
       lock.conn
     );
+    const actionSummaries = await compactOldActionDecisionSummaries(lock.conn, simulationId, mysqlSimulationTime);
     const actions = await deleteOldActions(lock.conn, simulationId, mysqlSimulationTime);
     const needs = await deleteOldNeedHistory(lock.conn, simulationId, mysqlSimulationTime);
     const emotions = await deleteOldEmotionHistory(lock.conn, simulationId, mysqlSimulationTime);
@@ -506,6 +601,9 @@ async function runSafeRetention(simulationId, simulationTime) {
       decisionContextsCompacted: Number(context.updated || 0),
       decisionOptionsDeleted: Number(options.deleted || 0),
       eventsDeleted: Number(events.deleted || 0),
+      actionDecisionSummariesUpdated: Number(actionSummaries.updated || 0),
+      actionDecisionSummaryCandidates: Number(actionSummaries.candidates || 0),
+      actionDecisionSummaryBacklog: Number(actionSummaries.remainingCandidates || 0),
       actionsDeleted: Number(actions.deleted || 0),
       needHistoryDeleted: Number(needs.deleted || 0),
       emotionHistoryDeleted: Number(emotions.deleted || 0),
@@ -539,6 +637,7 @@ async function runSafeRetention(simulationId, simulationTime) {
         Number(emotions.remainingCandidates || 0) +
         Number(events.remainingCandidates || 0) +
         Number(actions.remainingCandidates || 0) +
+        Number(actionSummaries.remainingCandidates || 0) +
         Number(memoryArchive.remainingCandidates || 0) +
         Number(memories.remainingCandidates || 0) +
         Number(expectations.remainingCandidates || 0) +
@@ -551,6 +650,7 @@ async function runSafeRetention(simulationId, simulationTime) {
       summary.decisionContextsCompacted ||
       summary.decisionOptionsDeleted ||
       summary.eventsDeleted ||
+      summary.actionDecisionSummariesUpdated ||
       summary.actionsDeleted ||
       summary.needHistoryDeleted ||
       summary.emotionHistoryDeleted ||
