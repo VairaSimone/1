@@ -17,6 +17,7 @@ const { recordHabitEvidence } = require("../services/habit-service");
 const { refreshMentalStateFromSimulation } = require("../services/personality-service");
 const { recordSignificantExperience } = require("../services/experience-learning-service");
 const { maybeRunSafeRetention } = require("../services/safe-retention-service");
+const { reconcileCompletedActions } = require("../services/action-reconciliation-service");
 const observability = require("../services/simulation-observability");
 
 const INTERRUPTIBLE_ACTIONS = new Set(["SLEEPING", "WORKING", "STUDYING"]);
@@ -212,6 +213,11 @@ class SimulationEngine {
           }
           phase = "world.relationships";
           await evolveRelationships(sim.id, nextTime);
+          phase = "action.reconcile";
+          const reconciliation = await reconcileCompletedActions(sim.id,{limit:100});
+          if (reconciliation.reconciled) {
+            logger.info({simulationId:sim.id,simulationTime:nextTime.toISOString(),event:"ACTION_RECONCILIATION",reconciled:reconciliation.reconciled},"completed action post-processing reconciled");
+          }
           this.worldMaintenanceAt.set(sim.id, nextTime.getTime());
           observability.logSnapshot(sim.id,nextTime.toISOString());
         }
@@ -318,7 +324,7 @@ class SimulationEngine {
               activeActionType: null
             });
             phase = "entity.autonomy";
-            const autonomy = await autonomyService.actForEntity({ simulationId: sim.id, entityId, simulationTime: nextTime.toISOString(), gemini: this.gemini });
+            const autonomy = await autonomyService.actForEntity({ simulationId: sim.id, entityId, simulationTime: nextTime.toISOString(), gemini: this.gemini, tickId });
             if (!autonomy) continue;
             const decision = autonomy.decision;
             if (!decision?.actionType) throw Object.assign(new Error("Autonomy produced no executable action type"), { code: "AUTONOMY_ACTION_TYPE_REQUIRED" });
@@ -369,7 +375,8 @@ class SimulationEngine {
                   simulationId: sim.id,
                   entityId: id,
                   simulationTime: nextTime.toISOString(),
-                  gemini: this.gemini
+                  gemini: this.gemini,
+                  tickId
                 });
 
                 if (retry?.decision?.actionType && retry?.started?.actionId) {
