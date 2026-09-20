@@ -190,7 +190,7 @@ async function ensureResourceReserveAtLocation({simulationId,locationId,resource
 }
 
 async function ensureCriticalResourceAvailability(simulationId,simulationTime,{entityId=null,resources=Object.keys(CRITICAL_RESOURCE_RESERVES)}={}){
-  const locations=await loadActiveLocations(simulationId);
+  let locations=await loadActiveLocations(simulationId);
   if(!locations.length)return{recovered:[],checked:[],healthy:false};
   const actorLocationIds=await loadActorLocationIds(simulationId,entityId);
   const uniqueOrigins=[...new Set(actorLocationIds)];
