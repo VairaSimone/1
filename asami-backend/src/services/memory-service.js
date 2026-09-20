@@ -257,4 +257,4 @@ async function recallContext(simulationId, entityId, limit = 8, context = {}) {
   return memories;
 }
 
-module.exports = { createMemory, decayMemories, listMemories, recallContext, buildMemoryContext, buildActionMemory, buildFailureMemory, memoryRelevance, deriveRecallContext, compactMemoryMetadata, isSalientActionOutcome, routineLocationKey };
+module.exports = { createMemory, decayMemories, listMemories, recallContext, recallContexts, buildMemoryContext, buildActionMemory, buildFailureMemory, memoryRelevance, deriveRecallContext, compactMemoryMetadata, isSalientActionOutcome, routineLocationKey };
