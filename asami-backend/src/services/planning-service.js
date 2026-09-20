@@ -75,13 +75,19 @@ async function blockGoalForResource({simulationId,entityId,goalId,simulationTime
     for(const plan of planRows){
       await conn.query(
         \`UPDATE plan_steps
-         SET status='BLOCKED',version=version+1
+         SET status='BLOCKED',
+             result=JSON_SET(
+               COALESCE(result,JSON_OBJECT()),
+               '$.blockedReason','RESOURCE_UNAVAILABLE',
+               '$.resource',?,
+               '$.blockedAt',?,
+               '$.retryWhenResourceAvailable',true
+             ),
+             version=version+1
          WHERE plan_id=UUID_TO_BIN(?) AND status IN ('PENDING','ACTIVE')\`,
-        [plan.id]
+        [resource,simulationTime,plan.id]
       );
-      const strategy=parseJson((await conn.query(
-        \`SELECT strategy FROM plans WHERE id=UUID_TO_BIN(?) LIMIT 1 FOR UPDATE\`,[plan.id]
-      ))[0][0][0]?.strategy,{})||{};
+      const strategy=parseJson(plan.strategy,{})||{};
       await conn.query(
         \`UPDATE plans
          SET status='BLOCKED',
