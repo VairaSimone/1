@@ -45,7 +45,7 @@ async function blockGoalForResource({simulationId,entityId,goalId,simulationTime
     if(!["ACTIVE","DRAFT","PAUSED","BLOCKED"].includes(String(goal.status||"").toUpperCase()))return false;
 
     const[planRows]=await conn.query(
-      \`SELECT BIN_TO_UUID(id) AS id,status,version FROM plans
+      \`SELECT BIN_TO_UUID(id) AS id,status,version,strategy FROM plans
        WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND goal_id=UUID_TO_BIN(?)
          AND status IN ('DRAFT','ACTIVE','PAUSED','BLOCKED')
        ORDER BY created_simulation_at DESC FOR UPDATE\`,
