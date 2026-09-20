@@ -35,10 +35,10 @@ function addSimulationMinutes(value,minutes){const date=new Date(value);if(!Numb
 
 async function locationRow(simulationId,locationId,db=pool){
   const [rows]=await db.query(
-    \`SELECT BIN_TO_UUID(e.id) AS locationId,e.attributes,e.version,l.location_type AS locationType
+    `SELECT BIN_TO_UUID(e.id) AS locationId,e.attributes,e.version,l.location_type AS locationType
      FROM entities e JOIN locations l ON l.entity_id=e.id AND l.simulation_id=e.simulation_id
      WHERE e.simulation_id=UUID_TO_BIN(?) AND e.id=UUID_TO_BIN(?) AND e.entity_type_id=UUID_TO_BIN(?) AND e.status='ACTIVE'
-     LIMIT 1\${db===pool?'':' FOR UPDATE'}\`,
+     LIMIT 1\${db===pool?'':' FOR UPDATE'}`,
     [simulationId,locationId,LOCATION_ENTITY_TYPE_ID]
   );
   return rows[0]||null;
@@ -50,8 +50,8 @@ async function updateLocationAttributes(simulationId,locationId,updater,db=pool)
     if(!row)return null;
     const next=updater(parseJson(row.attributes,{}));
     const[updated]=await db.query(
-      \`UPDATE entities SET attributes=?,version=version+1
-       WHERE id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?) AND version=?\`,
+      `UPDATE entities SET attributes=?,version=version+1
+       WHERE id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?) AND version=?`,
       [JSON.stringify(next),locationId,simulationId,Number(row.version||1)]
     );
     if(updated.affectedRows)return next;
@@ -61,9 +61,9 @@ async function updateLocationAttributes(simulationId,locationId,updater,db=pool)
 
 async function seedPhysicalWorld(simulationId,simulationTime){
   const[rows]=await pool.query(
-    \`SELECT BIN_TO_UUID(e.id) AS locationId,e.attributes,e.version,l.location_type AS locationType
+    `SELECT BIN_TO_UUID(e.id) AS locationId,e.attributes,e.version,l.location_type AS locationType
      FROM entities e JOIN locations l ON l.entity_id=e.id AND l.simulation_id=e.simulation_id
-     WHERE e.simulation_id=UUID_TO_BIN(?) AND e.entity_type_id=UUID_TO_BIN(?) AND e.status='ACTIVE'\`,
+     WHERE e.simulation_id=UUID_TO_BIN(?) AND e.entity_type_id=UUID_TO_BIN(?) AND e.status='ACTIVE'`,
     [simulationId,LOCATION_ENTITY_TYPE_ID]
   );
   for(const row of rows){
@@ -75,8 +75,8 @@ async function seedPhysicalWorld(simulationId,simulationTime){
     const next={...attributes,resources:desiredResources,objects:desiredObjects,physicalUpdatedAt:simulationTime};
     if(JSON.stringify(resources)===JSON.stringify(desiredResources)&&JSON.stringify(objects)===JSON.stringify(desiredObjects))continue;
     await pool.query(
-      \`UPDATE entities SET attributes=?,version=version+1
-       WHERE id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?) AND version=?\`,
+      `UPDATE entities SET attributes=?,version=version+1
+       WHERE id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?) AND version=?`,
       [JSON.stringify(next),row.locationId,simulationId,Number(row.version||1)]
     );
   }
@@ -84,10 +84,10 @@ async function seedPhysicalWorld(simulationId,simulationTime){
 
 async function loadActiveLocations(simulationId){
   const[rows]=await pool.query(
-    \`SELECT BIN_TO_UUID(e.id) AS locationId,e.attributes,e.version,l.location_type AS locationType,
+    `SELECT BIN_TO_UUID(e.id) AS locationId,e.attributes,e.version,l.location_type AS locationType,
             l.address_data AS addressData,l.latitude,l.longitude
      FROM entities e JOIN locations l ON l.entity_id=e.id AND l.simulation_id=e.simulation_id
-     WHERE e.simulation_id=UUID_TO_BIN(?) AND e.entity_type_id=UUID_TO_BIN(?) AND e.status='ACTIVE'\`,
+     WHERE e.simulation_id=UUID_TO_BIN(?) AND e.entity_type_id=UUID_TO_BIN(?) AND e.status='ACTIVE'`,
     [simulationId,LOCATION_ENTITY_TYPE_ID]
   );
   return rows.map(row=>{
@@ -108,14 +108,14 @@ async function loadActorLocationIds(simulationId,entityId=null){
   const entityFilter=entityId?" AND e.id=UUID_TO_BIN(?)":"";
   if(entityId)params.push(entityId);
   const[rows]=await pool.query(
-    \`SELECT DISTINCT BIN_TO_UUID(elc.location_id) AS locationId
+    `SELECT DISTINCT BIN_TO_UUID(elc.location_id) AS locationId
      FROM entity_locations_current elc
      JOIN entities e ON e.id=elc.entity_id AND e.simulation_id=elc.simulation_id
      JOIN entity_types et ON et.id=e.entity_type_id
      WHERE elc.simulation_id=UUID_TO_BIN(?)\${entityFilter}
        AND et.category='ACTOR'
        AND e.status NOT IN ('INACTIVE','DEAD')
-       AND elc.location_id IS NOT NULL\`,
+       AND elc.location_id IS NOT NULL`,
     params
   );
   return rows.map(row=>row.locationId).filter(Boolean);
