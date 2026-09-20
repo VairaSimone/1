@@ -121,13 +121,14 @@ async function ensureDatabaseWithRetry({ attempts = env.DB_RETRY_ATTEMPTS } = {}
     } catch (err) {
       lastError = err;
       if (!isTransientDatabaseError(err) || attempt >= totalAttempts - 1) throw err;
+      const retryInMs = retryDelayMs(attempt);
       logger.warn({
         attempt: attempt + 1,
         maxAttempts: totalAttempts,
-        retryInMs: retryDelayMs(attempt),
+        retryInMs,
         code: err.code
       }, "database initialization connection failed; retrying");
-      await sleep(retryDelayMs(attempt));
+      await sleep(retryInMs);
     }
   }
   throw lastError || new Error("Database initialization failed");
