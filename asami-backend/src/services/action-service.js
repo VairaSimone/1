@@ -343,7 +343,28 @@ if(committed&&!eventId){
   const refreshedResult={eventId,actionType,outcome:committed.outcome.outcome,success:committed.outcome.success,failureReason:committed.outcome.failureReason,resource:committed.physical,targetEntityId,targetLocationId,relationshipIntent,resourceFinalized:true};
   await pool.query(`UPDATE actions SET result=?,version=version+1 WHERE id=UUID_TO_BIN(?) AND status='COMPLETED'`,[JSON.stringify(refreshedResult),actionId]);
 }
-if(!committed){const[reloaded]=await pool.query(`SELECT status,result FROM actions WHERE id=UUID_TO_BIN(?) LIMIT 1`,[actionId]);const recovered=parseJson(reloaded[0]?.result,{})||{};if(reloaded[0]?.status==="COMPLETED")return{completed:true,outcome:recovered.outcome||"SUCCESS",success:recovered.success!==false,failureReason:recovered.failureReason||null,resource:recovered.resource||null,resourceLearning:recovered.resourceLearning||null,eventId:recovered.eventId||eventId};return{completed:false,outcome:"FAILURE",success:false,failureReason:"ACTION_COMPLETION_CONFLICT"};}const physicalLocation=await currentLocation(entityId,simulationId),learning=await recordResourceFailureKnowledge({simulationId,entityId,locationId:physicalLocation,simulationTime,physical:committed.physical}),finalResult={eventId,actionType,outcome:committed.outcome.outcome,success:committed.outcome.success,failureReason:committed.outcome.failureReason,resource:committed.physical,targetEntityId,targetLocationId,relationshipIntent,resourceLearning:learning,resourceFinalized:true};await pool.query(`UPDATE actions SET result=?,version=version+1 WHERE id=UUID_TO_BIN(?) AND status='COMPLETED'`,[JSON.stringify(finalResult),actionId]);await addEffect({simulationId,eventId,effectType:"ACTION_COMPLETED",targetActionId:actionId,targetEntityId:entityId,afterState:{actionType,status:"COMPLETED",outcome:committed.outcome.outcome,physicalResource:committed.physical},magnitude:committed.outcome.success?1:0,createdSimulationAt:simulationTime});if(String(actionType||"").toUpperCase()==="TALKING"&&targetEntityId)await processSocialInteraction({simulationId,sourceEntityId:entityId,targetEntityId,simulationAt:simulationTime,eventId,relationshipIntent,locationId:await currentLocation(entityId,simulationId)});if(intentionId)await pool.query(`UPDATE intentions SET status='COMPLETED',version=version+1 WHERE id=UUID_TO_BIN(?) AND status='ACTIVE'`,[intentionId]);if(decisionId)await pool.query(
+if(!committed){const[reloaded]=await pool.query(`SELECT status,result FROM actions WHERE id=UUID_TO_BIN(?) LIMIT 1`,[actionId]);const recovered=parseJson(reloaded[0]?.result,{})||{};if(reloaded[0]?.status==="COMPLETED")return{completed:true,outcome:recovered.outcome||"SUCCESS",success:recovered.success!==false,failureReason:recovered.failureReason||null,resource:recovered.resource||null,resourceLearning:recovered.resourceLearning||null,eventId:recovered.eventId||eventId};return{completed:false,outcome:"FAILURE",success:false,failureReason:"ACTION_COMPLETION_CONFLICT"};}const physicalLocation=await currentLocation(entityId,simulationId),learning=await recordResourceFailureKnowledge({simulationId,entityId,locationId:physicalLocation,simulationTime,physical:committed.physical}),finalResult={
+  eventId,
+  actionType,
+  outcome:committed.outcome.outcome,
+  success:committed.outcome.success,
+  failureReason:committed.outcome.failureReason,
+  resource:committed.physical,
+  targetEntityId,
+  targetLocationId,
+  relationshipIntent,
+  resourceLearning:learning,
+  resourceFinalized:true,
+  postProcessingStatus:"PENDING",
+  executedAction:{
+    actionId,
+    decisionId,
+    actionType:String(actionType||"").toUpperCase(),
+    targetEntityId:targetEntityId||null,
+    targetLocationId:targetLocationId||null,
+    simulationTime
+  }
+};await pool.query(`UPDATE actions SET result=?,version=version+1 WHERE id=UUID_TO_BIN(?) AND status='COMPLETED'`,[JSON.stringify(finalResult),actionId]);await addEffect({simulationId,eventId,effectType:"ACTION_COMPLETED",targetActionId:actionId,targetEntityId:entityId,afterState:{actionType,status:"COMPLETED",outcome:committed.outcome.outcome,physicalResource:committed.physical},magnitude:committed.outcome.success?1:0,createdSimulationAt:simulationTime});if(String(actionType||"").toUpperCase()==="TALKING"&&targetEntityId)await processSocialInteraction({simulationId,sourceEntityId:entityId,targetEntityId,simulationAt:simulationTime,eventId,relationshipIntent,locationId:await currentLocation(entityId,simulationId)});if(intentionId)await pool.query(`UPDATE intentions SET status='COMPLETED',version=version+1 WHERE id=UUID_TO_BIN(?) AND status='ACTIVE'`,[intentionId]);if(decisionId)await pool.query(
   `UPDATE decisions
    SET status='EXECUTED',actual_outcome=?
    WHERE id=UUID_TO_BIN(?) AND status IN ('EVALUATED','CREATED')`,
