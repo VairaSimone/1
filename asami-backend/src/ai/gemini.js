@@ -14,7 +14,7 @@ const TRANSIENT_NETWORK_CODES = new Set([
 ]);
 
 function classifyGeminiError(err) {
-  const status=Number(err?.status||err?.response?.status||(
+  const status=Number(err?.status||err?.statusCode||err?.response?.status||(
     typeof err?.code==="number" ? err.code : 0
   ));
   const code=String(err?.code||"").toUpperCase();
