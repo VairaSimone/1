@@ -54,6 +54,34 @@ async function getCognitiveProfile(simulationId, entityId) {
   };
 }
 
+async function getCognitiveProfiles(simulationId, entityIds=[]) {
+  const ids=[...new Set((entityIds||[]).filter(Boolean).map(String))];
+  const profiles=new Map();
+  if(!ids.length)return profiles;
+  const placeholders=ids.map(()=> "UUID_TO_BIN(?)").join(",");
+  const [entityRows]=await pool.query(`SELECT BIN_TO_UUID(id) AS entityId,attributes FROM entities WHERE simulation_id=UUID_TO_BIN(?) AND id IN (${placeholders})`,[simulationId,...ids]);
+  const [preferences]=await pool.query(`SELECT BIN_TO_UUID(entity_id) AS entityId,BIN_TO_UUID(id) AS id,target_type AS targetType,BIN_TO_UUID(target_entity_id) AS targetEntityId,preference_value AS preferenceValue,strength,confidence,updated_simulation_at AS updatedAt FROM preferences WHERE simulation_id=UUID_TO_BIN(?) AND entity_id IN (${placeholders}) ORDER BY entity_id,strength DESC,confidence DESC,updated_simulation_at DESC`,[simulationId,...ids]);
+  const [beliefs]=await pool.query(`SELECT BIN_TO_UUID(entity_id) AS entityId,BIN_TO_UUID(id) AS id,BIN_TO_UUID(subject_entity_id) AS subjectEntityId,predicate,object_value AS objectValue,confidence,importance,status,updated_simulation_at AS updatedAt FROM beliefs WHERE simulation_id=UUID_TO_BIN(?) AND entity_id IN (${placeholders}) AND status IN ('ACTIVE','REVISED') ORDER BY entity_id,importance DESC,confidence DESC,updated_simulation_at DESC`,[simulationId,...ids]);
+  const [knowledge]=await pool.query(`SELECT BIN_TO_UUID(ek.entity_id) AS entityId,BIN_TO_UUID(ek.knowledge_item_id) AS id,ki.knowledge_type AS knowledgeType,BIN_TO_UUID(ki.subject_entity_id) AS subjectEntityId,ki.predicate,BIN_TO_UUID(ki.object_entity_id) AS objectEntityId,ki.content,ek.confidence,ek.importance,ek.learned_simulation_at AS learnedAt FROM entity_knowledge ek JOIN knowledge_items ki ON ki.id=ek.knowledge_item_id WHERE ek.simulation_id=UUID_TO_BIN(?) AND ek.entity_id IN (${placeholders}) AND ek.status='ACTIVE' ORDER BY ek.entity_id,ek.importance DESC,ek.confidence DESC,ek.last_reinforced_at DESC,ek.learned_simulation_at DESC`,[simulationId,...ids]);
+  const [habits]=await pool.query(`SELECT BIN_TO_UUID(entity_id) AS entityId,BIN_TO_UUID(id) AS id,name,description,strength,frequency,trigger_definition AS triggerDefinition,action_definition AS actionDefinition,status,updated_simulation_at AS updatedAt FROM habits WHERE entity_id IN (${placeholders}) AND status IN ('ACTIVE','WEAKENING') ORDER BY entity_id,strength DESC,updated_simulation_at DESC`,ids);
+  const [plans]=await pool.query(`SELECT BIN_TO_UUID(id) AS id,BIN_TO_UUID(entity_id) AS entityId,BIN_TO_UUID(goal_id) AS goalId,title,status,strategy,created_simulation_at AS createdAt FROM plans WHERE simulation_id=UUID_TO_BIN(?) AND entity_id IN (${placeholders}) AND status IN ('DRAFT','ACTIVE','PAUSED') ORDER BY entity_id,created_simulation_at DESC`,[simulationId,...ids]);
+  const planIds=plans.map(row=>row.id).filter(Boolean);
+  let planSteps=[];
+  if(planIds.length){
+    const planPlaceholders=planIds.map(()=> "UUID_TO_BIN(?)").join(",");
+    const [rows]=await pool.query(`SELECT BIN_TO_UUID(id) AS id,BIN_TO_UUID(plan_id) AS planId,sequence,title,description,status,activity_type_id AS activityTypeId,intended_start_simulation_at AS intendedStart,deadline_simulation_at AS deadline,result FROM plan_steps WHERE plan_id IN (${planPlaceholders}) ORDER BY plan_id,sequence`,planIds);
+    planSteps=rows;
+  }
+  const byEntity=new Map(ids.map(id=>[id,{mentalState:{currentFocus:null,currentConcern:null,recentThought:null,mentalLoad:.2,rumination:.1,certainty:.5,updatedSimulationAt:null},preferences:[],beliefs:[],knowledge:[],habits:[],plans:[]} ]));
+  for(const row of entityRows){const profile=byEntity.get(row.entityId);if(!profile)continue;const attributes=parseJson(row.attributes,{})||{};if(attributes.mentalState&&typeof attributes.mentalState==='object')profile.mentalState=attributes.mentalState;}
+  for(const row of preferences){const profile=byEntity.get(row.entityId);if(profile)profile.preferences.push({...row,preferenceValue:Number(row.preferenceValue),strength:Number(row.strength),confidence:Number(row.confidence)});}
+  for(const row of beliefs){const profile=byEntity.get(row.entityId);if(profile)profile.beliefs.push({...row,objectValue:parseJson(row.objectValue,row.objectValue),confidence:Number(row.confidence),importance:Number(row.importance)});}
+  for(const row of knowledge){const profile=byEntity.get(row.entityId);if(profile)profile.knowledge.push(row);}
+  for(const row of habits){const profile=byEntity.get(row.entityId);if(profile)profile.habits.push({...row,strength:Number(row.strength),triggerDefinition:parseJson(row.triggerDefinition,{}),actionDefinition:parseJson(row.actionDefinition,{})});}
+  const stepsByPlan=new Map();for(const step of planSteps){if(!stepsByPlan.has(step.planId))stepsByPlan.set(step.planId,[]);stepsByPlan.get(step.planId).push(step);}
+  for(const row of plans){const profile=byEntity.get(row.entityId);if(profile)profile.plans.push({...row,strategy:parseJson(row.strategy,{}),steps:stepsByPlan.get(row.id)||[]});}
+  return byEntity;
+}
 async function updateMentalState(simulationId, entityId, simulationTime, patch = {}) {
   return withEntityStateLock(entityId, async db => {
     for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -158,4 +186,4 @@ async function applyDialogueCognition({ simulationId, entityId, simulationTime, 
 
 function cognitiveDecisionModifier(profile, actionType) { if(!profile||!actionType)return 0;const key=`ACTION:${normalizeKey(actionType,50)}`;let modifier=0;for(const p of profile.preferences||[])if(normalizeKey(p.targetType,50)===key)modifier+=Number(p.preferenceValue||0)*Number(p.strength||0)*Number(p.confidence||0)*.8;for(const habit of profile.habits||[]){const habitAction=normalizeKey(habit.actionDefinition?.actionType,50);if(habitAction===normalizeKey(actionType,50))modifier+=Number(habit.strength||0)*.25;}return Math.max(-1.5,Math.min(1.5,modifier));}
 
-module.exports={clamp01,clampSigned,safeText,parseJson,normalizeKey,getCognitiveProfile,updateMentalState,refreshMentalStateFromSimulation,deriveMentalPressure,deriveMentalLoad,upsertPreference,upsertBelief,upsertKnowledge,recordHabitEvidence:recordHabitEvidenceShared,createPlanFromProposal,applyDialogueCognition,cognitiveDecisionModifier};
+module.exports={clamp01,clampSigned,safeText,parseJson,normalizeKey,getCognitiveProfile,getCognitiveProfiles,updateMentalState,refreshMentalStateFromSimulation,deriveMentalPressure,deriveMentalLoad,upsertPreference,upsertBelief,upsertKnowledge,recordHabitEvidence:recordHabitEvidenceShared,createPlanFromProposal,applyDialogueCognition,cognitiveDecisionModifier};
