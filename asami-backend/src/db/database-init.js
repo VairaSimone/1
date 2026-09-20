@@ -13,6 +13,31 @@ const SCHEMA_PARTS = Array.from({ length: 19 }, (_, index) =>
 const EXPECTED_SCHEMA_SHA256 = "b702e7aea39ed8aa54fb75fa8db0949acbf7fb3370512c2f0e55ed06ae46747b";
 const EXPECTED_SCHEMA_GZIP_SHA256 = "8ce8d37aa78c6a1fba38a2fa333ba7553e927366fb545d92a879585dbc351174";
 const INIT_LOCK_NAME = "asami:schema-init";
+const TRANSIENT_DB_ERRORS = new Set([
+  "PROTOCOL_CONNECTION_LOST",
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "EPIPE",
+  "ETIMEDOUT",
+  "EAI_AGAIN",
+  "ENETUNREACH",
+  "EHOSTUNREACH"
+]);
+
+function isTransientDatabaseError(err) {
+  return TRANSIENT_DB_ERRORS.has(String(err?.code || "").toUpperCase());
+}
+
+function retryDelayMs(attempt) {
+  const base = Math.max(25, Number(env.DB_RETRY_BASE_MS) || 250);
+  const maximum = Math.max(base, Number(env.DB_RETRY_MAX_MS) || 5000);
+  const exponential = Math.min(maximum, base * (2 ** Math.max(0, attempt)));
+  return Math.min(maximum, Math.round(exponential + exponential * 0.2 * Math.random()));
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, Math.max(0, ms)));
+}
 
 function quoteIdentifier(value) {
   if (!/^[A-Za-z0-9_$-]+$/.test(value)) {
@@ -87,4 +112,25 @@ async function ensureDatabase() {
   }
 }
 
-module.exports = { ensureDatabase, EXPECTED_SCHEMA_SHA256 };
+async function ensureDatabaseWithRetry({ attempts = env.DB_RETRY_ATTEMPTS } = {}) {
+  const totalAttempts = Math.max(1, Math.floor(Number(attempts) || 1));
+  let lastError = null;
+  for (let attempt = 0; attempt < totalAttempts; attempt += 1) {
+    try {
+      return await ensureDatabase();
+    } catch (err) {
+      lastError = err;
+      if (!isTransientDatabaseError(err) || attempt >= totalAttempts - 1) throw err;
+      logger.warn({
+        attempt: attempt + 1,
+        maxAttempts: totalAttempts,
+        retryInMs: retryDelayMs(attempt),
+        code: err.code
+      }, "database initialization connection failed; retrying");
+      await sleep(retryDelayMs(attempt));
+    }
+  }
+  throw lastError || new Error("Database initialization failed");
+}
+
+module.exports = { ensureDatabase, ensureDatabaseWithRetry, EXPECTED_SCHEMA_SHA256 };
