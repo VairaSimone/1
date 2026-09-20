@@ -1,0 +1,144 @@
+const logger = require("../lib/logger");
+const { env } = require("../config/env");
+
+const countersBySimulation = new Map();
+const gaugesBySimulation = new Map();
+const actorStates = new Map();
+
+function getMap(root, simulationId) {
+  const key = String(simulationId);
+  let map = root.get(key);
+  if (!map) {
+    map = new Map();
+    root.set(key, map);
+  }
+  return map;
+}
+
+function increment(simulationId, metric, value=1) {
+  if (!simulationId || !metric) return 0;
+  const map=getMap(countersBySimulation,simulationId);
+  const next=Number(map.get(metric)||0)+Math.max(0,Number(value)||0);
+  map.set(metric,next);
+  return next;
+}
+
+function setGauge(simulationId, metric, value) {
+  if (!simulationId || !metric) return null;
+  const map=getMap(gaugesBySimulation,simulationId);
+  const next=Number.isFinite(Number(value))?Number(value):0;
+  map.set(metric,next);
+  return next;
+}
+
+function recordResourceEmergency(simulationId, resources=[]) {
+  const items=Array.isArray(resources)?resources:[];
+  if (!items.length) return;
+  increment(simulationId,"resource_emergency_total",items.length);
+  const replenished=items.reduce((sum,item)=>sum+Math.max(0,Number(item?.replenished||0)),0);
+  if (replenished) increment(simulationId,"resource_emergency_replenished_units_total",replenished);
+}
+
+function recordGoalBlocked(simulationId,{resource=null}={}) {
+  increment(simulationId,"goal_blocked_total");
+  if (resource) increment(simulationId,`goal_blocked_${String(resource).toLowerCase()}_total`);
+}
+
+function recordRecoveryFailed(simulationId) {
+  increment(simulationId,"recovery_failed_total");
+}
+
+function recordRetentionSummary(simulationId,summary={}) {
+  const names=[
+    ["retention_backlog_rows",summary.retentionBacklogTotal],
+    ["need_history_backlog_rows",summary.needHistoryBacklog],
+    ["emotion_history_backlog_rows",summary.emotionHistoryBacklog],
+    ["action_backlog_rows",summary.actionBacklog],
+    ["event_backlog_rows",summary.eventBacklog],
+    ["action_decision_summary_backlog_rows",summary.actionDecisionSummaryBacklog]
+  ];
+  for(const [metric,value] of names)setGauge(simulationId,metric,value);
+  setGauge(simulationId,"retention_budget_remaining_ms",summary.retentionBudgetRemainingMs);
+}
+
+function parseSimulationMs(value) {
+  const ms=new Date(value).getTime();
+  return Number.isFinite(ms)?ms:null;
+}
+
+function actorKey(simulationId,entityId) {
+  return String(simulationId)+":"+String(entityId);
+}
+
+function recordActorTick(simulationId,entityId,simulationTime,{active=false,criticalNeed=false}={}) {
+  if (!simulationId || !entityId) return null;
+  const now=parseSimulationMs(simulationTime);
+  if (now===null) return null;
+  const key=actorKey(simulationId,entityId);
+  const previous=actorStates.get(key)||{
+    idleSinceMs:null,
+    lastAlertMs:null,
+    lastSimulationMs:now
+  };
+
+  previous.lastSimulationMs=now;
+  if (active) {
+    previous.idleSinceMs=null;
+    previous.lastAlertMs=null;
+    actorStates.set(key,previous);
+    return null;
+  }
+
+  if (previous.idleSinceMs===null)previous.idleSinceMs=now;
+  const idleHours=Math.max(0,(now-previous.idleSinceMs)/3600000);
+  const thresholdHours=Math.max(1,Number(env.ACTOR_INACTIVITY_ALERT_HOURS)||12);
+  const repeatHours=Math.max(1,Number(env.ACTOR_INACTIVITY_ALERT_REPEAT_HOURS)||6);
+  const canAlert=previous.lastAlertMs===null ||
+    now-previous.lastAlertMs>=repeatHours*3600000;
+
+  actorStates.set(key,previous);
+  if (idleHours<thresholdHours||!canAlert)return null;
+
+  previous.lastAlertMs=now;
+  increment(simulationId,"actor_inactivity_total");
+  if (criticalNeed) increment(simulationId,"actor_inactivity_critical_total");
+
+  return {
+    entityId,
+    simulationTime,
+    idleHours:Number(idleHours.toFixed(2)),
+    criticalNeed:Boolean(criticalNeed)
+  };
+}
+
+function snapshot(simulationId) {
+  const counters=Object.fromEntries(
+    [...getMap(countersBySimulation,simulationId).entries()].sort((a,b)=>a[0].localeCompare(b[0]))
+  );
+  const gauges=Object.fromEntries(
+    [...getMap(gaugesBySimulation,simulationId).entries()].sort((a,b)=>a[0].localeCompare(b[0]))
+  );
+  return { counters, gauges };
+}
+
+function logSnapshot(simulationId,simulationTime) {
+  const metrics=snapshot(simulationId);
+  logger.info({
+    simulationId,
+    simulationTime,
+    metrics
+  },"simulation observability snapshot");
+  return metrics;
+}
+
+module.exports={
+  increment,
+  setGauge,
+  recordResourceEmergency,
+  recordGoalBlocked,
+  recordRecoveryFailed,
+  recordRetentionSummary,
+  recordActorTick,
+  snapshot,
+  logSnapshot
+};
