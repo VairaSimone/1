@@ -112,7 +112,7 @@ async function ensureDatabase() {
   }
 }
 
-async function ensureDatabaseWithRetry({ attempts = env.DB_RETRY_ATTEMPTS } = {}) {
+async function ensureDatabaseWithRetry({ attempts = env.DB_STARTUP_RETRY_ATTEMPTS } = {}) {
   const totalAttempts = Math.max(1, Math.floor(Number(attempts) || 1));
   let lastError = null;
   for (let attempt = 0; attempt < totalAttempts; attempt += 1) {
