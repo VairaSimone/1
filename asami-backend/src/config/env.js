@@ -15,6 +15,7 @@ const Env = z.object({
   DB_POOL_SIZE: z.coerce.number().int().positive().default(10),
   DB_CONNECT_TIMEOUT_MS: z.coerce.number().int().positive().default(10000),
   DB_RETRY_ATTEMPTS: z.coerce.number().int().min(1).max(12).default(5),
+  DB_STARTUP_RETRY_ATTEMPTS: z.coerce.number().int().min(1).max(60).default(12),
   DB_RETRY_BASE_MS: z.coerce.number().int().min(25).max(10000).default(250),
   DB_RETRY_MAX_MS: z.coerce.number().int().min(100).max(30000).default(5000),
   GEMINI_API_KEY: z.string().optional().default(""),
