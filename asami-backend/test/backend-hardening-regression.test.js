@@ -314,3 +314,13 @@ test('CRITICAL_ACTION_UNAVAILABLE stays distinct from resource emergency recover
   const resourceSection=source.slice(resourceIndex,actionIndex);
   assert.doesNotMatch(resourceSection,/CRITICAL_ACTION_UNAVAILABLE/);
 });
+
+
+test('resource emergency routing still enforces the persisted destination',()=>{
+  const source=read('services/decision-service.js');
+  assert.match(source,/\["ROUTING","RESOURCE_EMERGENCY"\]\.includes\(requirement\.mode\)/);
+  const start=source.indexOf('function validateCriticalDecision');
+  const end=source.indexOf('\nasync function makeDecision',start);
+  assert.match(source.slice(start,end),/Critical resource recovery for/);
+  assert.match(source.slice(start,end),/expectedTargetLocationId/);
+});
