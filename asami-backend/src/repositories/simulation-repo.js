@@ -1,6 +1,7 @@
 const { pool, withTransaction } = require("../db/pool");
 const { uuid } = require("../lib/ids");
 const { env } = require("../config/env");
+const { assertTransition } = require("../services/state-machine");
 
 const DEFAULT_ASAMI_PERSONALITY = {
   OPENNESS: .72,
@@ -259,6 +260,7 @@ async function advanceAndCreateTick(id, nowSimulation, version, tickType, engine
     `, [nowSimulation, id, version]);
     if (updated.affectedRows !== 1) return null;
 
+    assertTransition("tick","RUNNING","RUNNING");
     const tickId = uuid();
     await conn.query(`
       INSERT INTO simulation_ticks
@@ -301,6 +303,7 @@ async function createTick(id, simulationTime, tickType, engineVersion) {
 async function finishTick(tickId, status = "COMPLETED") {
   const normalizedStatus = status && typeof status === "object" ? status.status : status;
   const finalStatus = normalizedStatus || "COMPLETED";
+  if(finalStatus==="COMPLETED"||finalStatus==="FAILED"||finalStatus==="SKIPPED")assertTransition("tick","RUNNING",finalStatus);
   const allowedStatuses = new Set(["COMPLETED", "FAILED", "SKIPPED"]);
   if (!allowedStatuses.has(finalStatus)) {
     throw Object.assign(new Error(`Invalid simulation tick status: ${String(finalStatus)}`), { code: "INVALID_TICK_STATUS" });
