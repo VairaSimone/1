@@ -165,7 +165,7 @@ async function prepareTickAutonomyContext({simulationId,entityIds=[],simulationT
   const [entityRows]=await pool.query(`SELECT BIN_TO_UUID(e.id) AS id,e.display_name AS displayName,et.code AS entityType,e.status,e.description,e.attributes,e.version FROM entities e JOIN entity_types et ON et.id=e.entity_type_id WHERE e.simulation_id=UUID_TO_BIN(?) AND e.id IN (${placeholders})`,[simulationId,...ids]);
   for(const row of entityRows)entities.set(row.id,row);
   const worldLocations=await loadWorldLocations(simulationId);
-  const decisionContexts=await decisionService.buildDecisionContexts(simulationId,ids,simulationTime);
+  const decisionContexts=await decisionService.buildDecisionContexts(simulationId,ids,simulationTime,{worldLocations});
   const socialContexts=await buildSocialContexts(simulationId,ids);
   const visitedByEntity=await loadVisitedLocationsBatch(simulationId,ids);
   const recallBase=new Map();for(const id of ids){const base=decisionContexts.get(id);if(!base)continue;recallBase.set(id,{simulationTime,goalIds:(base.goals||[]).map(goal=>goal.id).filter(Boolean),locationId:base.location?.locationId||null,locationType:base.location?.locationType||null,candidateActionTypes:(base.candidates||[]).map(candidate=>candidate.action).filter(Boolean)});}
