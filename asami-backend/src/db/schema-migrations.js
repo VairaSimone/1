@@ -41,11 +41,24 @@ async function ensureStatusConstraint({ table, constraint, statuses }, db = pool
 }
 
 async function ensurePlanningStatusMigrations() {
-  const changed = [];
-  for (const migration of PLANNING_STATUS_MIGRATIONS) {
-    if (await ensureStatusConstraint(migration)) changed.push(migration.table);
+  const conn = await pool.getConnection();
+  const lockName = "asami:schema-planning-status";
+  let acquired = false;
+  try {
+    const [lockRows] = await conn.query("SELECT GET_LOCK(?,30) AS acquired", [lockName]);
+    acquired = Number(lockRows[0]?.acquired) === 1;
+    if (!acquired) throw new Error("Could not acquire planning schema migration lock");
+    const changed = [];
+    for (const migration of PLANNING_STATUS_MIGRATIONS) {
+      if (await ensureStatusConstraint(migration, conn)) changed.push(migration.table);
+    }
+    return { changed };
+  } finally {
+    if (acquired) {
+      try { await conn.query("SELECT RELEASE_LOCK(?)", [lockName]); } catch {}
+    }
+    conn.release();
   }
-  return { changed };
 }
 
 module.exports = { ensurePlanningStatusMigrations };
