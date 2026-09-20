@@ -285,13 +285,13 @@ async function ensureGoalPlan({simulationId,entityId,simulationTime,needs}){
   const priority=Math.max(.1,Math.min(1,Number(topNeed.priorityWeight||.5)));
   const mysqlTime=mysqlSimulationDateTime(simulationTime);
   await pool.query(
-    \`INSERT INTO goals (id,simulation_id,entity_id,title,description,goal_type,priority,status,progress,created_simulation_at,motivation,version)
-     VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,?,'ACTIVE',0,?,CAST(? AS JSON),1)\`,
+    `INSERT INTO goals (id,simulation_id,entity_id,title,description,goal_type,priority,status,progress,created_simulation_at,motivation,version)
+     VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,?,'ACTIVE',0,?,CAST(? AS JSON),1)`,
     [goalId,simulationId,entityId,template.title,template.description,template.goalType,priority,mysqlTime,
       JSON.stringify({need:String(topNeed.code).toUpperCase(),pressure:Number(topNeed.value),priorityWeight:Number(topNeed.priorityWeight||1),source:"AUTONOMOUS_NEED"})]
   );
   const plan=await createPlanForGoal({simulationId,entityId,goalId,simulationTime,needCode:String(topNeed.code).toUpperCase(),pressure:topNeed.value,priority});
-  const[rows]=await pool.query(\`SELECT BIN_TO_UUID(id) AS id,title,description,goal_type AS goalType,priority,status,progress,motivation,result,created_simulation_at AS createdAt FROM goals WHERE id=UUID_TO_BIN(?) LIMIT 1\`,[goalId]);
+  const[rows]=await pool.query(`SELECT BIN_TO_UUID(id) AS id,title,description,goal_type AS goalType,priority,status,progress,motivation,result,created_simulation_at AS createdAt FROM goals WHERE id=UUID_TO_BIN(?) LIMIT 1`,[goalId]);
   return{goal:rows[0]||null,plan,created:true};
 }
 
