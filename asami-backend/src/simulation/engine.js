@@ -309,6 +309,14 @@ class SimulationEngine {
             const started = autonomy.started || null;
             if (!started?.actionId) throw Object.assign(new Error("Autonomy action was not started"), { code: "AUTONOMY_ACTION_START_REQUIRED" });
             actorHadActivity=true;
+            await refreshMentalStateFromSimulation({
+              simulationId: sim.id,
+              entityId,
+              simulationTime: nextTime,
+              needs: latestNeeds,
+              activeActionType: started.actionType||decision.actionType
+            });
+            actorHadActivity=true;
             this.hub.publish(sim.id, "action.created", { entityId, decision, action: started });
           }
           } catch (err) {
