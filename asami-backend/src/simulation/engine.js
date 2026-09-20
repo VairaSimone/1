@@ -251,6 +251,15 @@ class SimulationEngine {
           }, "critical resource emergency recovery applied");
         }
         const actors = await autonomyService.findAutonomousActors(sim.id, env.MAX_ENTITIES_PER_TICK);
+        let autonomyBatchContext=null;
+        try {
+          phase="autonomy.context.batch";
+          autonomyBatchContext=await autonomyService.prepareTickAutonomyContext({simulationId:sim.id,entityIds:actors,simulationTime:nextTime.toISOString()});
+          logger.debug({simulationId:sim.id,simulationTime:nextTime.toISOString(),actorCount:actors.length,batchActorCount:autonomyBatchContext?.contexts?.size||0},"autonomy tick context prepared in batch");
+        } catch(batchError) {
+          autonomyBatchContext=null;
+          logger.warn(logger.contextError({simulationId:sim.id,phase:"autonomy.context.batch"},batchError,"batched autonomy context unavailable; falling back to per-actor context loading"));
+        }
         for (const id of actors) {
           let actorHadActivity=false;
           try {
@@ -345,7 +354,7 @@ class SimulationEngine {
               activeActionType: null
             });
             phase = "entity.autonomy";
-            const autonomy = await autonomyService.actForEntity({ simulationId: sim.id, entityId, simulationTime: nextTime.toISOString(), gemini: this.gemini, tickId });
+            const autonomy = await autonomyService.actForEntity({ simulationId: sim.id, entityId, simulationTime: nextTime.toISOString(), gemini: this.gemini, tickId, batchContext: autonomyBatchContext });
             if (!autonomy) continue;
             const decision = autonomy.decision;
             if (!decision?.actionType) throw Object.assign(new Error("Autonomy produced no executable action type"), { code: "AUTONOMY_ACTION_TYPE_REQUIRED" });
@@ -397,7 +406,8 @@ class SimulationEngine {
                   entityId: id,
                   simulationTime: nextTime.toISOString(),
                   gemini: this.gemini,
-                  tickId
+                  tickId,
+                  batchContext: autonomyBatchContext
                 });
 
                 if (retry?.decision?.actionType && retry?.started?.actionId) {
