@@ -40,6 +40,40 @@ async function ensureStatusConstraint({ table, constraint, statuses }, db = pool
   return true;
 }
 
+
+const ACTION_EXECUTION_MIGRATION = {
+  column: "idempotency_key",
+  uniqueIndex: "uq_actions_idempotency_key"
+};
+
+async function ensureActionIdempotencyMigration(db) {
+  const [columns] = await db.query(
+    `SELECT COUNT(*) AS count
+     FROM INFORMATION_SCHEMA.COLUMNS
+     WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='actions' AND COLUMN_NAME=?`,
+    [ACTION_EXECUTION_MIGRATION.column]
+  );
+  if (Number(columns[0]?.count || 0) === 0) {
+    await db.query(
+      `ALTER TABLE actions ADD COLUMN idempotency_key VARCHAR(191) NULL AFTER decision_id`
+    );
+  }
+
+  const [indexes] = await db.query(
+    `SELECT COUNT(*) AS count
+     FROM INFORMATION_SCHEMA.STATISTICS
+     WHERE TABLE_SCHEMA=DATABASE()
+       AND TABLE_NAME='actions'
+       AND INDEX_NAME=?`,
+    [ACTION_EXECUTION_MIGRATION.uniqueIndex]
+  );
+  if (Number(indexes[0]?.count || 0) === 0) {
+    await db.query(
+      `ALTER TABLE actions ADD UNIQUE KEY uq_actions_idempotency_key (idempotency_key)`
+    );
+  }
+}
+
 async function ensurePlanningStatusMigrations() {
   const conn = await pool.getConnection();
   const lockName = "asami:schema-planning-status";
@@ -52,7 +86,8 @@ async function ensurePlanningStatusMigrations() {
     for (const migration of PLANNING_STATUS_MIGRATIONS) {
       if (await ensureStatusConstraint(migration, conn)) changed.push(migration.table);
     }
-    return { changed };
+    await ensureActionIdempotencyMigration(conn);
+    return { changed, actionIdempotency: true };
   } finally {
     if (acquired) {
       try { await conn.query("SELECT RELEASE_LOCK(?)", [lockName]); } catch {}
