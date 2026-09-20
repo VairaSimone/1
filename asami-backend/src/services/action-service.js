@@ -179,6 +179,7 @@ async function startAction({simulationId,entityId,decisionId,intentionId=null,ac
       duration=move.durationMinutes;
     }
 
+    assertTransition("action","CREATED","ACTIVE");
     actionId=uuid();
     const expectedCompletion=new Date(new Date(simulationTime).getTime()+duration*60000);
     await pool.query(
