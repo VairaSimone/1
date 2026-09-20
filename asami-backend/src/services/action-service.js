@@ -258,7 +258,22 @@ async function startAction({simulationId,entityId,decisionId,intentionId=null,ac
           `UPDATE decisions SET status='FAILED',actual_outcome=?
            WHERE id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?)
              AND status IN ('CREATED','EVALUATED')`,
-          [JSON.stringify({actionType:normalizedAction,failureReason:"ACTION_START_FAILED"}),decisionId,simulationId,entityId]
+          [JSON.stringify({
+            actionType: normalizedAction,
+            failureReason: "ACTION_START_FAILED",
+            actionSummary: buildDecisionActionSummary({
+              actionId,
+              decisionId,
+              actionType: normalizedAction,
+              status: "FAILED",
+              simulationTime,
+              outcome: "FAILURE",
+              success: false,
+              failureReason: "ACTION_START_FAILED",
+              eventId,
+              intentionId
+            })
+          }),decisionId,simulationId,entityId]
         );
       }catch{}
     }
@@ -267,6 +282,26 @@ async function startAction({simulationId,entityId,decisionId,intentionId=null,ac
 }
 
 async function ensureEventId({simulationId,entityId,actionId,eventId,actionType,simulationTime,targetEntityId=null,targetLocationId=null,relationshipIntent="NONE"}){if(eventId)return eventId;return createEvent({simulationId,eventTypeCode:actionType==="TALKING"?"SOCIAL":"PERSONAL",title:`Asami ${String(actionType||"ACTION").toLowerCase().replaceAll("_"," ")}`,description:`Recovered autonomous action: ${actionType||"ACTION"}`,simulationAt:simulationTime,importance:.35,sourceActionId:actionId,participants:[{entityId,role:"ACTOR"}],metadata:{actionType,targetEntityId,targetLocationId,relationshipIntent,recovered:true,status:"ACTIVE"}});}
+function buildDecisionActionSummary({actionId,decisionId=null,actionType,status="COMPLETED",simulationTime,targetEntityId=null,targetLocationId=null,relationshipIntent="NONE",outcome=null,success=null,failureReason=null,resource=null,eventId=null,intentionId=null,result=null}) {
+  return {
+    schemaVersion: 1,
+    actionId,
+    decisionId,
+    actionType: String(actionType||"ACTION").toUpperCase(),
+    status,
+    completedSimulationAt: simulationTime || null,
+    targetEntityId: targetEntityId || null,
+    targetLocationId: targetLocationId || null,
+    relationshipIntent: relationshipIntent || "NONE",
+    outcome: outcome || null,
+    success: success === null || success === undefined ? null : Boolean(success),
+    failureReason: failureReason || null,
+    resource: resource || null,
+    eventId: eventId || null,
+    intentionId: intentionId || null,
+    result: result || null
+  };
+}
 function classifyPhysicalOutcome(physical){if(!physical||typeof physical!=="object"||!Object.prototype.hasOwnProperty.call(physical,"ok"))return{outcome:"SUCCESS",success:true,failureReason:null};if(physical.ok)return{outcome:"SUCCESS",success:true,failureReason:null};const consumed=Number(physical.consumed||0);return{outcome:consumed>0?"PARTIAL":"FAILURE",success:false,failureReason:consumed>0?"RESOURCE_PARTIALLY_AVAILABLE":"RESOURCE_UNAVAILABLE"};}
 async function recordResourceFailureKnowledge({simulationId,entityId,locationId,simulationTime,physical}){if(!locationId||!physical?.resource||physical.ok)return null;const resource=String(physical.resource).trim().toLowerCase(),remaining=Number(physical.remaining);if(!resource||!Number.isFinite(remaining)||remaining>0)return null;const knowledgePayload={type:"RESOURCE_UNAVAILABLE",resource,locationId,simulationAt:simulationTime};const knowledgeId=await upsertKnowledge({simulationId,entityId,simulationTime,item:{knowledgeType:"WORLD_EXPERIENCE",content:JSON.stringify(knowledgePayload),subjectEntityId:entityId,objectEntityId:locationId,predicate:"RESOURCE_UNAVAILABLE",confidence:.98,importance:.85}});await createMemory({simulationId,entityId,eventId:null,locationId,type:"EPISODIC",content:`I tried to ${String(physical.actionType||"perform an action").toLowerCase()} here, but ${resource} was unavailable. I should consider another location or strategy next time.`,importance:.82,strength:.98,confidence:.98,emotionalIntensity:.35,simulationAt:simulationTime,metadata:{kind:"resource_failure",resource,locationId,remaining,learning:"RESOURCE_UNAVAILABLE"}});return{knowledgeId,resource,locationId,type:"RESOURCE_UNAVAILABLE"};}
 async function completeAction({simulationId,entityId,actionId,decisionId=null,eventId,intentionId=null,actionType,simulationTime,targetEntityId=null,targetLocationId=null,relationshipIntent="NONE"}){const[activeRows]=await pool.query(`SELECT status,result,version FROM actions WHERE id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?) LIMIT 1`,[actionId,entityId,simulationId]);if(!activeRows.length)return{completed:false,outcome:"FAILURE",success:false,failureReason:"ACTION_NOT_FOUND"};if(activeRows[0].status==="COMPLETED"){const stored=parseJson(activeRows[0].result,{})||{};return{completed:true,outcome:stored.outcome||"SUCCESS",success:stored.success!==false,failureReason:stored.failureReason||null,resource:stored.resource||null,resourceLearning:stored.resourceLearning||null,eventId:stored.eventId||eventId};}let committed=null;await withTransaction(async conn=>{const[lockedRows]=await conn.query(`SELECT status,result,version FROM actions WHERE id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?) LIMIT 1 FOR UPDATE`,[actionId,entityId,simulationId]);if(!lockedRows.length||lockedRows[0].status!=="ACTIVE")return;const before=parseJson(lockedRows[0].result,{})||{},physicalLocation=await currentLocation(entityId,simulationId,conn),physical=before.resourceFinalized?before.resource:await resolveActionResource({simulationId,locationId:physicalLocation,actionType,simulationTime,conn});physical.actionType=actionType;const outcome=classifyPhysicalOutcome(physical);let movementCompleted=true;if(MOVE_ACTIONS.has(String(actionType||"").toUpperCase())&&before.movement?.movementId){movementCompleted=await completeMovement({simulationId,entityId,destination:before.movement.destinationLocationId,movementId:before.movement.movementId,simulationTime,db:conn});if(!movementCompleted)throw Object.assign(new Error("Movement completion failed"),{code:"MOVEMENT_COMPLETION_FAILED"});}const result={...before,eventId,actionType,outcome:outcome.outcome,success:outcome.success,failureReason:outcome.failureReason,resource:physical,targetEntityId,targetLocationId,relationshipIntent,resourceFinalized:true};const[updated]=await conn.query(`UPDATE actions SET status='COMPLETED',completed_simulation_at=?,result=?,version=version+1 WHERE id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?) AND status='ACTIVE'`,[simulationTime,JSON.stringify(result),actionId,entityId,simulationId]);if(updated.affectedRows)committed={physical,outcome,resourceFinalized:true};});
@@ -275,7 +310,37 @@ if(committed&&!eventId){
   const refreshedResult={eventId,actionType,outcome:committed.outcome.outcome,success:committed.outcome.success,failureReason:committed.outcome.failureReason,resource:committed.physical,targetEntityId,targetLocationId,relationshipIntent,resourceFinalized:true};
   await pool.query(`UPDATE actions SET result=?,version=version+1 WHERE id=UUID_TO_BIN(?) AND status='COMPLETED'`,[JSON.stringify(refreshedResult),actionId]);
 }
-if(!committed){const[reloaded]=await pool.query(`SELECT status,result FROM actions WHERE id=UUID_TO_BIN(?) LIMIT 1`,[actionId]);const recovered=parseJson(reloaded[0]?.result,{})||{};if(reloaded[0]?.status==="COMPLETED")return{completed:true,outcome:recovered.outcome||"SUCCESS",success:recovered.success!==false,failureReason:recovered.failureReason||null,resource:recovered.resource||null,resourceLearning:recovered.resourceLearning||null,eventId:recovered.eventId||eventId};return{completed:false,outcome:"FAILURE",success:false,failureReason:"ACTION_COMPLETION_CONFLICT"};}const physicalLocation=await currentLocation(entityId,simulationId),learning=await recordResourceFailureKnowledge({simulationId,entityId,locationId:physicalLocation,simulationTime,physical:committed.physical}),finalResult={eventId,actionType,outcome:committed.outcome.outcome,success:committed.outcome.success,failureReason:committed.outcome.failureReason,resource:committed.physical,targetEntityId,targetLocationId,relationshipIntent,resourceLearning:learning,resourceFinalized:true};await pool.query(`UPDATE actions SET result=?,version=version+1 WHERE id=UUID_TO_BIN(?) AND status='COMPLETED'`,[JSON.stringify(finalResult),actionId]);await addEffect({simulationId,eventId,effectType:"ACTION_COMPLETED",targetActionId:actionId,targetEntityId:entityId,afterState:{actionType,status:"COMPLETED",outcome:committed.outcome.outcome,physicalResource:committed.physical},magnitude:committed.outcome.success?1:0,createdSimulationAt:simulationTime});if(String(actionType||"").toUpperCase()==="TALKING"&&targetEntityId)await processSocialInteraction({simulationId,sourceEntityId:entityId,targetEntityId,simulationAt:simulationTime,eventId,relationshipIntent,locationId:await currentLocation(entityId,simulationId)});if(intentionId)await pool.query(`UPDATE intentions SET status='COMPLETED',version=version+1 WHERE id=UUID_TO_BIN(?) AND status='ACTIVE'`,[intentionId]);if(decisionId)await pool.query(`UPDATE decisions SET status='EXECUTED',actual_outcome=? WHERE id=UUID_TO_BIN(?) AND status IN ('EVALUATED','CREATED')`,[JSON.stringify({actionId,eventId,outcome:committed.outcome.outcome,success:committed.outcome.success,failureReason:committed.outcome.failureReason,physicalResource:committed.physical,relationshipIntent}),decisionId]);return{completed:true,outcome:committed.outcome.outcome,success:committed.outcome.success,failureReason:committed.outcome.failureReason,resource:committed.physical,resourceLearning:learning};}
+if(!committed){const[reloaded]=await pool.query(`SELECT status,result FROM actions WHERE id=UUID_TO_BIN(?) LIMIT 1`,[actionId]);const recovered=parseJson(reloaded[0]?.result,{})||{};if(reloaded[0]?.status==="COMPLETED")return{completed:true,outcome:recovered.outcome||"SUCCESS",success:recovered.success!==false,failureReason:recovered.failureReason||null,resource:recovered.resource||null,resourceLearning:recovered.resourceLearning||null,eventId:recovered.eventId||eventId};return{completed:false,outcome:"FAILURE",success:false,failureReason:"ACTION_COMPLETION_CONFLICT"};}const physicalLocation=await currentLocation(entityId,simulationId),learning=await recordResourceFailureKnowledge({simulationId,entityId,locationId:physicalLocation,simulationTime,physical:committed.physical}),finalResult={eventId,actionType,outcome:committed.outcome.outcome,success:committed.outcome.success,failureReason:committed.outcome.failureReason,resource:committed.physical,targetEntityId,targetLocationId,relationshipIntent,resourceLearning:learning,resourceFinalized:true};await pool.query(`UPDATE actions SET result=?,version=version+1 WHERE id=UUID_TO_BIN(?) AND status='COMPLETED'`,[JSON.stringify(finalResult),actionId]);await addEffect({simulationId,eventId,effectType:"ACTION_COMPLETED",targetActionId:actionId,targetEntityId:entityId,afterState:{actionType,status:"COMPLETED",outcome:committed.outcome.outcome,physicalResource:committed.physical},magnitude:committed.outcome.success?1:0,createdSimulationAt:simulationTime});if(String(actionType||"").toUpperCase()==="TALKING"&&targetEntityId)await processSocialInteraction({simulationId,sourceEntityId:entityId,targetEntityId,simulationAt:simulationTime,eventId,relationshipIntent,locationId:await currentLocation(entityId,simulationId)});if(intentionId)await pool.query(`UPDATE intentions SET status='COMPLETED',version=version+1 WHERE id=UUID_TO_BIN(?) AND status='ACTIVE'`,[intentionId]);if(decisionId)await pool.query(
+  `UPDATE decisions
+   SET status='EXECUTED',actual_outcome=?
+   WHERE id=UUID_TO_BIN(?) AND status IN ('EVALUATED','CREATED')`,
+  [JSON.stringify({
+    actionId,
+    eventId,
+    outcome: committed.outcome.outcome,
+    success: committed.outcome.success,
+    failureReason: committed.outcome.failureReason,
+    physicalResource: committed.physical,
+    relationshipIntent,
+    actionSummary: buildDecisionActionSummary({
+      actionId,
+      decisionId,
+      actionType,
+      status: "COMPLETED",
+      simulationTime,
+      targetEntityId,
+      targetLocationId,
+      relationshipIntent,
+      outcome: committed.outcome.outcome,
+      success: committed.outcome.success,
+      failureReason: committed.outcome.failureReason,
+      resource: committed.physical,
+      eventId,
+      intentionId,
+      result: finalResult
+    })
+  }),decisionId]
+);return{completed:true,outcome:committed.outcome.outcome,success:committed.outcome.success,failureReason:committed.outcome.failureReason,resource:committed.physical,resourceLearning:learning};}
 async function executeAction(args){const started=await startAction(args);const completed=await completeAction({...args,actionId:started.actionId,eventId:started.eventId,decisionId:args.decisionId});return{actionId:started.actionId,eventId:started.eventId,outcome:completed?.outcome||"SUCCESS"};}
 async function learnFromAction(entityId,actionType,simulationTime){
   const normalizedAction=String(actionType||"").trim().toUpperCase(),skill=skillByAction[normalizedAction];
@@ -287,4 +352,4 @@ async function learnFromAction(entityId,actionType,simulationTime){
   const next=Math.min(.9999,Number(current.proficiency)+gain),confidence=Math.min(1,Number(current.confidence)+.0015);
   await pool.query(`UPDATE entity_skills SET proficiency=?,confidence=?,last_used_simulation_at=?,updated_simulation_at=?,version=version+1 WHERE entity_id=UUID_TO_BIN(?) AND skill_id=UUID_TO_BIN(?) AND version=?`,[next,confidence,simulationTime,simulationTime,entityId,current.skillId,current.version]);
 }
-module.exports={startAction,completeAction,executeAction,getActiveAction,learnFromAction,calculateSkillLearningGain,SKILL_LEARNING_PROFILES,getActionDurationMinutes,currentLocation,chooseDestination,nextHop,routeDetails,haversineMeters,shortestRoute,startMovement,completeMovement,classifyPhysicalOutcome,recordResourceFailureKnowledge};
+module.exports={startAction,completeAction,executeAction,getActiveAction,learnFromAction,calculateSkillLearningGain,SKILL_LEARNING_PROFILES,getActionDurationMinutes,currentLocation,chooseDestination,nextHop,routeDetails,haversineMeters,shortestRoute,startMovement,completeMovement,classifyPhysicalOutcome,recordResourceFailureKnowledge,buildDecisionActionSummary};
