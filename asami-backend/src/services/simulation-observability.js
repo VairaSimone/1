@@ -1,4 +1,6 @@
 const logger = require("../lib/logger");
+const { AsyncLocalStorage } = require("node:async_hooks");
+const runtimeContext = new AsyncLocalStorage();
 const { env } = require("../config/env");
 
 const countersBySimulation = new Map();
@@ -15,6 +17,18 @@ function getMap(root, simulationId) {
   return map;
 }
 
+function runWithContext(context,fn){return runtimeContext.run(context,fn);}
+function getContext(){return runtimeContext.getStore()||null;}
+function recordDbQuery(durationMs){
+  const context=getContext();
+  if(!context?.simulationId)return;
+  increment(context.simulationId,"db_queries_total");
+  increment(context.simulationId,"db_query_latency_ms_total",Math.max(0,Number(durationMs)||0));
+  setGauge(context.simulationId,"db_query_latency_ms_last",Math.max(0,Number(durationMs)||0));
+  setGauge(context.simulationId,"db_query_latency_ms_max",Math.max(Number(getMap(gaugesBySimulation,context.simulationId).get("db_query_latency_ms_max")||0),Number(durationMs)||0));
+  context.tickQueryCount=Number(context.tickQueryCount||0)+1;
+  if(Number(durationMs||0)>=1000)increment(context.simulationId,"db_slow_queries_total");
+}
 function increment(simulationId, metric, value=1) {
   if (!simulationId || !metric) return 0;
   const map=getMap(countersBySimulation,simulationId);
@@ -112,6 +126,10 @@ function recordActorTick(simulationId,entityId,simulationTime,{active=false,crit
 }
 
 function snapshot(simulationId) {
+  const context=getContext();
+  if(context?.simulationId===String(simulationId)||context?.simulationId===simulationId){
+    setGauge(simulationId,"db_queries_current_tick",Number(context.tickQueryCount||0));
+  }
   const counters=Object.fromEntries(
     [...getMap(countersBySimulation,simulationId).entries()].sort((a,b)=>a[0].localeCompare(b[0]))
   );
@@ -132,6 +150,9 @@ function logSnapshot(simulationId,simulationTime) {
 }
 
 module.exports={
+  runWithContext,
+  getContext,
+  recordDbQuery,
   increment,
   setGauge,
   recordResourceEmergency,
