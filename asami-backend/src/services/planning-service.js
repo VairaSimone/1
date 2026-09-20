@@ -35,23 +35,25 @@ function isResourceBlockedFailure(actionType,outcome,actionResult){
 
 async function blockGoalForResource({simulationId,entityId,goalId,simulationTime,resource,reason,actionType,actionResult=null}){
   if(!goalId||!resource)return false;
-  const mysqlTime=mysqlSimulationDateTime(simulationTime);
   return withTransaction(async conn=>{
     const[goalRows]=await conn.query(
-      \`SELECT status,result,version FROM goals
+      `SELECT status,result,version FROM goals
        WHERE id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?)
-       LIMIT 1 FOR UPDATE\`,
+       LIMIT 1 FOR UPDATE`,
       [goalId,simulationId,entityId]
     );
     if(!goalRows.length)return false;
     const goal=goalRows[0];
-    if(!["ACTIVE","DRAFT","PAUSED","BLOCKED"].includes(String(goal.status||"").toUpperCase()))return false;
+    const goalStatus=String(goal.status||"").toUpperCase();
+    if(!["ACTIVE","DRAFT","PAUSED","BLOCKED"].includes(goalStatus))return false;
+    assertTransition("goal",goalStatus,"BLOCKED");
 
     const[planRows]=await conn.query(
-      \`SELECT BIN_TO_UUID(id) AS id,status,version,strategy FROM plans
+      `SELECT BIN_TO_UUID(id) AS id,status,version,strategy
+       FROM plans
        WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND goal_id=UUID_TO_BIN(?)
          AND status IN ('DRAFT','ACTIVE','PAUSED','BLOCKED')
-       ORDER BY created_simulation_at DESC FOR UPDATE\`,
+       ORDER BY created_simulation_at DESC FOR UPDATE`,
       [simulationId,entityId,goalId]
     );
 
@@ -69,19 +71,22 @@ async function blockGoalForResource({simulationId,entityId,goalId,simulationTime
     };
 
     await conn.query(
-      \`UPDATE goals
-       assertTransition("goal",goal.status,"BLOCKED");
-    assertTransition("plan_step","PENDING","BLOCKED");
-      assertTransition("plan_step","ACTIVE","BLOCKED");
-      assertTransition("plan",plan.status,"BLOCKED");
-      SET status='BLOCKED',result=?,completed_simulation_at=NULL,version=version+1
-       WHERE id=UUID_TO_BIN(?) AND version=? AND status IN ('ACTIVE','DRAFT','PAUSED','BLOCKED')\`,
+      `UPDATE goals
+       SET status='BLOCKED',result=?,completed_simulation_at=NULL,version=version+1
+       WHERE id=UUID_TO_BIN(?) AND version=? AND status IN ('ACTIVE','DRAFT','PAUSED','BLOCKED')`,
       [JSON.stringify(blockedResult),goalId,goal.version]
     );
 
     for(const plan of planRows){
+      const[stepRows]=await conn.query(
+        `SELECT status FROM plan_steps
+         WHERE plan_id=UUID_TO_BIN(?) AND status IN ('PENDING','ACTIVE')
+         FOR UPDATE`,
+        [plan.id]
+      );
+      for(const step of stepRows)assertTransition("plan_step",String(step.status||"").toUpperCase(),"BLOCKED");
       await conn.query(
-        \`UPDATE plan_steps
+        `UPDATE plan_steps
          SET status='BLOCKED',
              result=JSON_SET(
                COALESCE(result,JSON_OBJECT()),
@@ -91,127 +96,141 @@ async function blockGoalForResource({simulationId,entityId,goalId,simulationTime
                '$.retryWhenResourceAvailable',true
              ),
              version=version+1
-         WHERE plan_id=UUID_TO_BIN(?) AND status IN ('PENDING','ACTIVE')\`,
+         WHERE plan_id=UUID_TO_BIN(?) AND status IN ('PENDING','ACTIVE')`,
         [resource,simulationTime,plan.id]
       );
       const strategy=parseJson(plan.strategy,{})||{};
+      assertTransition("plan",String(plan.status||"").toUpperCase(),"BLOCKED");
       await conn.query(
-        \`UPDATE plans
+        `UPDATE plans
          SET status='BLOCKED',
              strategy=?,
              version=version+1
-         WHERE id=UUID_TO_BIN(?) AND status IN ('DRAFT','ACTIVE','PAUSED','BLOCKED')\`,
+         WHERE id=UUID_TO_BIN(?) AND status IN ('DRAFT','ACTIVE','PAUSED','BLOCKED')`,
         [JSON.stringify({...strategy,blockedReason:"RESOURCE_UNAVAILABLE",resource,blockedAt:simulationTime}),plan.id]
       );
     }
 
     observability.recordGoalBlocked(simulationId,{resource,reason});
     logger.warn({
-      simulationId,
-      entityId,
-      goalId,
-      simulationTime,
-      resource,
-      reason: reason||"RESOURCE_UNAVAILABLE",
-      actionType: normalizeAction(actionType)
+      simulationId,entityId,goalId,simulationTime,resource,
+      reason:reason||"RESOURCE_UNAVAILABLE",
+      actionType:normalizeAction(actionType)
     },"goal blocked by unavailable critical resource");
     return true;
   });
 }
-
 async function unblockBlockedGoal({simulationId,entityId,goalId,simulationTime}){
   if(!goalId)return false;
   return withTransaction(async conn=>{
     const[goalRows]=await conn.query(
-      \`SELECT status,version FROM goals
-       WHERE id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) LIMIT 1 FOR UPDATE\`,
+      `SELECT status,version FROM goals
+       WHERE id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) LIMIT 1 FOR UPDATE`,
       [goalId,simulationId,entityId]
     );
-    if(!goalRows.length||goalRows[0].status!=="BLOCKED")return false;
+    if(!goalRows.length||String(goalRows[0].status||"").toUpperCase()!=="BLOCKED")return false;
 
     const[plans]=await conn.query(
-      \`SELECT BIN_TO_UUID(id) AS id,version FROM plans
+      `SELECT BIN_TO_UUID(id) AS id,status,version FROM plans
        WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND goal_id=UUID_TO_BIN(?)
-         AND status='BLOCKED' ORDER BY created_simulation_at DESC FOR UPDATE\`,
+         AND status='BLOCKED' ORDER BY created_simulation_at DESC FOR UPDATE`,
       [simulationId,entityId,goalId]
     );
 
     for(const plan of plans){
       const[steps]=await conn.query(
-        \`SELECT BIN_TO_UUID(id) AS id,sequence,status,version
+        `SELECT BIN_TO_UUID(id) AS id,sequence,status,version
          FROM plan_steps WHERE plan_id=UUID_TO_BIN(?) AND status='BLOCKED'
-         ORDER BY sequence ASC FOR UPDATE\`,
+         ORDER BY sequence ASC FOR UPDATE`,
         [plan.id]
       );
       const nextStep=steps[0];
       if(nextStep){
+        for(const step of steps)assertTransition("plan_step",String(step.status||"").toUpperCase(),"PENDING");
+        assertTransition("plan_step","PENDING","ACTIVE");
         await conn.query(
-          \`UPDATE plan_steps SET status='PENDING',version=version+1
-           WHERE plan_id=UUID_TO_BIN(?) AND status='BLOCKED'\`,
+          `UPDATE plan_steps SET status='PENDING',version=version+1
+           WHERE plan_id=UUID_TO_BIN(?) AND status='BLOCKED'`,
           [plan.id]
         );
         await conn.query(
-          \`UPDATE plan_steps assertTransition("plan","BLOCKED","ACTIVE");
-      assertTransition("goal","BLOCKED","ACTIVE");
-    SET status='ACTIVE',version=version+1
-           WHERE id=UUID_TO_BIN(?) AND status='PENDING'\`,
+          `UPDATE plan_steps SET status='ACTIVE',version=version+1
+           WHERE id=UUID_TO_BIN(?) AND status='PENDING'`,
           [nextStep.id]
         );
       }
+      assertTransition("plan","BLOCKED","ACTIVE");
       await conn.query(
-        \`UPDATE plans
+        `UPDATE plans
          SET status='ACTIVE',
              strategy=JSON_SET(COALESCE(strategy,JSON_OBJECT()),'$.unblockedAt',CAST(? AS CHAR)),
              version=version+1
-         WHERE id=UUID_TO_BIN(?) AND status='BLOCKED'\`,
+         WHERE id=UUID_TO_BIN(?) AND status='BLOCKED'`,
         [simulationTime,plan.id]
       );
     }
 
+    assertTransition("goal","BLOCKED","ACTIVE");
     await conn.query(
-      \`UPDATE goals
+      `UPDATE goals
        SET status='ACTIVE',result=JSON_SET(COALESCE(result,JSON_OBJECT()),
            '$.status','ACTIVE',
            '$.unblockedAt',CAST(? AS CHAR),
            '$.retryWhenResourceAvailable',false),
            version=version+1
-       WHERE id=UUID_TO_BIN(?) AND status='BLOCKED'\`,
+       WHERE id=UUID_TO_BIN(?) AND status='BLOCKED'`,
       [simulationTime,goalId]
     );
     return true;
   });
 }
-
 async function abandonGoal({simulationId,entityId,goalId,simulationTime,reason}){
   if(!goalId)return false;
   const mysqlTime=mysqlSimulationDateTime(simulationTime);
   return withTransaction(async conn=>{
+    const[goalRows]=await conn.query(
+      `SELECT status FROM goals
+       WHERE id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) LIMIT 1 FOR UPDATE`,
+      [goalId,simulationId,entityId]
+    );
+    if(!goalRows.length)return false;
+    const goalStatus=String(goalRows[0].status||"").toUpperCase();
+    assertTransition("goal",goalStatus,"ABANDONED");
     const[updated]=await conn.query(
-      \`UPDATE goals SET status='ABANDONED',result=?,completed_simulation_at=?,version=version+1
+      `UPDATE goals SET status='ABANDONED',result=?,completed_simulation_at=?,version=version+1
        WHERE id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?)
-         AND status IN ('ACTIVE','DRAFT','PAUSED','BLOCKED')\`,
+         AND status IN ('ACTIVE','DRAFT','PAUSED','BLOCKED')`,
       [JSON.stringify({reason,at:simulationTime}),mysqlTime,goalId,simulationId,entityId]
     );
+    if(!updated.affectedRows)return false;
     const[plans]=await conn.query(
-      \`SELECT BIN_TO_UUID(id) AS id FROM plans
+      `SELECT BIN_TO_UUID(id) AS id,status FROM plans
        WHERE simulation_id=UUID_TO_BIN(?) AND goal_id=UUID_TO_BIN(?)
          AND status IN ('DRAFT','ACTIVE','PAUSED','BLOCKED')
-       FOR UPDATE\`,
+       FOR UPDATE`,
       [simulationId,goalId]
     );
     for(const plan of plans){
+      assertTransition("plan",String(plan.status||"").toUpperCase(),"CANCELLED");
+      const[steps]=await conn.query(
+        `SELECT status FROM plan_steps
+         WHERE plan_id=UUID_TO_BIN(?) AND status IN ('PENDING','ACTIVE','BLOCKED')
+         FOR UPDATE`,
+        [plan.id]
+      );
+      for(const step of steps)assertTransition("plan_step",String(step.status||"").toUpperCase(),"CANCELLED");
       await conn.query(
-        \`UPDATE plan_steps SET status='CANCELLED',version=version+1
-         WHERE plan_id=UUID_TO_BIN(?) AND status IN ('PENDING','ACTIVE','BLOCKED')\`,
+        `UPDATE plan_steps SET status='CANCELLED',version=version+1
+         WHERE plan_id=UUID_TO_BIN(?) AND status IN ('PENDING','ACTIVE','BLOCKED')`,
         [plan.id]
       );
       await conn.query(
-        \`UPDATE plans SET status='CANCELLED',version=version+1
-         WHERE id=UUID_TO_BIN(?) AND status IN ('DRAFT','ACTIVE','PAUSED','BLOCKED')\`,
+        `UPDATE plans SET status='CANCELLED',version=version+1
+         WHERE id=UUID_TO_BIN(?) AND status IN ('DRAFT','ACTIVE','PAUSED','BLOCKED')`,
         [plan.id]
       );
     }
-    return Boolean(updated.affectedRows||plans.length);
+    return true;
   });
 }
 async function ensureGoalPlan({simulationId,entityId,simulationTime,needs}){
