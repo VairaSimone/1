@@ -46,6 +46,32 @@ const ACTION_EXECUTION_MIGRATION = {
   uniqueIndex: "uq_actions_idempotency_key"
 };
 
+async function ensureActionLifecycleMigration(db) {
+  const [columns] = await db.query(
+    `SELECT COUNT(*) AS count
+     FROM INFORMATION_SCHEMA.COLUMNS
+     WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='actions'
+       AND COLUMN_NAME='post_processing_status'`
+  );
+  if (Number(columns[0]?.count || 0) === 0) {
+    await db.query(
+      `ALTER TABLE actions ADD COLUMN post_processing_status VARCHAR(20) NOT NULL DEFAULT 'PENDING' AFTER result`
+    );
+  }
+  const [indexes] = await db.query(
+    `SELECT COUNT(*) AS count
+     FROM INFORMATION_SCHEMA.STATISTICS
+     WHERE TABLE_SCHEMA=DATABASE()
+       AND TABLE_NAME='actions'
+       AND INDEX_NAME='idx_actions_post_processing'`
+  );
+  if (Number(indexes[0]?.count || 0) === 0) {
+    await db.query(
+      `ALTER TABLE actions ADD KEY idx_actions_post_processing (simulation_id, status, post_processing_status, completed_simulation_at)`
+    );
+  }
+}
+
 async function ensureActionIdempotencyMigration(db) {
   const [columns] = await db.query(
     `SELECT COUNT(*) AS count
@@ -87,7 +113,8 @@ async function ensurePlanningStatusMigrations() {
       if (await ensureStatusConstraint(migration, conn)) changed.push(migration.table);
     }
     await ensureActionIdempotencyMigration(conn);
-    return { changed, actionIdempotency: true };
+    await ensureActionLifecycleMigration(conn);
+    return { changed, actionIdempotency: true, actionLifecycle: true };
   } finally {
     if (acquired) {
       try { await conn.query("SELECT RELEASE_LOCK(?)", [lockName]); } catch {}
