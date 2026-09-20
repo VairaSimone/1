@@ -1,6 +1,6 @@
 const logger = require("../lib/logger");
 const { env } = require("../config/env");
-const { pool } = require("../db/pool");
+const { pool, pingWithRetry, getDatabaseHealth } = require("../db/pool");
 const simRepo = require("../repositories/simulation-repo");
 const { getAsamiCandidate } = require("../repositories/entity-repo");
 const { ensureEntityState, updateNeeds, applyEmotions, developTraits, readNeeds, flushPendingNeedHistory } = require("../services/state-service");
@@ -124,10 +124,30 @@ async function interruptActiveAction({ simulationId, entityId, active, simulatio
 }
 
 class SimulationEngine {
-  constructor({ gemini, hub }) { this.gemini = gemini; this.hub = hub; this.running = new Set(); this.interval = null; this.tickCounter = new Map(); this.worldMaintenanceAt = new Map(); }
+  constructor({ gemini, hub }) { this.gemini = gemini; this.hub = hub; this.running = new Set(); this.interval = null; this.tickCounter = new Map(); this.worldMaintenanceAt = new Map(); this.pulseInFlight = false; }
   async start() { if (this.interval) return; this.interval = setInterval(() => this.pulse().catch(err => logger.error(logger.contextError({ phase: "pulse" }, err, "engine pulse failed"))), env.ENGINE_INTERVAL_MS); await this.pulse(); }
   async stop({ drainTimeoutMs = 5000 } = {}) { if (this.interval) { clearInterval(this.interval); this.interval = null; } const timeout = Math.max(0, Number(drainTimeoutMs) || 5000); const deadline = Date.now() + timeout; while (this.running.size && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 50)); const drained = this.running.size === 0; if (!drained) logger.warn({ activeSimulations: this.running.size }, "engine shutdown timeout reached; simulations still running"); return drained; }
-  async pulse() { const simulations = await simRepo.listSimulations(); for (const sim of simulations) { if (sim.status !== "RUNNING" || this.running.has(sim.id)) continue; this.running.add(sim.id); this.runSimulation(sim).catch(err => logger.error(logger.contextError({ simulationId: sim.id, phase: "simulation" }, err, "simulation failed"))).finally(() => this.running.delete(sim.id)); } }
+  async pulse() {
+    if (this.pulseInFlight) return;
+    this.pulseInFlight = true;
+    try {
+      const healthy = await pingWithRetry({ attempts: Math.min(3, Number(env.DB_RETRY_ATTEMPTS) || 3), throwNonTransient: true });
+      if (!healthy) {
+        logger.warn({ database: getDatabaseHealth() }, "database degraded; skipping engine pulse");
+        return;
+      }
+      const simulations = await simRepo.listSimulations();
+      for (const sim of simulations) {
+        if (sim.status !== "RUNNING" || this.running.has(sim.id)) continue;
+        this.running.add(sim.id);
+        this.runSimulation(sim)
+          .catch(err => logger.error(logger.contextError({ simulationId: sim.id, phase: "simulation" }, err, "simulation failed")))
+          .finally(() => this.running.delete(sim.id));
+      }
+    } finally {
+      this.pulseInFlight = false;
+    }
+  }
   async runSimulation(sim) {
     const context = { simulationId: sim.id, simulationVersion: sim.version, simulationTime: sim.currentSimulationAt || null };
     let tickId = null, phase = "clock", entityId = null, actionType = null;
@@ -135,6 +155,11 @@ class SimulationEngine {
       const clock = await simRepo.getActiveClock(sim.id); if (!clock) return;
       const nextTime = new Date(new Date(clock.simulationAnchorAt).getTime() + (Date.now() - new Date(clock.realAnchorAt).getTime()) * Number(clock.speed));
       const previousTime = new Date(sim.currentSimulationAt || clock.simulationAnchorAt); if (nextTime <= previousTime) return;
+      const dbReady = await pingWithRetry({ attempts: Math.min(2, Number(env.DB_RETRY_ATTEMPTS) || 2), throwNonTransient: true });
+      if (!dbReady) {
+        logger.warn({ simulationId: sim.id, database: getDatabaseHealth() }, "database degraded; tick creation skipped");
+        return;
+      }
       tickId = await simRepo.advanceAndCreateTick(sim.id, nextTime, sim.version, "AUTONOMOUS", env.ENGINE_VERSION); if (!tickId) return;
       context.simulationTime = nextTime.toISOString(); phase = "tick.create";
       try {
