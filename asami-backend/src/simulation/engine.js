@@ -168,18 +168,27 @@ class SimulationEngine {
         return;
       }
       const simulations = await simRepo.listSimulations();
+      const maxConcurrent=Math.max(1,Number(env.MAX_CONCURRENT_SIMULATIONS)||1);
+      let queueDepth=0;
       for (const sim of simulations) {
         if (sim.status !== "RUNNING" || this.running.has(sim.id)) continue;
+        if (this.running.size >= maxConcurrent) {
+          queueDepth+=1;
+          continue;
+        }
         this.running.add(sim.id);
         this.runSimulation(sim)
           .catch(err => logger.error(logger.contextError({ simulationId: sim.id, phase: "simulation" }, err, "simulation failed")))
           .finally(() => this.running.delete(sim.id));
       }
+      observability.setGauge("global","simulation_queue_depth",queueDepth);
     } finally {
       this.pulseInFlight = false;
     }
   }
   async runSimulation(sim) {
+    const runtimeContext={simulationId:sim.id,tickId:null,tickQueryCount:0};
+    return observability.runWithContext(runtimeContext,async()=>{
     const context = { simulationId: sim.id, simulationVersion: sim.version, simulationTime: sim.currentSimulationAt || null };
     let tickId = null, phase = "clock", entityId = null, actionType = null;
     try {
@@ -192,6 +201,8 @@ class SimulationEngine {
         return;
       }
       tickId = await simRepo.advanceAndCreateTick(sim.id, nextTime, sim.version, "AUTONOMOUS", env.ENGINE_VERSION); if (!tickId) return;
+      runtimeContext.tickId=tickId;
+      runtimeContext.tickQueryCount=0;
       context.simulationTime = nextTime.toISOString(); phase = "tick.create";
       try {
         const elapsedMinutes = Math.min(10080, Math.max(0, (nextTime - previousTime) / 60000));
@@ -472,6 +483,7 @@ class SimulationEngine {
     } catch (err) {
       logger.error(logger.contextError({ ...context, phase, entityId, actionType }, err, "simulation run failed"));
     }
+    });
   }
 }
 
