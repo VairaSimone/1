@@ -6,6 +6,7 @@ const TERMINAL_DECISION_STATUSES = new Set(["EXECUTED", "FAILED", "CANCELLED"]);
 const TERMINAL_ACTION_STATUSES = new Set(["COMPLETED", "CANCELLED", "INTERRUPTED", "FAILED"]);
 const lastRunAt = new Map();
 const running = new Set();
+const retentionDeadlineAt = new Map();
 
 function positiveInt(value, fallback, minimum) {
   const n = Number(value);
@@ -34,8 +35,19 @@ const POLICY = Object.freeze({
   eventImportanceKeepThreshold: boundedNumber(process.env.RETENTION_EVENT_IMPORTANCE_KEEP_THRESHOLD, 0.8, 0, 1),
   batchSize: Math.min(2000, positiveInt(process.env.RETENTION_BATCH_SIZE, 500, 50)),
   maxDeletesPerTable: Math.min(10000, positiveInt(process.env.RETENTION_MAX_DELETES_PER_TABLE, 2000, 100)),
+  timeBudgetMs: Math.min(30000, positiveInt(process.env.RETENTION_TIME_BUDGET_MS, 5000, 250)),
   dryRun: ["1", "true", "yes", "on"].includes(String(process.env.RETENTION_DRY_RUN || "false").trim().toLowerCase())
 });
+
+function retentionBudgetAvailable(simulationId){
+  const deadline=retentionDeadlineAt.get(simulationId);
+  return deadline===undefined || Date.now()<deadline;
+}
+
+function retentionBudgetRemainingMs(simulationId){
+  const deadline=retentionDeadlineAt.get(simulationId);
+  return deadline===undefined?Number.POSITIVE_INFINITY:Math.max(0,deadline-Date.now());
+}
 
 function isTerminalDecisionStatus(status) {
   return TERMINAL_DECISION_STATUSES.has(String(status || "").trim().toUpperCase());
@@ -90,11 +102,17 @@ async function deleteSelectedRows(conn, {
 }) {
   if (POLICY.dryRun) {
     const [rows] = await conn.query(countSql, countParams);
-    return { [resultKey]: 0, candidates: Number(rows[0]?.candidates || 0), dryRun: true };
+    return { [resultKey]: 0, candidates: Number(rows[0]?.candidates || 0), remainingCandidates: Number(rows[0]?.candidates || 0), dryRun: true };
   }
 
+  const simulationId=selectParams?.[0];
   let deleted = 0;
+  let stoppedByBudget = false;
   while (deleted < POLICY.maxDeletesPerTable) {
+    if (!retentionBudgetAvailable(simulationId)) {
+      stoppedByBudget=true;
+      break;
+    }
     const [rows] = await conn.query(selectSql, selectParams);
     if (!rows.length) break;
     const ids = rows.map(row => row.id).filter(Boolean);
@@ -108,7 +126,13 @@ async function deleteSelectedRows(conn, {
     deleted += affected;
     if (affected < rows.length) break;
   }
-  return { [resultKey]: deleted };
+
+  const [backlog] = await conn.query(countSql, countParams);
+  return {
+    [resultKey]: deleted,
+    remainingCandidates: Number(backlog[0]?.candidates || 0),
+    budgetExhausted: stoppedByBudget || retentionBudgetRemainingMs(simulationId)<=0
+  };
 }
 
 async function deleteOldNeedHistory(conn, simulationId, simulationTime) {
@@ -227,7 +251,7 @@ async function archiveStaleMemories(conn, simulationId, simulationTime) {
     return { candidates: Number(rows[0]?.candidates || 0), archived: 0, dryRun: true };
   }
   let archived = 0;
-  while (archived < POLICY.maxDeletesPerTable) {
+  while (archived < POLICY.maxDeletesPerTable && retentionBudgetAvailable(simulationId)) {
     const [rows] = await conn.query(selectSql, [simulationId, cutoff, importanceMax, cutoff]);
     if (!rows.length) break;
     const ids = rows.map(row => row.id).filter(Boolean);
@@ -325,7 +349,7 @@ async function deleteUnselectedDecisionOptions(conn, simulationId, simulationTim
     return { candidates: Number(rows[0]?.candidates || 0), deleted: 0, dryRun: true };
   }
   let deleted = 0;
-  while (deleted < maxDeletes) {
+  while (deleted < maxDeletes && retentionBudgetAvailable(simulationId)) {
     const [rows] = await conn.query(selectSql, [simulationId, cutoff]);
     if (!rows.length) break;
     const ids = rows.map(row => row.id).filter(Boolean);
@@ -364,7 +388,7 @@ async function deleteResolvedExpectations(conn, simulationId, simulationTime) {
     return { candidates: Number(rows[0]?.candidates || 0), deleted: 0, dryRun: true };
   }
   let deleted = 0;
-  while (deleted < maxDeletes) {
+  while (deleted < maxDeletes && retentionBudgetAvailable(simulationId)) {
     const [rows] = await conn.query(selectSql, [simulationId, cutoff, cutoff]);
     if (!rows.length) break;
     const ids = rows.map(row => row.id).filter(Boolean);
@@ -399,7 +423,7 @@ async function deleteResolvedCounterfactuals(conn, simulationId, simulationTime)
     return { candidates: Number(rows[0]?.candidates || 0), deleted: 0, dryRun: true };
   }
   let deleted = 0;
-  while (deleted < maxDeletes) {
+  while (deleted < maxDeletes && retentionBudgetAvailable(simulationId)) {
     const [rows] = await conn.query(selectSql, [simulationId, cutoff]);
     if (!rows.length) break;
     const ids = rows.map(row => row.id).filter(Boolean);
@@ -438,7 +462,7 @@ async function deleteResolvedCounterfactualWorlds(conn, simulationId, simulation
     return { candidates: Number(rows[0]?.candidates || 0), deleted: 0, dryRun: true };
   }
   let deleted = 0;
-  while (deleted < maxDeletes) {
+  while (deleted < maxDeletes && retentionBudgetAvailable(simulationId)) {
     const [rows] = await conn.query(selectSql, [simulationId, cutoff, cutoff]);
     if (!rows.length) break;
     const ids = rows.map(row => row.id).filter(Boolean);
@@ -456,6 +480,7 @@ async function runSafeRetention(simulationId, simulationTime) {
   const mysqlSimulationTime = normalizeSimulationTimestamp(simulationTime);
   const lock = await acquireLock(simulationId);
   if (!lock) return { skipped: true, reason: "lock_busy" };
+  retentionDeadlineAt.set(simulationId, Date.now() + POLICY.timeBudgetMs);
   try {
     const context = await compactOldDecisionContexts(lock.conn, simulationId, mysqlSimulationTime);
     const options = await deleteUnselectedDecisionOptions(lock.conn, simulationId, mysqlSimulationTime);
@@ -499,7 +524,28 @@ async function runSafeRetention(simulationId, simulationTime) {
       memoryDeleteCandidates: Number(memories.candidates || 0),
       expectationCandidates: Number(expectations.candidates || 0),
       counterfactualCandidates: Number(counterfactuals.candidates || 0),
-      counterfactualWorldCandidates: Number(worlds.candidates || 0)
+      counterfactualWorldCandidates: Number(worlds.candidates || 0),
+      needHistoryBacklog: Number(needs.remainingCandidates || 0),
+      emotionHistoryBacklog: Number(emotions.remainingCandidates || 0),
+      eventBacklog: Number(events.remainingCandidates || 0),
+      actionBacklog: Number(actions.remainingCandidates || 0),
+      memoryArchiveBacklog: Number(memoryArchive.remainingCandidates || 0),
+      memoryDeleteBacklog: Number(memories.remainingCandidates || 0),
+      expectationBacklog: Number(expectations.remainingCandidates || 0),
+      counterfactualBacklog: Number(counterfactuals.remainingCandidates || 0),
+      counterfactualWorldBacklog: Number(worlds.remainingCandidates || 0),
+      retentionBacklogTotal:
+        Number(needs.remainingCandidates || 0) +
+        Number(emotions.remainingCandidates || 0) +
+        Number(events.remainingCandidates || 0) +
+        Number(actions.remainingCandidates || 0) +
+        Number(memoryArchive.remainingCandidates || 0) +
+        Number(memories.remainingCandidates || 0) +
+        Number(expectations.remainingCandidates || 0) +
+        Number(counterfactuals.remainingCandidates || 0) +
+        Number(worlds.remainingCandidates || 0),
+      retentionBudgetMs: POLICY.timeBudgetMs,
+      retentionBudgetRemainingMs: retentionBudgetRemainingMs(simulationId)
     };
     if (
       summary.decisionContextsCompacted ||
@@ -513,12 +559,14 @@ async function runSafeRetention(simulationId, simulationTime) {
       summary.expectationsDeleted ||
       summary.counterfactualsDeleted ||
       summary.counterfactualWorldsDeleted ||
+      summary.retentionBacklogTotal > 0 ||
       POLICY.dryRun
     ) {
       logger.info(summary, "safe retention cycle completed");
     }
     return summary;
   } finally {
+    retentionDeadlineAt.delete(simulationId);
     await releaseLock(lock);
   }
 }
