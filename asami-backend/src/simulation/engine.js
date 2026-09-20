@@ -18,6 +18,7 @@ const { refreshMentalStateFromSimulation } = require("../services/personality-se
 const { recordSignificantExperience } = require("../services/experience-learning-service");
 const { maybeRunSafeRetention } = require("../services/safe-retention-service");
 const { reconcileCompletedActions } = require("../services/action-reconciliation-service");
+const { runSimulationIntegrityCheck } = require("../services/integrity-check-service");
 const observability = require("../services/simulation-observability");
 
 const INTERRUPTIBLE_ACTIONS = new Set(["SLEEPING", "WORKING", "STUDYING"]);
@@ -228,6 +229,11 @@ class SimulationEngine {
           const reconciliation = await reconcileCompletedActions(sim.id,{limit:100});
           if (reconciliation.reconciled) {
             logger.info({simulationId:sim.id,simulationTime:nextTime.toISOString(),event:"ACTION_RECONCILIATION",reconciled:reconciliation.reconciled},"completed action post-processing reconciled");
+          }
+          phase = "integrity.check";
+          const integrity = await runSimulationIntegrityCheck(sim.id,nextTime.toISOString());
+          if(!integrity.healthy){
+            observability.increment(sim.id,"integrity_violation_total",integrity.violations.reduce((sum,item)=>sum+Number(item.count||0),0));
           }
           this.worldMaintenanceAt.set(sim.id, nextTime.getTime());
           observability.logSnapshot(sim.id,nextTime.toISOString());
