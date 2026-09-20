@@ -8,7 +8,7 @@ require("./services/decision-sql-compat-bootstrap").install();
 require("./services/action-runtime-bootstrap").install();
 require("./services/behavior-fix-bootstrap").install();
 const { ensureDatabaseWithRetry }=require("./db/database-init");
-const { pingWithRetry,close,getDatabaseHealth }=require("./db/pool");
+const { pingWithRetry,close }=require("./db/pool");
 const { ensurePlanningStatusMigrations }=require("./db/schema-migrations");
 const { bootstrapCoreDefinitions }=require("./services/bootstrap-service");
 const { GeminiService }=require("./ai/gemini");
