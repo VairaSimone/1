@@ -30,8 +30,8 @@ async function reconcileCompletedActions(simulationId,{limit=100}={}) {
   );
   let reconciled=0;
   for(const row of rows){
-    const result=typeof row.result==="string"?JSON.parse(row.result||"{}"):row.result||{};
     try{
+      const result=typeof row.result==="string" ? (()=>{try{return JSON.parse(row.result||"{}");}catch{return{};}})() : row.result||{};
       if(row.decisionId && ["CREATED","EVALUATED"].includes(String(row.decisionStatus||"").toUpperCase())){
         await pool.query(
           `UPDATE decisions
