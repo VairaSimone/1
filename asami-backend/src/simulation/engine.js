@@ -232,8 +232,9 @@ class SimulationEngine {
           }
           phase = "integrity.check";
           const integrity = await runSimulationIntegrityCheck(sim.id,nextTime.toISOString());
-          if(!integrity.healthy){
-            observability.increment(sim.id,"integrity_violation_total",integrity.violations.reduce((sum,item)=>sum+Number(item.count||0),0));
+          if(!integrity.skipped && !integrity.healthy){
+            const violations=Array.isArray(integrity.violations)?integrity.violations:[];
+            observability.increment(sim.id,"integrity_violation_total",violations.reduce((sum,item)=>sum+Number(item.count||0),0));
           }
           this.worldMaintenanceAt.set(sim.id, nextTime.getTime());
           observability.logSnapshot(sim.id,nextTime.toISOString());
