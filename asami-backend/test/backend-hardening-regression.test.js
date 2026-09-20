@@ -324,3 +324,118 @@ test('resource emergency routing still enforces the persisted destination',()=>{
   assert.match(source.slice(start,end),/Critical resource recovery for/);
   assert.match(source.slice(start,end),/expectedTargetLocationId/);
 });
+
+
+test('MySQL transient failures are classified and retried without retrying transaction bodies',()=>{
+  const source=read('db/pool.js');
+  assert.match(source,/PROTOCOL_CONNECTION_LOST/);
+  assert.match(source,/ECONNREFUSED/);
+  assert.match(source,/EAI_AGAIN/);
+  assert.match(source,/async function pingWithRetry/);
+  assert.match(source,/async function getConnectionWithRetry/);
+  const txStart=source.indexOf('async function withTransaction');
+  const txEnd=source.indexOf('\nasync function close',txStart);
+  const txSection=source.slice(txStart,txEnd);
+  assert.match(txSection,/getConnectionWithRetry/);
+  assert.doesNotMatch(txSection,/retry.*fn/i);
+});
+
+test('engine checks database health before listing simulations and before creating a tick',()=>{
+  const source=read('simulation/engine.js');
+  const pulseIndex=source.indexOf('await pingWithRetry');
+  const listIndex=source.indexOf('simRepo.listSimulations',pulseIndex);
+  const tickIndex=source.indexOf('simRepo.advanceAndCreateTick');
+  const secondPingIndex=source.indexOf('await pingWithRetry',pulseIndex+1);
+  assert.ok(pulseIndex>=0&&listIndex>pulseIndex);
+  assert.ok(secondPingIndex>pulseIndex&&tickIndex>secondPingIndex);
+  assert.match(source,/database degraded; skipping engine pulse/);
+  assert.match(source,/database degraded; tick creation skipped/);
+  assert.match(source,/pulseInFlight/);
+});
+
+test('backend and worker use retried database startup and planning schema migrations',()=>{
+  for(const relative of ['server.js','worker.js']){
+    const source=fs.readFileSync(path.join(root,relative),'utf8');
+    assert.match(source,/ensureDatabaseWithRetry/);
+    assert.match(source,/pingWithRetry/);
+    assert.match(source,/ensurePlanningStatusMigrations/);
+  }
+});
+
+test('planning schema migration adds BLOCKED state idempotently to goal, plan and step checks',()=>{
+  const source=read('db/schema-migrations.js');
+  assert.match(source,/table: "goals"/);
+  assert.match(source,/table: "plans"/);
+  assert.match(source,/table: "plan_steps"/);
+  assert.match(source,/statuses: \[[\s\S]*"BLOCKED"[\s\S]*\]/);
+  assert.match(source,/INFORMATION_SCHEMA\.CHECK_CONSTRAINTS/);
+  assert.match(source,/current\.includes\("'BLOCKED'"\)/);
+  assert.match(source,/DROP CHECK/);
+  assert.match(source,/ADD CONSTRAINT/);
+  assert.match(source,/GET_LOCK\(\?,30\)/);
+});
+
+test('abandoning a goal atomically cancels its open plan steps before closing plans',()=>{
+  const source=read('services/planning-service.js');
+  const start=source.indexOf('async function abandonGoal');
+  const end=source.indexOf('\nasync function ensureGoalPlan',start);
+  const section=source.slice(start,end);
+  assert.match(section,/withTransaction/);
+  assert.match(section,/status='ABANDONED'/);
+  assert.match(section,/status='CANCELLED'/);
+  assert.match(section,/plan_steps SET status='CANCELLED'/);
+  assert.match(section,/status IN \('PENDING','ACTIVE','BLOCKED'\)/);
+  assert.match(section,/FOR UPDATE/);
+});
+
+test('resource failures move goals and plans to BLOCKED and preserve a resumable retry state',()=>{
+  const source=read('services/planning-service.js');
+  assert.match(source,/function isResourceBlockedFailure/);
+  assert.match(source,/async function blockGoalForResource/);
+  assert.match(source,/status='BLOCKED'/);
+  assert.match(source,/retryWhenResourceAvailable:true/);
+  assert.match(source,/blockedReason/);
+  assert.match(source,/SET status='BLOCKED'/);
+  assert.match(source,/plan_steps SET status='BLOCKED'/);
+});
+
+test('blocked goals only return to ACTIVE after their required resource is reachable',()=>{
+  const source=read('services/planning-service.js');
+  const start=source.indexOf('async function ensureGoalPlan');
+  const end=source.indexOf('\nfunction selectActiveStep',start);
+  const section=source.slice(start,end);
+  assert.match(section,/activeGoal\.status==="BLOCKED"/);
+  assert.match(section,/isCriticalResourceReachable\(simulationId,entityId,resource\)/);
+  assert.match(section,/unblockBlockedGoal/);
+  assert.match(section,/return\{goal:activeGoal,plan,created:false,blocked:true\}/);
+});
+
+test('late action completion cannot advance a BLOCKED plan',()=>{
+  const source=read('services/planning-service.js');
+  const start=source.indexOf('async function advancePlanForAction');
+  const end=source.indexOf('\nmodule.exports=',start);
+  const section=source.slice(start,end);
+  assert.match(section,/if\(plan\.status==="BLOCKED"\)return/);
+});
+
+test('retention uses a shared time budget and reports remaining history backlog',()=>{
+  const source=read('services/safe-retention-service.js');
+  assert.match(source,/RETENTION_TIME_BUDGET_MS/);
+  assert.match(source,/retentionDeadlineAt/);
+  assert.match(source,/retentionBudgetAvailable/);
+  assert.match(source,/needHistoryBacklog/);
+  assert.match(source,/emotionHistoryBacklog/);
+  assert.match(source,/retentionBudgetRemainingMs/);
+  assert.match(source,/summary\.retentionBacklogTotal > 0/);
+});
+
+test('need and emotion retention stop cooperatively when the cycle time budget is exhausted',()=>{
+  const source=read('services/safe-retention-service.js');
+  for(const fn of ['deleteOldNeedHistory','deleteOldEmotionHistory']){
+    const start=source.indexOf('async function '+fn);
+    const end=source.indexOf('\nasync function ',start+10);
+    const section=source.slice(start,end>start?end:source.length);
+    assert.match(section,/deleteSelectedRows/);
+  }
+  assert.match(source,/while \(deleted < POLICY\.maxDeletesPerTable && retentionBudgetAvailable\(simulationId\)/);
+});
