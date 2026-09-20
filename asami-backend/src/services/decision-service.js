@@ -740,6 +740,14 @@ async function makeDecision({
   }
 
   const chosen = chosenCandidate.action;
+  const aiProposalSnapshot = aiChoice ? {
+    selectedActionType:normalizeAction(aiChoice.selectedActionType),
+    targetEntityId:aiChoice.targetEntityId||null,
+    targetLocationId:aiChoice.targetLocationId||null,
+    confidence:Number(aiChoice.confidence),
+    reason:aiChoice.reason||null,
+    strategy:aiChoice.strategy||null
+  } : null;
   const decisionSource =
     selectionMode === "AI_DELIBERATION"
       ? "GEMINI"
@@ -752,6 +760,12 @@ async function makeDecision({
     selectionMode === "AI_DELIBERATION"
       ? aiChoice?.targetEntityId || chosenCandidate.targetEntityId || null
       : chosenCandidate.targetEntityId || null;
+  const transformation =
+    selectionMode==="AI_DELIBERATION"
+      ? "AI_PROPOSAL_ACCEPTED"
+      : aiChoice
+        ? (aiBlockedByCritical ? "AI_OVERRIDDEN_CRITICAL_NEED" : "AI_OVERRIDDEN_DETERMINISTIC")
+        : "NO_AI_PROPOSAL";
   const selectedTargetLocationId =
     validAiAction &&
     !aiBlockedByCritical &&
@@ -825,6 +839,14 @@ async function makeDecision({
             : null,
           individuality: individualityBias(entityId, chosen),
           candidates,
+          aiProposal: aiProposalSnapshot,
+          validatedDecision: {
+            actionType: chosen,
+            targetEntityId: selectedTargetEntityId,
+            targetLocationId: selectedTargetLocationId,
+            selectionMode,
+            transformation
+          },
           aiChoice: aiChoice || null
         })
       )
@@ -909,6 +931,16 @@ async function makeDecision({
       selectionMode === "AI_DELIBERATION",
     selectionMode,
     decisionSource,
+    transformation,
+    aiProposal: aiProposalSnapshot,
+    validatedDecision: {
+      actionType: chosen,
+      targetEntityId: selectedTargetEntityId,
+      targetLocationId: selectedTargetLocationId,
+      selectionMode,
+      decisionSource,
+      transformation
+    },
     geminiDecision: context.geminiDecision || null,
     reason,
     confidence:
