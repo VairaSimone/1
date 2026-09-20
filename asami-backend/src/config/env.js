@@ -14,6 +14,9 @@ const Env = z.object({
   DB_NAME: z.string().default("asami"),
   DB_POOL_SIZE: z.coerce.number().int().positive().default(10),
   DB_CONNECT_TIMEOUT_MS: z.coerce.number().int().positive().default(10000),
+  DB_RETRY_ATTEMPTS: z.coerce.number().int().min(1).max(12).default(5),
+  DB_RETRY_BASE_MS: z.coerce.number().int().min(25).max(10000).default(250),
+  DB_RETRY_MAX_MS: z.coerce.number().int().min(100).max(30000).default(5000),
   GEMINI_API_KEY: z.string().optional().default(""),
   GEMINI_MODEL: z.string().default("gemini-3.6-flash"),
   GEMINI_TIMEOUT_MS: z.preprocess((value)=>{
@@ -62,6 +65,7 @@ const Env = z.object({
   RETENTION_EVENT_IMPORTANCE_KEEP_THRESHOLD: z.coerce.number().min(0).max(1).default(0.8),
   RETENTION_BATCH_SIZE: z.coerce.number().int().min(50).max(2000).default(500),
   RETENTION_MAX_DELETES_PER_TABLE: z.coerce.number().int().min(100).max(10000).default(2000),
+  RETENTION_TIME_BUDGET_MS: z.coerce.number().int().min(250).max(30000).default(5000),
   RETENTION_DRY_RUN: z.preprocess((value)=>{if(typeof value!=="string")return value;const normalized=value.trim().toLowerCase();if(normalized==="true")return true;if(normalized==="false")return false;return value;},z.boolean()).default(false),
   CORS_ORIGIN: z.string().default("*")
 });
