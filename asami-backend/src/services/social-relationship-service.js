@@ -14,7 +14,93 @@ function compatibilityFromTraits(sourceTraits,targetTraits){const source=new Map
 async function loadTraits(entityId){const[rows]=await pool.query(`SELECT td.code,etc.value FROM entity_traits_current etc JOIN trait_definitions td ON td.id=etc.trait_id WHERE etc.entity_id=UUID_TO_BIN(?) AND td.active=1`,[entityId]);return rows.map(r=>({code:r.code,value:Number(r.value)}));}
 async function relationshipBetween(simulationId,a,b,status=null){const statusClause=status?"AND r.status=?":"",params=status?[simulationId,a,b,b,a,status]:[simulationId,a,b,b,a];const[rows]=await pool.query(`SELECT BIN_TO_UUID(r.id) AS id,r.status,r.version,BIN_TO_UUID(r.source_entity_id) AS sourceEntityId,BIN_TO_UUID(r.target_entity_id) AS targetEntityId,rt.code AS type,r.trust_score AS trust,r.affection_score AS affection,r.respect_score AS respect,r.familiarity_score AS familiarity,r.attraction_score AS attraction,r.conflict_score AS conflict,r.fear_score AS fear,r.admiration_score AS admiration,r.jealousy_score AS jealousy,r.dependence_score AS dependence,r.closeness_score AS closeness,r.irritation_score AS irritation,r.started_simulation_at AS startedSimulationAt,r.ended_simulation_at AS endedSimulationAt FROM relationships r JOIN relationship_types rt ON rt.id=r.relationship_type_id WHERE r.simulation_id=UUID_TO_BIN(?) AND ((r.source_entity_id=UUID_TO_BIN(?) AND r.target_entity_id=UUID_TO_BIN(?)) OR (r.source_entity_id=UUID_TO_BIN(?) AND r.target_entity_id=UUID_TO_BIN(?))) ${statusClause} ORDER BY CASE rt.code WHEN 'PARTNER' THEN 3 WHEN 'FRIEND' THEN 2 WHEN 'ACQUAINTANCE' THEN 1 ELSE 0 END DESC,r.started_simulation_at DESC LIMIT 1`,params);return rows[0]||null;}
 async function currentPartner(simulationId,entityId){const[rows]=await pool.query(`SELECT BIN_TO_UUID(CASE WHEN r.source_entity_id=UUID_TO_BIN(?) THEN r.target_entity_id ELSE r.source_entity_id END) AS partnerId,BIN_TO_UUID(r.id) AS relationshipId FROM relationships r JOIN relationship_types rt ON rt.id=r.relationship_type_id WHERE r.simulation_id=UUID_TO_BIN(?) AND rt.code='PARTNER' AND r.status='ACTIVE' AND (r.source_entity_id=UUID_TO_BIN(?) OR r.target_entity_id=UUID_TO_BIN(?)) LIMIT 1`,[entityId,simulationId,entityId,entityId]);return rows[0]||null;}
-async function socialCandidates(simulationId,entityId){const[people]=await pool.query(`SELECT BIN_TO_UUID(other.id) AS id,other.display_name AS name FROM entity_locations_current me JOIN entity_locations_current otherLoc ON otherLoc.simulation_id=me.simulation_id AND otherLoc.location_id=me.location_id AND otherLoc.entity_id<>me.entity_id JOIN entities other ON other.id=otherLoc.entity_id AND other.simulation_id=me.simulation_id JOIN persons p ON p.entity_id=other.id WHERE me.simulation_id=UUID_TO_BIN(?) AND me.entity_id=UUID_TO_BIN(?) AND other.status='ACTIVE' ORDER BY other.display_name LIMIT 20`,[simulationId,entityId]);const sourceTraits=await loadTraits(entityId),result=[];for(const person of people){const targetTraits=await loadTraits(person.id),rel=await relationshipBetween(simulationId,entityId,person.id,"ACTIVE"),endedPartner=rel?null:await relationshipBetween(simulationId,entityId,person.id,"ENDED"),compatibility=compatibilityFromTraits(sourceTraits,targetTraits),romantic=romanticScore(rel||{},compatibility);result.push({id:person.id,name:person.name,relationshipType:rel?.type||endedPartner?.type||null,relationship:rel,endedRelationship:endedPartner,compatibility,romanticScore:romantic,score:relationshipScore(rel)});}return result.sort((a,b)=>b.score-a.score||b.romanticScore-a.romanticScore);}
+async function socialCandidates(simulationId,entityId){
+  const[people]=await pool.query(
+    `SELECT BIN_TO_UUID(other.id) AS id,other.display_name AS name
+     FROM entity_locations_current me
+     JOIN entity_locations_current otherLoc
+       ON otherLoc.simulation_id=me.simulation_id
+      AND otherLoc.location_id=me.location_id
+      AND otherLoc.entity_id<>me.entity_id
+     JOIN entities other
+       ON other.id=otherLoc.entity_id
+      AND other.simulation_id=me.simulation_id
+     JOIN persons p ON p.entity_id=other.id
+     WHERE me.simulation_id=UUID_TO_BIN(?)
+       AND me.entity_id=UUID_TO_BIN(?)
+       AND other.status='ACTIVE'
+     ORDER BY other.display_name
+     LIMIT 20`,
+    [simulationId,entityId]
+  );
+  if(!people.length)return[];
+
+  const candidateIds=people.map(person=>person.id);
+  const placeholders=candidateIds.map(()=> "UUID_TO_BIN(?)").join(",");
+  const[traitRows]=await pool.query(
+    `SELECT BIN_TO_UUID(etc.entity_id) AS entityId,td.code,etc.value
+     FROM entity_traits_current etc
+     JOIN trait_definitions td ON td.id=etc.trait_id AND td.active=1
+     WHERE etc.entity_id IN (${placeholders})`,
+    candidateIds
+  );
+  const[relationshipRows]=await pool.query(
+    `SELECT BIN_TO_UUID(r.id) AS id,r.status,r.started_simulation_at AS startedSimulationAt,
+            BIN_TO_UUID(r.source_entity_id) AS sourceEntityId,
+            BIN_TO_UUID(r.target_entity_id) AS targetEntityId,
+            rt.code AS type,r.trust_score AS trust,r.affection_score AS affection,
+            r.respect_score AS respect,r.familiarity_score AS familiarity,
+            r.attraction_score AS attraction,r.conflict_score AS conflict,
+            r.fear_score AS fear,r.admiration_score AS admiration,
+            r.jealousy_score AS jealousy,r.dependence_score AS dependence,
+            r.closeness_score AS closeness,r.irritation_score AS irritation,
+            r.ended_simulation_at AS endedSimulationAt
+     FROM relationships r
+     JOIN relationship_types rt ON rt.id=r.relationship_type_id
+     WHERE r.simulation_id=UUID_TO_BIN(?)
+       AND r.status IN ('ACTIVE','ENDED')
+       AND (
+         (r.source_entity_id=UUID_TO_BIN(?) AND r.target_entity_id IN (${placeholders}))
+         OR
+         (r.target_entity_id=UUID_TO_BIN(?) AND r.source_entity_id IN (${placeholders}))
+       )`,
+    [simulationId,entityId,...candidateIds,entityId,...candidateIds]
+  );
+  const sourceTraits=await loadTraits(entityId);
+  const traitsByEntity=new Map();
+  for(const row of traitRows){
+    if(!traitsByEntity.has(row.entityId))traitsByEntity.set(row.entityId,[]);
+    traitsByEntity.get(row.entityId).push({code:row.code,value:Number(row.value)});
+  }
+  const relationshipByCandidate=new Map();
+  for(const row of relationshipRows){
+    const candidateId=row.sourceEntityId===entityId?row.targetEntityId:row.sourceEntityId;
+    const current=relationshipByCandidate.get(candidateId);
+    if(
+      !current ||
+      (row.status==="ACTIVE"&&current.status!=="ACTIVE") ||
+      (row.status===current.status&&new Date(row.startedSimulationAt||0).getTime()>new Date(current.startedSimulationAt||0).getTime())
+    )relationshipByCandidate.set(candidateId,row);
+  }
+  const sourceByCode=new Map(sourceTraits.map(t=>[String(t.code).toUpperCase(),Number(t.value)]));
+  return people.map(person=>{
+    const targetTraits=traitsByEntity.get(person.id)||[],
+      rel=relationshipByCandidate.get(person.id)?.status==="ACTIVE"?relationshipByCandidate.get(person.id):null,
+      endedPartner=rel?null:(relationshipByCandidate.get(person.id)?.status==="ENDED"&&relationshipByCandidate.get(person.id)?.type==="PARTNER"?relationshipByCandidate.get(person.id):null),
+      compatibility=compatibilityFromTraits(sourceTraits,targetTraits),
+      romantic=romanticScore(rel||{},compatibility);
+    return{
+      id:person.id,
+      name:person.name,
+      relationshipType:rel?.type||endedPartner?.type||null,
+      relationship:rel,
+      endedRelationship:endedPartner,
+      compatibility,
+      romanticScore:romantic,
+      score:relationshipScore(rel)
+    };
+  }).sort((a,b)=>b.score-a.score||b.romanticScore-a.romanticScore);
+}
 async function buildSocialContext(simulationId,entityId){const[partner,candidates,traits]=await Promise.all([currentPartner(simulationId,entityId),socialCandidates(simulationId,entityId),loadTraits(entityId)]);return{partner,candidates,traits};}
 function deriveSocialIntent({actionType,targetId,partner,candidates}){if(actionType!=="TALKING"||!targetId)return"NONE";const candidate=(candidates||[]).find(x=>x.id===targetId);if(!candidate)return"NONE";if(candidate.endedRelationship?.type==='PARTNER'&&!partner){const r=candidate.endedRelationship;if(Number(r.affection)>=.45&&Number(r.trust)>=.4&&Number(r.closeness)>=.4)return"RECONCILE";}if(partner?.partnerId===targetId)return"NONE";if(Number(candidate.romanticScore)>=.62&&Number(candidate.compatibility)>=.5)return"PURSUE_RELATIONSHIP";if(!partner&&Number(candidate.romanticScore)<.32)return"STAY_SINGLE";return"NONE";}
 async function writeRelationshipHistory(r,simulationAt,sourceEventId=null){await pool.query(`INSERT INTO relationship_history(id,simulation_id,relationship_id,simulation_time,affection,trust,respect,familiarity,attraction,conflict,fear,irritation,admiration,jealousy,dependence,closeness,source_event_id) VALUES(UUID_TO_BIN(?),?,UUID_TO_BIN(?),?,?,?,?,?,?,?,?,?,?,?,?,?,UUID_TO_BIN(?))`,[uuid(),r.simulation_id,r.id,simulationAt,r.affection_score,r.trust_score,r.respect_score,r.familiarity_score,r.attraction_score,r.conflict_score,r.fear_score,r.irritation_score,r.admiration_score,r.jealousy_score,r.dependence_score,r.closeness_score,sourceEventId]);}
