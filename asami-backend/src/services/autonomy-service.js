@@ -15,6 +15,145 @@ function clamp(value,min=0,max=1){const n=Number(value);if(!Number.isFinite(n))r
 function mysqlSimulationDateTime(value){const date=value instanceof Date?value:new Date(value);if(!Number.isFinite(date.getTime()))throw Object.assign(new Error("Invalid simulation time"),{code:"INVALID_SIMULATION_TIME"});const pad=n=>String(n).padStart(2,"0"),ms=String(date.getUTCMilliseconds()).padStart(3,"0");return `${date.getUTCFullYear()}-${pad(date.getUTCMonth()+1)}-${pad(date.getUTCDate())} ${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}:${pad(date.getUTCSeconds())}.${ms}`;}
 function resolveConnection(locations,value){if(value===null||value===undefined)return null;const key=String(value),upper=key.toUpperCase();return locations.find(location=>String(location.locationId)===key)||locations.find(location=>String(location.data?.worldCode||'').toUpperCase()===upper)||null;}
 function graphRoute(locations,originId,targetId){if(!originId||!targetId)return null;return actionService.shortestRoute(locations,originId,targetId);}
+function buildGeminiDecisionContext({entity,context,memories=[]}={}){
+  const compact = decisionService.compactDecisionContext({
+    ...context,
+    candidates: Array.isArray(context?.candidates)
+      ? context.candidates.slice().sort((a,b)=>Number(b?.score||0)-Number(a?.score||0)).slice(0,5)
+      : [],
+    goals: Array.isArray(context?.goals) ? context.goals.slice(0,3) : [],
+    recentActions: Array.isArray(context?.recentActions) ? context.recentActions.slice(0,8) : [],
+    recoveryBlocks: Array.isArray(context?.recoveryBlocks) ? context.recoveryBlocks.slice(0,4) : []
+  });
+
+  const profile=context?.cognitiveProfile||{};
+  const compactMemory=(memory)=>({
+    id:memory?.id||null,
+    type:memory?.memoryType||null,
+    simulationAt:memory?.simulationAt||memory?.createdSimulationAt||null,
+    importance:Number.isFinite(Number(memory?.importance))?Number(Number(memory.importance).toFixed(3)):null,
+    strength:Number.isFinite(Number(memory?.strength))?Number(Number(memory.strength).toFixed(3)):null,
+    content:String(memory?.content||"").slice(0,500),
+    metadata:memory?.metadata&&typeof memory.metadata==="object"?{
+      kind:memory.metadata.kind||null,
+      actionType:memory.metadata.actionType||memory.metadata.decision?.actionType||null,
+      outcome:memory.metadata.outcome||null,
+      failureReason:memory.metadata.failureReason||null,
+      locationId:memory.metadata.locationId||memory.metadata.location?.id||null,
+      goalId:memory.metadata.goalId||memory.metadata.decision?.goalId||null,
+      resource:typeof memory.metadata.resource==="string"
+        ? memory.metadata.resource
+        : memory.metadata.resource?.resource||null
+    }:null
+  });
+
+  const recentFailures=[
+    ...(Array.isArray(context?.recentInterruptions)?context.recentInterruptions.slice(0,4).map(row=>({
+      type:"INTERRUPTION",
+      actionType:row.actionType||null,
+      at:row.at||null,
+      interruption:row.result?.interruption||null,
+      failureReason:row.result?.failureReason||"ACTION_INTERRUPTED"
+    })):[]),
+    ...memories
+      .filter(memory=>{
+        const meta=memory?.metadata&&typeof memory.metadata==="object"?memory.metadata:{};
+        return meta.kind==="resource_failure"||meta.kind==="action_interruption"||meta.outcome==="FAILURE"||meta.outcome==="PARTIAL";
+      })
+      .slice(0,4)
+      .map(memory=>({
+        type:"MEMORY",
+        actionType:memory?.metadata?.actionType||memory?.metadata?.decision?.actionType||null,
+        at:memory?.simulationAt||null,
+        failureReason:memory?.metadata?.failureReason||null,
+        resource:memory?.metadata?.resource?.resource||memory?.metadata?.resource||null,
+        memoryId:memory?.id||null
+      }))
+  ].slice(0,6);
+
+  const socialCandidates=Array.isArray(context?.social?.candidates)
+    ? context.social.candidates.slice(0,4).map(candidate=>({
+        id:candidate.id||null,
+        name:candidate.name||null,
+        relationshipType:candidate.relationshipType||null,
+        compatibility:Number(candidate.compatibility||0),
+        familiarity:Number(candidate.familiarity||0),
+        closeness:Number(candidate.closeness||0),
+        affection:Number(candidate.affection||0),
+        trust:Number(candidate.trust||0),
+        romanticScore:Number(candidate.romanticScore||0)
+      }))
+    : [];
+
+  const preferences=Array.isArray(profile.preferences)?profile.preferences.slice(0,8).map(item=>({
+    targetType:item.targetType||null,
+    targetEntityId:item.targetEntityId||null,
+    preferenceValue:Number(item.preferenceValue||0),
+    strength:Number(item.strength||0),
+    confidence:Number(item.confidence||0)
+  })):[];
+
+  const beliefs=Array.isArray(profile.beliefs)?profile.beliefs.slice(0,6).map(item=>({
+    predicate:item.predicate||null,
+    subjectEntityId:item.subjectEntityId||null,
+    objectValue:item.objectValue??null,
+    confidence:Number(item.confidence||0),
+    importance:Number(item.importance||0)
+  })):[];
+
+  const knowledge=Array.isArray(profile.knowledge)?profile.knowledge.slice(0,6).map(item=>({
+    knowledgeType:item.knowledgeType||null,
+    predicate:item.predicate||null,
+    content:String(item.content||"").slice(0,300),
+    confidence:Number(item.confidence||0),
+    importance:Number(item.importance||0)
+  })):[];
+
+  const habits=Array.isArray(profile.habits)?profile.habits.slice(0,4).map(item=>({
+    name:item.name||null,
+    strength:Number(item.strength||0),
+    triggerDefinition:item.triggerDefinition||null,
+    actionDefinition:item.actionDefinition||null
+  })):[];
+
+  const mentalState=profile.mentalState&&typeof profile.mentalState==="object"?{
+    currentFocus:profile.mentalState.currentFocus||null,
+    currentConcern:profile.mentalState.currentConcern||null,
+    recentThought:String(profile.mentalState.recentThought||"").slice(0,300)||null,
+    mentalLoad:Number(profile.mentalState.mentalLoad||0),
+    rumination:Number(profile.mentalState.rumination||0),
+    certainty:Number(profile.mentalState.certainty||0),
+    updatedSimulationAt:profile.mentalState.updatedSimulationAt||null
+  }:null;
+
+  return {
+    schemaVersion:"gemini-decision-v1",
+    simulationTime:context?.simulationTime||null,
+    entity:{id:entity?.id||null,name:entity?.displayName||entity?.name||null},
+    needs:compact.needs,
+    traits:compact.traits.slice(0,12),
+    mentalState,
+    goals:compact.goals.slice(0,3),
+    activePlanStep:compact.activePlanStep||null,
+    recentActions:compact.recentActions.slice(0,8),
+    recentFailures,
+    memories:memories.slice(0,6).map(compactMemory),
+    location:compact.location,
+    resourceContext:compact.resourceContext,
+    candidates:compact.candidates.slice(0,5),
+    social:{partner:context?.social?.partner||null,candidates:socialCandidates},
+    explorationDestination:compact.explorationDestination||null,
+    recoveryBlocks:compact.recoveryBlocks.slice(0,4),
+    proactivity:compact.proactivity,
+    needPriority:compact.needPriority,
+    trigger:compact.geminiTrigger,
+    preferences,
+    beliefs,
+    knowledge,
+    habits
+  };
+}
+
 function goalActionSatisfiesNeed(goalNeed,actionType){const mapping={HUNGER:"EATING",THIRST:"DRINKING",SLEEPINESS:"SLEEPING",SOCIAL_NEED:"TALKING",BELONGING:"TALKING",FUN:"PLAYING",CURIOSITY:"EXPLORING",ACHIEVEMENT:"WORKING"};return mapping[String(goalNeed||"").trim().toUpperCase()]===String(actionType||"").trim().toUpperCase();}
 async function findAutonomousActors(simulationId,limit=100){const[rows]=await pool.query(`SELECT BIN_TO_UUID(e.id) AS id FROM entities e JOIN entity_types et ON et.id=e.entity_type_id WHERE e.simulation_id=UUID_TO_BIN(?) AND et.category='ACTOR' AND e.status NOT IN ('INACTIVE','DEAD') AND NOT EXISTS(SELECT 1 FROM autonomy_policies ap WHERE ap.simulation_id=e.simulation_id AND ap.policy_type='AUTONOMY' AND ap.enabled=0 AND(ap.entity_id=e.id OR ap.entity_id IS NULL)) ORDER BY e.created_simulation_at LIMIT ?`,[simulationId,limit]);return rows.map(row=>row.id);}
 function serializeReason(reason){if(reason===null||reason===undefined)return null;if(typeof reason==='string')return JSON.stringify({text:reason});return JSON.stringify(reason);}
@@ -41,7 +180,8 @@ if(geminiTrigger){
     geminiDecision={status:"FALLBACK",source:"DETERMINISTIC_FALLBACK",reason:"LOCAL_INTERVAL",attempted:false,retryAfterMs:0};
   }else{
     const worldLocations=await loadWorldLocations(simulationId);
-    const generated=await gemini.chooseDecision({entity:{id:entity.id,name:entity.displayName},needs:context.needs,traits:context.traits,goals:context.goals,memories,allowedActionTypes:context.allowedActionTypes,candidates:context.candidates,location:context.location,social:context.social,explorationDestination,activePlanStep,trigger:geminiTrigger,resourceContext:context.resourceContext,needPriority:context.needPriority,proactivity:context.proactivity,cognitiveProfile:context.cognitiveProfile});
+    const geminiContext=buildGeminiDecisionContext({entity,context,memories});
+    const generated=await gemini.chooseDecision(geminiContext);
     const requestStatus=gemini.lastRequestStatus&&typeof gemini.lastRequestStatus==="object"?{...gemini.lastRequestStatus}:{status:"FALLBACK",source:"DETERMINISTIC_FALLBACK",reason:"UNKNOWN",attempted:true,retryAfterMs:0};
     if(requestStatus.attempted)markGeminiDecisionUsed(entity.id,simulationTime);
     aiChoice=sanitizeGeminiChoice(generated,context,{socialContext,currentLocationId,worldLocations});
@@ -55,4 +195,4 @@ context.geminiDecision=geminiDecision;
 const decision=await decisionService.makeDecision({simulationId,entityId,simulationTime,triggerType:geminiTrigger?.type||null,triggerEventId:null,context,aiChoice});const sourceType=aiChoice?"AI_ASSISTED":"AUTONOMOUS";const intentionId=await ensureIntention({simulationId,entityId,simulationTime,decision,sourceType,goalState,aiChoice,geminiDecision});const started=await require("./action-service").startAction({simulationId,entityId,decisionId:decision.decisionId,intentionId,actionType:decision.actionType,simulationTime,targetEntityId:decision.targetEntityId,targetLocationId:decision.targetLocationId,relationshipIntent:deriveSocialIntent({actionType:decision.actionType,targetId:decision.targetEntityId,partner:socialContext.partner,candidates:socialContext.candidates})});return{decision,started,intentionId,goalState,aiChoice};}
 async function ensureIntention({simulationId,entityId,simulationTime,decision,sourceType,goalState,aiChoice,geminiDecision}){const intentionId=require("../lib/ids").uuid(),decisionSource=decision?.decisionSource||sourceType||"DETERMINISTIC",reason=serializeReason({source:decisionSource,status:geminiDecision?.status||"NOT_CONSULTED",geminiReason:geminiDecision?.reason||null,decision:aiChoice?.strategy||decision.reason||"autonomous decision"}),goalId=goalState.goal?.id||null,planId=goalState.plan?.id||null,mysqlTime=mysqlSimulationDateTime(simulationTime);await pool.query(`INSERT INTO intentions(id,simulation_id,entity_id,goal_id,plan_id,action_type,target_entity_id,target_location_id,scheduled_simulation_at,priority,status,reason,created_simulation_at,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,UUID_TO_BIN(?),UUID_TO_BIN(?),NULL,?,'ACTIVE',?,?,1)`,[intentionId,simulationId,entityId,goalId,planId,decision.actionType,decision.targetEntityId,decision.targetLocationId,goalState.goal?.priority||.5,reason,mysqlTime]);return intentionId;}
 async function completeGoalForAction(goalId,actionType,simulationTime,outcome,actionResult={}){if(!goalId)return null;let simulationId=actionResult?.simulationId||null,entityId=actionResult?.entityId||null;if(!simulationId||!entityId){const[rows]=await pool.query(`SELECT BIN_TO_UUID(simulation_id) AS simulationId,BIN_TO_UUID(entity_id) AS entityId FROM goals WHERE id=UUID_TO_BIN(?) LIMIT 1`,[goalId]);simulationId=simulationId||rows[0]?.simulationId||null;entityId=entityId||rows[0]?.entityId||null;}if(!simulationId||!entityId)return null;return advancePlanForAction({simulationId,entityId,goalId,actionType,outcome,simulationTime,actionResult});}
-module.exports={findAutonomousActors,shouldAskGemini,getGeminiTrigger,actForEntity,completeGoalForAction,canUseGeminiDecision,markGeminiDecisionUsed,sanitizeGeminiChoice,chooseExplorationDestination,goalActionSatisfiesNeed};
+module.exports={findAutonomousActors,shouldAskGemini,getGeminiTrigger,actForEntity,completeGoalForAction,canUseGeminiDecision,markGeminiDecisionUsed,sanitizeGeminiChoice,chooseExplorationDestination,goalActionSatisfiesNeed,buildGeminiDecisionContext};
