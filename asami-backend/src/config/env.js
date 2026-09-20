@@ -56,6 +56,8 @@ const Env = z.object({
   MAX_CONCURRENT_SIMULATIONS: z.coerce.number().int().positive().default(1),
   ACTOR_INACTIVITY_ALERT_HOURS: z.coerce.number().positive().default(12),
   ACTOR_INACTIVITY_ALERT_REPEAT_HOURS: z.coerce.number().positive().default(6),
+  GOAL_STAGNATION_ALERT_HOURS: z.coerce.number().positive().default(24),
+  GOAL_STAGNATION_ALERT_REPEAT_HOURS: z.coerce.number().positive().default(12),
   RETENTION_ENABLED: z.preprocess((value)=>{if(typeof value!=="string")return value;const normalized=value.trim().toLowerCase();if(normalized==="true")return true;if(normalized==="false")return false;return value;},z.boolean()).default(true),
   RETENTION_CHECK_INTERVAL_MS: z.coerce.number().int().min(60000).default(15*60*1000),
   RETENTION_DECISION_CONTEXT_DAYS: z.coerce.number().int().min(1).default(2),
