@@ -239,3 +239,78 @@ test('symmetric relationship lookup qualifies id after joining relationship type
   assert.match(section,/SELECT BIN_TO_UUID\(r\.id\) AS id,r\.version/);
   assert.doesNotMatch(section,/SELECT BIN_TO_UUID\(id\) AS id,version/);
 });
+
+
+test('critical resources have bounded emergency reserves and an explicit emergency marker',()=>{
+  const source=read('services/physical-world-service.js');
+  assert.match(source,/CRITICAL_RESOURCE_RESERVES/);
+  assert.match(source,/water:\s*12/);
+  assert.match(source,/food:\s*8/);
+  assert.match(source,/RESOURCE_EMERGENCY_TTL_MINUTES/);
+  assert.match(source,/resourceEmergencies/);
+  assert.match(source,/resources\[resource\]=reserve/);
+  assert.match(source,/if\(available>=reserve\)return current/);
+});
+
+test('critical resource invariant checks reachability from actor locations and verifies recovery',()=>{
+  const source=read('services/physical-world-service.js');
+  const start=source.indexOf('async function ensureCriticalResourceAvailability');
+  const end=source.indexOf('\nasync function getLocationPhysicalState',start);
+  const section=source.slice(start,end);
+  assert.ok(start>=0&&end>start);
+  assert.match(section,/loadActorLocationIds\(simulationId,entityId\)/);
+  assert.match(section,/findReachableResource\(locations,originId,resource\)/);
+  assert.match(section,/ensureResourceReserveAtLocation\([\s\S]*locationId:originId/);
+  assert.match(section,/const refreshed=await loadActiveLocations\(simulationId\)/);
+  assert.match(section,/const stillReachable=findReachableResource\(nextLocations,originId,resource\)/);
+  assert.match(section,/code:"CRITICAL_RESOURCE_RECOVERY_UNAVAILABLE"/);
+});
+
+test('resource action completion has an emergency race-safe retry without changing normal success semantics',()=>{
+  const source=read('services/physical-world-service.js');
+  const start=source.indexOf('async function resolveActionResource');
+  const end=source.indexOf('\nmodule.exports=',start);
+  const section=source.slice(start,end);
+  assert.match(section,/const first=await consumeResource/);
+  assert.match(section,/if\(first\.ok\|\|first\.remaining===null\)return first/);
+  assert.match(section,/reason:"ACTION_RESOURCE_RACE"/);
+  assert.match(section,/const recovered=await consumeResource/);
+  assert.match(section,/emergencyRecovered:true/);
+});
+
+test('decision context records explicit RESOURCE_EMERGENCY mode',()=>{
+  const source=read('services/decision-service.js');
+  assert.match(source,/selectionMode\s*=\s*criticalResourceRecovery\.mode === "RESOURCE_EMERGENCY"/);
+  assert.match(source,/"RESOURCE_EMERGENCY"/);
+  assert.match(source,/criticalResourceRecovery\.mode/);
+});
+
+test('engine enforces critical resource invariant before actors are selected',()=>{
+  const source=read('simulation/engine.js');
+  assert.match(source,/ensureCriticalResourceAvailability/);
+  const invariantIndex=source.indexOf('phase = "world.resource_invariant"');
+  const actorIndex=source.indexOf('findAutonomousActors',invariantIndex);
+  assert.ok(invariantIndex>=0&&actorIndex>invariantIndex);
+  assert.match(source.slice(invariantIndex,actorIndex),/ensureCriticalResourceAvailability\(sim\.id,nextTime\.toISOString\(\)\)/);
+});
+
+test('critical resource recovery is WARN-level and retried, not classified as an expected debug-only condition',()=>{
+  const source=read('simulation/engine.js');
+  assert.doesNotMatch(source,/EXPECTED_ENTITY_CONDITION_CODES[^\\n]*CRITICAL_RESOURCE_RECOVERY_UNAVAILABLE/);
+  assert.match(source,/isCriticalResourceRecoveryUnavailable/);
+  const start=source.indexOf('if (isCriticalResourceRecoveryUnavailable(err))');
+  const end=source.indexOf('} else if (String(err?.code||"").toUpperCase()==="CRITICAL_ACTION_UNAVAILABLE")',start);
+  const section=source.slice(start,end);
+  assert.match(section,/logger\.warn/);
+  assert.match(section,/ensureCriticalResourceAvailability\(/);
+  assert.match(section,/autonomyService\.actForEntity\(/);
+});
+
+test('CRITICAL_ACTION_UNAVAILABLE stays distinct from resource emergency recovery',()=>{
+  const source=read('simulation/engine.js');
+  const resourceIndex=source.indexOf('isCriticalResourceRecoveryUnavailable');
+  const actionIndex=source.indexOf('String(err?.code||"").toUpperCase()==="CRITICAL_ACTION_UNAVAILABLE"');
+  assert.ok(resourceIndex>=0&&actionIndex>resourceIndex);
+  const resourceSection=source.slice(resourceIndex,actionIndex);
+  assert.doesNotMatch(resourceSection,/CRITICAL_ACTION_UNAVAILABLE/);
+});
