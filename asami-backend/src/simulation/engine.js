@@ -17,6 +17,7 @@ const { recordHabitEvidence } = require("../services/habit-service");
 const { refreshMentalStateFromSimulation } = require("../services/personality-service");
 const { recordSignificantExperience } = require("../services/experience-learning-service");
 const { maybeRunSafeRetention } = require("../services/safe-retention-service");
+const observability = require("../services/simulation-observability");
 
 const INTERRUPTIBLE_ACTIONS = new Set(["SLEEPING", "WORKING", "STUDYING"]);
 const CRITICAL_EVENT_PATTERNS = /DANGER|EMERGENCY|ACCIDENT|THREAT|CRISIS|EVACUATION|ATTACK|FIRE/i;
@@ -212,23 +213,28 @@ class SimulationEngine {
           phase = "world.relationships";
           await evolveRelationships(sim.id, nextTime);
           this.worldMaintenanceAt.set(sim.id, nextTime.getTime());
+          observability.logSnapshot(sim.id,nextTime.toISOString());
         }
         phase = "world.events"; await generateWorldEvents(sim.id, nextTime, tickId, elapsedMinutes);
         phase = "world.resource_invariant";
         const resourceInvariant = await ensureCriticalResourceAvailability(sim.id, nextTime.toISOString());
         if (resourceInvariant.recovered.length) {
+          observability.recordResourceEmergency(sim.id,resourceInvariant.recovered);
           logger.warn({
             simulationId: sim.id,
             simulationTime: nextTime.toISOString(),
+            event:"RESOURCE_EMERGENCY",
             recoveredResources: resourceInvariant.recovered
           }, "critical resource emergency recovery applied");
         }
         const actors = await autonomyService.findAutonomousActors(sim.id, env.MAX_ENTITIES_PER_TICK);
         for (const id of actors) {
+          let actorHadActivity=false;
           try {
           entityId = id; actionType = null; phase = "entity.state"; await ensureEntityState(entityId, nextTime);
           const elapsedHours = Math.min(168, Math.max(0, (nextTime - previousTime) / 3600000)); const active = await actionService.getActiveAction(entityId, sim.id);
           if (active) {
+            actorHadActivity=true;
             actionType = active.actionType; const actionStart = new Date(active.startedSimulationAt); const durationMinutes = Number(active.metadata?.durationMinutes || 30); const completionAt = new Date(actionStart.getTime() + durationMinutes * 60000);
             const eventId = active.metadata?.eventId || null; const targetEntityId = active.metadata?.targetEntityId || null; const targetLocationId = active.metadata?.targetLocationId || null; const relationshipIntent = active.metadata?.relationshipIntent || "NONE";
             const wasCompleted = nextTime >= completionAt; const updateTime = wasCompleted ? completionAt : nextTime; const updateHours = Math.min(168, Math.max(0, (updateTime - previousTime) / 3600000));
@@ -302,6 +308,7 @@ class SimulationEngine {
             phase = "entity.action.start";
             const started = autonomy.started || null;
             if (!started?.actionId) throw Object.assign(new Error("Autonomy action was not started"), { code: "AUTONOMY_ACTION_START_REQUIRED" });
+            actorHadActivity=true;
             this.hub.publish(sim.id, "action.created", { entityId, decision, action: started });
           }
           } catch (err) {
@@ -322,10 +329,12 @@ class SimulationEngine {
                 );
 
                 if (recovery.recovered.length) {
+                  observability.recordResourceEmergency(sim.id,recovery.recovered);
                   logger.warn({
                     simulationId: sim.id,
                     entityId: id,
                     simulationTime: nextTime.toISOString(),
+                    event:"RESOURCE_EMERGENCY",
                     recoveredResources: recovery.recovered
                   }, "entity resource emergency restored");
                 }
@@ -348,16 +357,21 @@ class SimulationEngine {
                   continue;
                 }
 
-                logger.warn({
+                observability.recordRecoveryFailed(sim.id);
+                logger.error({
                   simulationId: sim.id,
                   entityId: id,
                   simulationTime: nextTime.toISOString(),
-                  recoveryHealthy: recovery.healthy
+                  event:"RECOVERY_FAILED",
+                  recoveryHealthy: recovery.healthy,
+                  resource: err.resource || null
                 }, "critical resource recovery did not produce an executable action");
               } catch (recoveryError) {
+                observability.recordRecoveryFailed(sim.id);
                 logger.error(logger.contextError({
                   ...errorContext,
                   phase,
+                  event:"RECOVERY_FAILED",
                   recoveryResource: err.resource || null
                 }, recoveryError, "critical resource emergency recovery failed"));
               }
@@ -368,6 +382,32 @@ class SimulationEngine {
             } else {
               logger.error(logger.contextError(errorContext,err,"entity tick failed; actor skipped"));
             }
+          } finally {
+            try {
+              const needsForObservability=await readNeeds(id);
+              const criticalNeed=needsForObservability.some(need=>isCriticalNeed(need.code,need.value));
+              const inactivityAlert=observability.recordActorTick(
+                sim.id,
+                id,
+                nextTime.toISOString(),
+                {active:actorHadActivity,criticalNeed}
+              );
+              if (inactivityAlert) {
+                logger.warn({
+                  simulationId:sim.id,
+                  simulationTime:nextTime.toISOString(),
+                  event:"ACTOR_INACTIVITY",
+                  ...inactivityAlert
+                },"actor inactivity threshold reached");
+              }
+            } catch (observabilityError) {
+              logger.warn({
+                simulationId:sim.id,
+                entityId:id,
+                event:"OBSERVABILITY_FAILED",
+                error:String(observabilityError?.message||observabilityError)
+              },"actor observability update failed");
+            }
           }
         }
         phase = "world.decay"; await decayMemories(sim.id, nextTime); this.tickCounter.set(sim.id, Number(this.tickCounter.get(sim.id) || 0) + 1);
@@ -376,6 +416,16 @@ class SimulationEngine {
         void maybeRunSafeRetention(sim.id, nextTime.toISOString());
         this.hub.publish(sim.id, "simulation.tick", { simulationTime: nextTime.toISOString(), tickId });
       } catch (err) {
+        if (isCriticalResourceRecoveryUnavailable(err)) {
+          observability.recordRecoveryFailed(sim.id);
+          logger.error({
+            simulationId:sim.id,
+            simulationTime:nextTime?.toISOString?.()||null,
+            event:"RECOVERY_FAILED",
+            resource:err.resource||null,
+            phase
+          },"simulation resource recovery failed before actor processing");
+        }
         await simRepo.completeTick(tickId, { status: "FAILED", error: { name: err.name, message: err.message, code: err.code, phase, entityId, actionType } });
         throw err;
       }
