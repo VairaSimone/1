@@ -38,7 +38,7 @@ async function locationRow(simulationId,locationId,db=pool){
     `SELECT BIN_TO_UUID(e.id) AS locationId,e.attributes,e.version,l.location_type AS locationType
      FROM entities e JOIN locations l ON l.entity_id=e.id AND l.simulation_id=e.simulation_id
      WHERE e.simulation_id=UUID_TO_BIN(?) AND e.id=UUID_TO_BIN(?) AND e.entity_type_id=UUID_TO_BIN(?) AND e.status='ACTIVE'
-     LIMIT 1\${db===pool?'':' FOR UPDATE'}`,
+     LIMIT 1${db===pool?'':' FOR UPDATE'}`,
     [simulationId,locationId,LOCATION_ENTITY_TYPE_ID]
   );
   return rows[0]||null;
@@ -112,7 +112,7 @@ async function loadActorLocationIds(simulationId,entityId=null){
      FROM entity_locations_current elc
      JOIN entities e ON e.id=elc.entity_id AND e.simulation_id=elc.simulation_id
      JOIN entity_types et ON et.id=e.entity_type_id
-     WHERE elc.simulation_id=UUID_TO_BIN(?)\${entityFilter}
+     WHERE elc.simulation_id=UUID_TO_BIN(?)${entityFilter}
        AND et.category='ACTOR'
        AND e.status NOT IN ('INACTIVE','DEAD')
        AND elc.location_id IS NOT NULL`,
