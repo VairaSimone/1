@@ -37,6 +37,35 @@ function calculateSkillLearningGain({skill,actionType,proficiency=0,lastUsedSimu
 const MOVE_ACTIONS=new Set(["WALKING","EXPLORING"]),WALKING_SPEED_KMH=4.8,EXPLORING_SPEED_KMH=3.8,ROAD_FACTOR=1.18;
 function getActionDurationMinutes(actionType){return ACTION_DURATIONS_MINUTES[actionType]||30;}
 function parseJson(value,fallback={}){if(value===null||value===undefined)return fallback;if(typeof value==='object')return value;try{return JSON.parse(value);}catch{return fallback;}}
+async function loadIdempotentAction(simulationId,idempotencyKey,relationshipIntent="NONE"){
+  if(!simulationId||!idempotencyKey)return null;
+  const[rows]=await pool.query(
+    `SELECT BIN_TO_UUID(id) AS actionId,BIN_TO_UUID(decision_id) AS decisionId,
+            action_type AS actionType,status,result,target,parameters,version
+     FROM actions
+     WHERE idempotency_key=? AND simulation_id=UUID_TO_BIN(?)
+     LIMIT 1`,
+    [idempotencyKey,simulationId]
+  );
+  if(!rows.length)return null;
+  const action=rows[0];
+  for(const key of ["result","target","parameters"]){
+    if(Buffer.isBuffer(action[key]))action[key]=action[key].toString();
+    if(typeof action[key]==="string")action[key]=parseJson(action[key],{});
+  }
+  const metadata={...(action.parameters||{}),...(action.result||{})};
+  return{
+    actionId:action.actionId,
+    eventId:metadata.eventId||null,
+    actionType:action.actionType,
+    durationMinutes:Number(metadata.durationMinutes||getActionDurationMinutes(action.actionType)),
+    relationshipIntent:metadata.relationshipIntent||relationshipIntent,
+    expectedCompletionSimulationAt:metadata.expectedCompletionSimulationAt||null,
+    movement:metadata.movement||null,
+    idempotent:true,
+    status:action.status
+  };
+}
 function coordinate(value){if(value===null||value===undefined||String(value).trim()==='')return null;const n=Number(value);return Number.isFinite(n)?n:null;}
 function haversineMeters(a,b){const lat1=coordinate(a?.latitude),lon1=coordinate(a?.longitude),lat2=coordinate(b?.latitude),lon2=coordinate(b?.longitude);if([lat1,lon1,lat2,lon2].some(value=>value===null))return Infinity;const rad=Math.PI/180,radius=6371000,dLat=(lat2-lat1)*rad,dLon=(lon2-lon1)*rad,h=Math.sin(dLat/2)**2+Math.cos(lat1*rad)*Math.cos(lat2*rad)*Math.sin(dLon/2)**2;return 2*radius*Math.asin(Math.sqrt(h));}
 async function currentLocation(entityId,simulationId,db=pool){const[rows]=await db.query(`SELECT BIN_TO_UUID(location_id) AS locationId FROM entity_locations_current WHERE entity_id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?)`,[entityId,simulationId]);return rows[0]?.locationId||null;}
@@ -106,36 +135,13 @@ async function startAction({simulationId,entityId,decisionId,intentionId=null,ac
 
   const normalizedAction=String(actionType||"").trim().toUpperCase();
   const idempotencyKey=tickId
-    ? [simulationId,tickId,entityId,normalizedAction].join(":")
+    ? [simulationId,tickId,entityId,decisionId||normalizedAction].join(":")
     : decisionId
       ? [simulationId,entityId,"DECISION",decisionId].join(":")
       : null;
   if(idempotencyKey){
-    const [existingRows]=await pool.query(
-      `SELECT BIN_TO_UUID(id) AS actionId,BIN_TO_UUID(decision_id) AS decisionId,
-              action_type AS actionType,status,result,target,parameters,version
-       FROM actions WHERE idempotency_key=? AND simulation_id=UUID_TO_BIN(?) LIMIT 1`,
-      [idempotencyKey,simulationId]
-    );
-    if(existingRows.length){
-      const existing=existingRows[0];
-      for(const key of ["result","target","parameters"]){
-        if(Buffer.isBuffer(existing[key]))existing[key]=existing[key].toString();
-        if(typeof existing[key]==="string")existing[key]=parseJson(existing[key],{});
-      }
-      const metadata={...(existing.parameters||{}),...(existing.result||{})};
-      return{
-        actionId:existing.actionId,
-        eventId:metadata.eventId||null,
-        actionType:existing.actionType,
-        durationMinutes:Number(metadata.durationMinutes||getActionDurationMinutes(existing.actionType)),
-        relationshipIntent:metadata.relationshipIntent||relationshipIntent,
-        expectedCompletionSimulationAt:metadata.expectedCompletionSimulationAt||null,
-        movement:metadata.movement||null,
-        idempotent:true,
-        status:existing.status
-      };
-    }
+    const existing=await loadIdempotentAction(simulationId,idempotencyKey,relationshipIntent);
+    if(existing)return existing;
   }
   let duration=getActionDurationMinutes(normalizedAction),move=null,origin=null,destination=null,actionId=null,eventId=null;
   try{
@@ -235,6 +241,21 @@ async function startAction({simulationId,entityId,decisionId,intentionId=null,ac
       }:null
     };
   }catch(err){
+    if(idempotencyKey && ["ER_DUP_ENTRY","MOVEMENT_ALREADY_ACTIVE"].includes(String(err?.code||"").toUpperCase())){
+      const existing=await loadIdempotentAction(simulationId,idempotencyKey,relationshipIntent);
+      if(existing){
+        if(move?.movementId && existing.movement?.movementId && String(move.movementId)!==String(existing.movement.movementId)){
+          try{
+            await pool.query(
+              `UPDATE movements SET status='CANCELLED',reason='duplicate idempotent action attempt',version=version+1
+               WHERE id=UUID_TO_BIN(?) AND status='ACTIVE'`,
+              [move.movementId]
+            );
+          }catch{}
+        }
+        return existing;
+      }
+    }
     if(actionId){
       try{
         assertTransition("action","ACTIVE","FAILED");
