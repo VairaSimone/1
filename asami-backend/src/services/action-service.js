@@ -93,7 +93,7 @@ async function startMovement({simulationId,entityId,origin,destination,simulatio
 }
 
 async function completeMovement({simulationId,entityId,destination,movementId=null,simulationTime,db=pool}){const query=movementId?`SELECT BIN_TO_UUID(id) AS id,BIN_TO_UUID(origin_location_id) AS originLocationId,BIN_TO_UUID(destination_location_id) AS destinationLocationId,version FROM movements WHERE simulation_id=UUID_TO_BIN(?) AND id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND status='ACTIVE' LIMIT 1`:`SELECT BIN_TO_UUID(id) AS id,BIN_TO_UUID(origin_location_id) AS originLocationId,BIN_TO_UUID(destination_location_id) AS destinationLocationId,version FROM movements WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND destination_location_id=UUID_TO_BIN(?) AND status='ACTIVE' ORDER BY started_simulation_at DESC LIMIT 1`;const params=movementId?[simulationId,movementId,entityId]:[simulationId,entityId,destination],[rows]=await db.query(query,params);if(!rows.length)return false;const movement=rows[0],resolvedDestination=movement.destinationLocationId||destination;if(!resolvedDestination)return false;const[updated]=await db.query(`UPDATE movements SET status='COMPLETED',actual_arrival_simulation_at=?,version=version+1 WHERE simulation_id=UUID_TO_BIN(?) AND id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND status='ACTIVE' AND version=?`,[simulationTime,simulationId,movement.id,entityId,movement.version]);if(!updated.affectedRows)return false;await db.query(`INSERT INTO entity_location_history(id,simulation_id,entity_id,location_id,entered_simulation_at,reason,source_event_id) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,'AUTONOMOUS',NULL)`,[uuid(),simulationId,entityId,resolvedDestination,simulationTime]);await db.query(`UPDATE entity_location_history SET exited_simulation_at=? WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND exited_simulation_at IS NULL AND entered_simulation_at<?`,[simulationTime,simulationId,entityId,simulationTime]);await db.query(`INSERT INTO entity_locations_current(entity_id,simulation_id,location_id,since_simulation_at,reason,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,'AUTONOMOUS',1) ON DUPLICATE KEY UPDATE location_id=VALUES(location_id),since_simulation_at=VALUES(since_simulation_at),reason=VALUES(reason),version=version+1`,[entityId,simulationId,resolvedDestination,simulationTime]);return true;}
-async function startAction({simulationId,entityId,decisionId,intentionId=null,actionType,simulationTime,targetEntityId=null,targetLocationId=null,relationshipIntent="NONE"}){
+async function startAction({simulationId,entityId,decisionId,intentionId=null,actionType,simulationTime,targetEntityId=null,targetLocationId=null,relationshipIntent="NONE",tickId=null}){
   if(decisionId){
     const [decisionRows]=await pool.query(
       `SELECT context FROM decisions
@@ -119,6 +119,38 @@ async function startAction({simulationId,entityId,decisionId,intentionId=null,ac
   }
 
   const normalizedAction=String(actionType||"").trim().toUpperCase();
+  const idempotencyKey=tickId
+    ? [simulationId,tickId,entityId,normalizedAction].join(":")
+    : decisionId
+      ? [simulationId,entityId,"DECISION",decisionId].join(":")
+      : null;
+  if(idempotencyKey){
+    const [existingRows]=await pool.query(
+      `SELECT BIN_TO_UUID(id) AS actionId,BIN_TO_UUID(decision_id) AS decisionId,
+              action_type AS actionType,status,result,target,parameters,version
+       FROM actions WHERE idempotency_key=? AND simulation_id=UUID_TO_BIN(?) LIMIT 1`,
+      [idempotencyKey,simulationId]
+    );
+    if(existingRows.length){
+      const existing=existingRows[0];
+      for(const key of ["result","target","parameters"]){
+        if(Buffer.isBuffer(existing[key]))existing[key]=existing[key].toString();
+        if(typeof existing[key]==="string")existing[key]=parseJson(existing[key],{});
+      }
+      const metadata={...(existing.parameters||{}),...(existing.result||{})};
+      return{
+        actionId:existing.actionId,
+        eventId:metadata.eventId||null,
+        actionType:existing.actionType,
+        durationMinutes:Number(metadata.durationMinutes||getActionDurationMinutes(existing.actionType)),
+        relationshipIntent:metadata.relationshipIntent||relationshipIntent,
+        expectedCompletionSimulationAt:metadata.expectedCompletionSimulationAt||null,
+        movement:metadata.movement||null,
+        idempotent:true,
+        status:existing.status
+      };
+    }
+  }
   let duration=getActionDurationMinutes(normalizedAction),move=null,origin=null,destination=null,actionId=null,eventId=null;
   try{
     if(MOVE_ACTIONS.has(normalizedAction)){
@@ -149,15 +181,15 @@ async function startAction({simulationId,entityId,decisionId,intentionId=null,ac
     actionId=uuid();
     const expectedCompletion=new Date(new Date(simulationTime).getTime()+duration*60000);
     await pool.query(
-      `INSERT INTO actions(id,simulation_id,entity_id,decision_id,action_type,source_type,source_goal_id,source_intention_id,started_simulation_at,status,target,parameters,version)
-       VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,'AUTONOMOUS',
+      `INSERT INTO actions(id,simulation_id,entity_id,decision_id,idempotency_key,action_type,source_type,source_goal_id,source_intention_id,started_simulation_at,status,target,parameters,version)
+       VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,'AUTONOMOUS',
                (SELECT goal_id FROM intentions WHERE id=UUID_TO_BIN(?)),
                UUID_TO_BIN(?),?,'ACTIVE',?,?,1)`,
       [
-        actionId,simulationId,entityId,decisionId,normalizedAction,intentionId,intentionId,simulationTime,
+        actionId,simulationId,entityId,decisionId,idempotencyKey,normalizedAction,intentionId,intentionId,simulationTime,
         targetLocationId?JSON.stringify({locationId:targetLocationId}):null,
         JSON.stringify({
-          targetEntityId,targetLocationId,relationshipIntent,
+          targetEntityId,targetLocationId,relationshipIntent,tickId,idempotencyKey,
           durationMinutes:duration,
           expectedCompletionSimulationAt:expectedCompletion.toISOString(),
           movement:move?{
@@ -193,6 +225,7 @@ async function startAction({simulationId,entityId,decisionId,intentionId=null,ac
 
     const initialResult={
       eventId,actionType:normalizedAction,durationMinutes:duration,targetEntityId,targetLocationId,relationshipIntent,
+      tickId,idempotencyKey,
       movement:move?{
         movementId:move.movementId,
         originLocationId:origin,
@@ -221,7 +254,7 @@ async function startAction({simulationId,entityId,decisionId,intentionId=null,ac
           `UPDATE actions
            SET status='FAILED',completed_simulation_at=?,result=?
            WHERE id=UUID_TO_BIN(?) AND status='ACTIVE'`,
-          [simulationTime,JSON.stringify({actionType:normalizedAction,failureReason:"ACTION_START_FAILED",error:String(err?.message||"Action start failed")}),actionId]
+          [simulationTime,JSON.stringify({actionType:normalizedAction,failureReason:"ACTION_START_FAILED",error:String(err?.message||"Action start failed"),tickId,idempotencyKey}),actionId]
         );
       }catch{}
     }
