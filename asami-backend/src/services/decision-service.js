@@ -436,7 +436,13 @@ function resolveCriticalResourceRecovery(context = {}) {
   );
 
   if (localAvailable) {
-    const emergency = resourceContext.emergencyResources?.find?.(item => item.resource === resource) || null;
+    const emergency =
+      resourceActionContext.emergency ||
+      resourceContext.emergencyResources?.find?.(item =>
+        item.resource === resource &&
+        String(item.locationId || "") === String(resourceContext.currentLocationId || "")
+      ) ||
+      null;
     return {
       critical,
       mode: emergency ? "RESOURCE_EMERGENCY" : "DIRECT",
@@ -465,7 +471,10 @@ function resolveCriticalResourceRecovery(context = {}) {
     null;
 
   if (nearest?.locationId) {
-    const emergency = resourceContext.emergencyResources?.find?.(item => item.resource === resource) || null;
+    const emergency = resourceContext.emergencyResources?.find?.(item =>
+      item.resource === resource &&
+      String(item.locationId || "") === String(nearest.locationId || "")
+    ) || null;
     const candidate = walkingCandidate
       ? { ...walkingCandidate, recoveryBlocked: false, recoveryBlock: null, criticalRecovery: true }
       : {
