@@ -1,4 +1,5 @@
 const logger=require("./lib/logger");
+const { env }=require("./config/env");
 require("./services/runtime-enhancements").install();
 require("./services/memory-normalization-bootstrap").install();
 require("./services/behavioral-policy-bootstrap").install();
@@ -18,7 +19,7 @@ const cognitiveV3=require("./services/cognitive-v3-bootstrap");
 
 async function main(){
   await ensureDatabaseWithRetry();
-  await pingWithRetry();
+  await pingWithRetry({ attempts: env.DB_STARTUP_RETRY_ATTEMPTS });
   const planningMigration = await ensurePlanningStatusMigrations();
   if (planningMigration.changed.length) {
     logger.info({ changed: planningMigration.changed }, "planning status schema migrations applied");
