@@ -407,7 +407,7 @@ if(!committed){const[reloaded]=await pool.query(`SELECT status,result FROM actio
       result: finalResult
     })
   }),decisionId]
-);return{completed:true,outcome:committed.outcome.outcome,success:committed.outcome.success,failureReason:committed.outcome.failureReason,resource:committed.physical,resourceLearning:learning};}
+);return{completed:true,outcome:committed.outcome.outcome,success:committed.outcome.success,failureReason:committed.outcome.failureReason,resource:committed.physical,resourceLearning:learning};}}
 async function markActionPostProcessingComplete(actionId,db=pool){
   if(!actionId)return false;
   const [result]=await db.query(
