@@ -1,5 +1,6 @@
 const mysql = require("mysql2/promise");
 const { env } = require("../config/env");
+const observability = require("../services/simulation-observability");
 
 const TRANSIENT_DB_ERRORS = new Set([
   "PROTOCOL_CONNECTION_LOST",
@@ -104,11 +105,14 @@ const pool = mysql.createPool({
 
 const originalPoolQuery = pool.query.bind(pool);
 pool.query = async (sql, values) => {
+  const startedAt=Date.now();
   try {
     const result = await originalPoolQuery(sql, normalizeMysqlValues(values));
+    observability.recordDbQuery(Date.now()-startedAt);
     markDatabaseHealthy();
     return result;
   } catch (err) {
+    observability.recordDbQuery(Date.now()-startedAt);
     if (isTransientDatabaseError(err)) markDatabaseDegraded(err);
     throw err;
   }
@@ -120,11 +124,14 @@ pool.getConnection = async () => {
     const conn = await originalGetConnection();
     const originalConnectionQuery = conn.query.bind(conn);
     conn.query = async (sql, values) => {
+      const startedAt=Date.now();
       try {
         const result = await originalConnectionQuery(sql, normalizeMysqlValues(values));
+        observability.recordDbQuery(Date.now()-startedAt);
         markDatabaseHealthy();
         return result;
       } catch (err) {
+        observability.recordDbQuery(Date.now()-startedAt);
         if (isTransientDatabaseError(err)) markDatabaseDegraded(err);
         throw err;
       }
