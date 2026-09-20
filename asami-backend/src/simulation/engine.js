@@ -14,7 +14,7 @@ const { seedPhysicalWorld, ensureCriticalResourceAvailability, maintainDistribut
 const { updateDevelopment } = require("../services/development-service");
 const { initiateConversation } = require("../services/chat-service");
 const { recordHabitEvidence } = require("../services/habit-service");
-const { updateMentalState } = require("../services/personality-service");
+const { refreshMentalStateFromSimulation } = require("../services/personality-service");
 const { recordSignificantExperience } = require("../services/experience-learning-service");
 const { maybeRunSafeRetention } = require("../services/safe-retention-service");
 
@@ -268,7 +268,15 @@ class SimulationEngine {
                 await applyEmotions(entityId, nextTime, passiveNeedChanges, null, null, null, postActionGapHours);
               }
             }
-            phase = "entity.mental_state"; if (["TALKING", "STUDYING", "WORKING", "EXPLORING"].includes(active.actionType)) await updateMentalState(sim.id, entityId, nextTime, { currentFocus: active.actionType.toLowerCase().replaceAll("_", " "), mentalLoad: ["WORKING", "STUDYING"].includes(active.actionType) ? 0.55 : 0.35, certainty: 0.7 });
+            phase = "entity.mental_state";
+            const latestNeeds = await readNeeds(entityId);
+            await refreshMentalStateFromSimulation({
+              simulationId: sim.id,
+              entityId,
+              simulationTime: nextTime,
+              needs: latestNeeds,
+              activeActionType: wasCompleted ? null : active.actionType
+            });
             phase = "entity.publish"; this.hub.publish(sim.id, "entity.state", { entityId, action: { ...active, status: wasCompleted ? "COMPLETED" : "ACTIVE" }, needChanges });
           } else {
             if (elapsedHours > 0.0001) {
@@ -276,6 +284,15 @@ class SimulationEngine {
               const passiveNeedChanges = await updateNeeds(entityId, nextTime, elapsedHours, null, null, null, { significant: false });
               await applyEmotions(entityId, nextTime, passiveNeedChanges, null, null, null, elapsedHours);
             }
+            phase = "entity.mental_state";
+            const latestNeeds = await readNeeds(entityId);
+            await refreshMentalStateFromSimulation({
+              simulationId: sim.id,
+              entityId,
+              simulationTime: nextTime,
+              needs: latestNeeds,
+              activeActionType: null
+            });
             phase = "entity.autonomy";
             const autonomy = await autonomyService.actForEntity({ simulationId: sim.id, entityId, simulationTime: nextTime.toISOString(), gemini: this.gemini });
             if (!autonomy) continue;
