@@ -1,6 +1,6 @@
 const { pool } = require("../db/pool");
 const { env } = require("../config/env");
-const { generateEnvironmentalEvent, updateEnvironmentState } = require("./environment-service");
+const { generateEnvironmentalEvent, updateEnvironmentState, isVitalEnvironmentalEventDue } = require("./environment-service");
 const { withEventWriteLock } = require("./event-service");
 
 function eventProbability(elapsedSimulationMinutes, eventsPerSimulationHour = env.WORLD_EVENT_RATE_PER_SIM_HOUR) {
@@ -11,7 +11,10 @@ function eventProbability(elapsedSimulationMinutes, eventsPerSimulationHour = en
 
 async function generateWorldEvents(simulationId,simulationTime,tickId,elapsedSimulationMinutes=0){
   await updateEnvironmentState(simulationId,simulationTime);
-  if(Math.random()>eventProbability(elapsedSimulationMinutes))return [];
+  const probability=eventProbability(elapsedSimulationMinutes);
+  const randomEvent=Math.random()<=probability;
+  const vitalDue=await isVitalEnvironmentalEventDue(simulationId,simulationTime);
+  if(!randomEvent&&!vitalDue)return [];
   const eventId=await generateEnvironmentalEvent(simulationId,simulationTime,tickId);
   return eventId?[eventId]:[];
 }
