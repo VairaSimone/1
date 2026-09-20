@@ -236,6 +236,18 @@ async function listMemories(simulationId, entityId, limit = 100, { includeForgot
   return normalized.slice(0, Math.min(Number(limit) || 100, 500));
 }
 
+async function recallContexts(simulationId,entityIds=[],limit=8,contextsByEntity=new Map()){
+  const ids=[...new Set((entityIds||[]).filter(Boolean).map(String))],result=new Map();if(!ids.length)return result;
+  const placeholders=ids.map(()=> 'UUID_TO_BIN(?)').join(',');
+  const scanPerEntity=Math.min(Math.max(Number(limit)||8,1)*5,40);
+  const [rows]=await pool.query(`SELECT id,entityId,memoryType,content,importance,strength,confidence,emotionalIntensity,simulationAt,lastRecalledAt,status,locationId,metadata FROM (SELECT BIN_TO_UUID(id) AS id,BIN_TO_UUID(entity_id) AS entityId,memory_type AS memoryType,content,importance,strength,confidence,emotional_intensity AS emotionalIntensity,created_simulation_at AS simulationAt,last_recalled_simulation_at AS lastRecalledAt,status,location_id AS locationId,metadata,ROW_NUMBER() OVER(PARTITION BY entity_id ORDER BY created_simulation_at DESC) AS rn FROM memories WHERE simulation_id=UUID_TO_BIN(?) AND entity_id IN (${placeholders}) AND status='ACTIVE') ranked WHERE rn<=? ORDER BY entityId,simulationAt DESC`,[simulationId,...ids,scanPerEntity]);
+  const selectedIds=[];
+  const grouped=new Map(ids.map(id=>[id,[]]));
+  for(const row of rows){const list=grouped.get(row.entityId);if(list)list.push({...row,metadata:normalizeJson(row.metadata)});}
+  for(const id of ids){const base=contextsByEntity instanceof Map?contextsByEntity.get(id)||{}:(contextsByEntity&&contextsByEntity[id])||{},effectiveContext={...base,simulationTime:assertSimulationTime(base.simulationTime)};const memories=grouped.get(id)||[];memories.sort((a,b)=>memoryRelevance(b,effectiveContext)-memoryRelevance(a,effectiveContext)||Number(b.strength||0)-Number(a.strength||0)||new Date(b.simulationAt).getTime()-new Date(a.simulationAt).getTime());const selected=memories.slice(0,Math.min(Number(limit)||8,8));result.set(id,selected);for(const memory of selected)selectedIds.push(memory.id);}
+  if(selectedIds.length){const selectedPlaceholders=selectedIds.map(()=> 'UUID_TO_BIN(?)').join(',');await pool.query(`UPDATE memories SET last_recalled_simulation_at=?,version=version+1 WHERE simulation_id=UUID_TO_BIN(?) AND id IN (${selectedPlaceholders}) AND status='ACTIVE'`,[assertSimulationTime(contextsByEntity instanceof Map?contextsByEntity.values().next().value?.simulationTime:null),simulationId,...selectedIds]).catch(async()=>{for(const id of selectedIds)await pool.query(`UPDATE memories SET last_recalled_simulation_at=?,version=version+1 WHERE id=UUID_TO_BIN(?) AND status='ACTIVE'`,[new Date().toISOString().slice(0,23).replace('T',' '),id]);});}
+  return result;
+}
 async function recallContext(simulationId, entityId, limit = 8, context = {}) {
   assertSimulationTime(context?.simulationTime);
   const effectiveContext = await deriveRecallContext(simulationId, entityId, context);
