@@ -13,8 +13,9 @@ require("./services/behavior-fix-bootstrap").install();
 require("./services/cognitive-causal-api-guard").install();
 const { env } = require("./config/env");
 const logger = require("./lib/logger");
-const { ensureDatabase } = require("./db/database-init");
-const { ping, close } = require("./db/pool");
+const { ensureDatabaseWithRetry } = require("./db/database-init");
+const { pingWithRetry, close, getDatabaseHealth } = require("./db/pool");
+const { ensurePlanningStatusMigrations } = require("./db/schema-migrations");
 const { bootstrapCoreDefinitions } = require("./services/bootstrap-service");
 const { buildCognitiveRouter } = require("./services/cognitive-v2-router");
 const cognitiveV2 = require("./services/cognitive-v2-bootstrap");
@@ -25,8 +26,12 @@ const { buildRouter } = require("./api/routes");
 const { errorHandler } = require("./api/error-handler");
 
 async function main(){
-  await ensureDatabase();
-  await ping();
+  await ensureDatabaseWithRetry();
+  await pingWithRetry();
+  const planningMigration = await ensurePlanningStatusMigrations();
+  if (planningMigration.changed.length) {
+    logger.info({ changed: planningMigration.changed }, "planning status schema migrations applied");
+  }
   const staleTicks = await require("./repositories/simulation-repo").reconcileStaleRunningTicks();
   if (staleTicks) logger.warn({staleTicks}, "stale simulation ticks reconciled at startup");
   await bootstrapCoreDefinitions();
