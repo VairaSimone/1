@@ -85,7 +85,36 @@ async function interruptActiveAction({ simulationId, entityId, active, simulatio
   const movementId = active.metadata?.movement?.movementId || null;
   if (movementId) await pool.query(`UPDATE movements SET status='INTERRUPTED',actual_arrival_simulation_at=NULL,reason='autonomous route interrupted by critical state',version=version+1 WHERE id=UUID_TO_BIN(?) AND status='ACTIVE'`, [movementId]);
   if (active.intentionId) await pool.query(`UPDATE intentions SET status='CANCELLED',version=version+1 WHERE id=UUID_TO_BIN(?) AND status='ACTIVE'`, [active.intentionId]);
-  if (active.decisionId) await pool.query(`UPDATE decisions SET status='EXECUTED',actual_outcome=? WHERE id=UUID_TO_BIN(?) AND status IN ('EVALUATED','CREATED')`, [JSON.stringify({ actionId, eventId, outcome: "PARTIAL", success: false, failureReason: "ACTION_INTERRUPTED", interrupted: true, interruption }), active.decisionId]);
+  if (active.decisionId) await pool.query(
+    `UPDATE decisions
+     SET status='EXECUTED',actual_outcome=?
+     WHERE id=UUID_TO_BIN(?) AND status IN ('EVALUATED','CREATED')`,
+    [JSON.stringify({
+      actionId,
+      eventId,
+      outcome: "PARTIAL",
+      success: false,
+      failureReason: "ACTION_INTERRUPTED",
+      interrupted: true,
+      interruption,
+      actionSummary: actionService.buildDecisionActionSummary({
+        actionId,
+        decisionId: active.decisionId,
+        actionType,
+        status: "INTERRUPTED",
+        simulationTime,
+        targetEntityId: active.metadata?.targetEntityId || null,
+        targetLocationId: active.metadata?.targetLocationId || null,
+        relationshipIntent: active.metadata?.relationshipIntent || "NONE",
+        outcome: "PARTIAL",
+        success: false,
+        failureReason: "ACTION_INTERRUPTED",
+        eventId,
+        intentionId: active.intentionId,
+        result
+      })
+    }), active.decisionId]
+  );
 
   const cognitive = await recordSignificantExperience({
     simulationId,
