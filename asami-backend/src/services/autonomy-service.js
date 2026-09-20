@@ -180,7 +180,7 @@ async function prepareTickAutonomyContext({simulationId,entityIds=[],simulationT
     const goal=base.goals?.[0]||null,plan=(base.cognitiveProfile?.plans||[]).find(item=>String(item.goalId||'')===String(goal?.id||''));const activePlanStep=selectActiveStep(plan);if(activePlanStep)base.activePlanStep=activePlanStep;
     contexts.set(id,{...base,memories:memoriesByEntity.get(id)||[]});
   }
-  return{entities,contexts,worldLocations,preparedAt:simulationTime};
+  return{entities,contexts,socialContexts,worldLocations,preparedAt:simulationTime};
 }
 async function findAutonomousActors(simulationId,limit=100){const[rows]=await pool.query(`SELECT BIN_TO_UUID(e.id) AS id FROM entities e JOIN entity_types et ON et.id=e.entity_type_id WHERE e.simulation_id=UUID_TO_BIN(?) AND et.category='ACTOR' AND e.status NOT IN ('INACTIVE','DEAD') AND NOT EXISTS(SELECT 1 FROM autonomy_policies ap WHERE ap.simulation_id=e.simulation_id AND ap.policy_type='AUTONOMY' AND ap.enabled=0 AND(ap.entity_id=e.id OR ap.entity_id IS NULL)) ORDER BY e.created_simulation_at LIMIT ?`,[simulationId,limit]);return rows.map(row=>row.id);}
 function serializeReason(reason){if(reason===null||reason===undefined)return null;if(typeof reason==='string')return JSON.stringify({text:reason});return JSON.stringify(reason);}
