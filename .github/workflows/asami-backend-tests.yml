@@ -1,0 +1,36 @@
+name: Asami backend tests
+
+on:
+  push:
+    paths:
+      - "asami-backend/**"
+      - ".github/workflows/asami-backend-tests.yml"
+  pull_request:
+    paths:
+      - "asami-backend/**"
+      - ".github/workflows/asami-backend-tests.yml"
+
+jobs:
+  backend-tests:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: asami-backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: asami-backend/package-lock.json
+
+      - run: npm ci
+      - run: npm test
+      - name: Syntax check every backend source file
+        shell: bash
+        run: |
+          set -euo pipefail
+          while IFS= read -r -d '' file; do
+            node --check "$file"
+          done < <(find src test -type f -name "*.js" -print0)
