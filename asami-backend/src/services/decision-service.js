@@ -579,7 +579,7 @@ function validateCriticalDecision(needs = [], actionType, targetLocationId = nul
   }
 
   if (
-    requirement.mode === "ROUTING" &&
+    ["ROUTING","RESOURCE_EMERGENCY"].includes(requirement.mode) &&
     requirement.targetLocationId &&
     String(targetLocationId || "") !== String(requirement.targetLocationId)
   ) {
