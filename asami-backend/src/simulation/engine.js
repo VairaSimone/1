@@ -309,6 +309,10 @@ class SimulationEngine {
                 await applyEmotions(entityId, nextTime, passiveNeedChanges, null, null, null, postActionGapHours);
               }
             }
+            if (wasCompleted) {
+              phase = "entity.post_processing.commit";
+              await actionService.markActionPostProcessingComplete(active.id);
+            }
             phase = "entity.mental_state";
             const latestNeeds = await readNeeds(entityId);
             await refreshMentalStateFromSimulation({
