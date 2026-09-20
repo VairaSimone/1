@@ -2,6 +2,8 @@ const { pool, normalizeSimulationTimestamp } = require("../db/pool");
 const observability = require("./simulation-observability");
 const logger = require("../lib/logger");
 const { withEventWriteLock } = require("./event-service");
+function parseJson(value,fallback={}){if(value===null||value===undefined)return fallback;if(typeof value==="object")return value;try{return JSON.parse(value);}catch{return fallback;}}
+
 
 const TERMINAL_DECISION_STATUSES = new Set(["EXECUTED", "FAILED", "CANCELLED"]);
 const TERMINAL_ACTION_STATUSES = new Set(["COMPLETED", "CANCELLED", "INTERRUPTED", "FAILED"]);
