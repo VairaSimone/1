@@ -27,7 +27,7 @@ const { errorHandler } = require("./api/error-handler");
 
 async function main(){
   await ensureDatabaseWithRetry();
-  await pingWithRetry();
+  await pingWithRetry({ attempts: env.DB_STARTUP_RETRY_ATTEMPTS });
   const planningMigration = await ensurePlanningStatusMigrations();
   if (planningMigration.changed.length) {
     logger.info({ changed: planningMigration.changed }, "planning status schema migrations applied");
