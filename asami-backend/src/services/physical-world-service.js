@@ -189,6 +189,73 @@ async function ensureResourceReserveAtLocation({simulationId,locationId,resource
   return result;
 }
 
+const RESOURCE_DISTRIBUTION_POLICY = Object.freeze({
+  water: { minimum: 4, refill: 12, cap: 20 },
+  food: { minimum: 2, refill: 8, cap: 16 }
+});
+
+async function maintainDistributedResources(simulationId, simulationTime) {
+  const locations = await loadActiveLocations(simulationId);
+  if (!locations.length) return { replenished: [], checked: 0 };
+
+  const [actorRows] = await pool.query(
+    `SELECT BIN_TO_UUID(elc.location_id) AS locationId, COUNT(*) AS actors
+     FROM entity_locations_current elc
+     JOIN entities e ON e.id=elc.entity_id AND e.simulation_id=elc.simulation_id
+     JOIN entity_types et ON et.id=e.entity_type_id
+     WHERE elc.simulation_id=UUID_TO_BIN(?)
+       AND elc.location_id IS NOT NULL
+       AND et.category='ACTOR'
+       AND e.status NOT IN ('INACTIVE','DEAD')
+     GROUP BY elc.location_id`,
+    [simulationId]
+  );
+  const actorsByLocation = new Map(actorRows.map(row => [String(row.locationId), Number(row.actors || 0)]));
+  const replenished = [];
+
+  for (const location of locations) {
+    const actorCount = actorsByLocation.get(String(location.locationId)) || 0;
+    if (actorCount <= 0) continue;
+    const defaults = LOCATION_RESOURCES[location.worldCode] || {};
+    for (const [resource, policy] of Object.entries(RESOURCE_DISTRIBUTION_POLICY)) {
+      if (Number(defaults[resource] || 0) < 1) continue;
+
+      const current = Number(location.resources?.[resource] ?? 0);
+      if (current >= policy.minimum) continue;
+
+      const target = Math.min(
+        policy.cap,
+        policy.minimum + Math.min(8, actorCount * 2)
+      );
+      const amount = Math.max(0, target - Math.max(0, current));
+      if (amount <= 0) continue;
+
+      const remaining = await replenishResource({
+        simulationId,
+        locationId: location.locationId,
+        resource,
+        amount,
+        simulationTime
+      });
+      if (remaining !== null) {
+        replenished.push({
+          locationId: location.locationId,
+          locationType: location.locationType,
+          resource,
+          actorCount,
+          previous: current,
+          replenished: amount,
+          remaining,
+          reason: "OCCUPIED_LOCATION_DISTRIBUTION"
+        });
+        location.resources = { ...location.resources, [resource]: remaining };
+      }
+    }
+  }
+
+  return { replenished, checked: actorsByLocation.size };
+}
+
 async function isCriticalResourceReachable(simulationId,entityId,resource){
   if(!simulationId||!entityId||!Object.prototype.hasOwnProperty.call(CRITICAL_RESOURCE_RESERVES,resource))return false;
   const locations=await loadActiveLocations(simulationId);
@@ -309,6 +376,7 @@ module.exports={
   findReachableResource,
   reachableLocations,
   isCriticalResourceReachable,
+  maintainDistributedResources,
   CRITICAL_RESOURCE_RESERVES,
   RESOURCE_EMERGENCY_TTL_MINUTES,
   LOCATION_RESOURCES,
