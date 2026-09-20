@@ -456,3 +456,70 @@ test('blocked goals remain visible in persisted simulation snapshots',()=>{
   const source=read('repositories/simulation-repo.js');
   assert.match(source,/g\.status IN \('DRAFT','ACTIVE','PAUSED','BLOCKED'\)/);
 });
+
+test('actions are summarized before terminal action retention',()=>{
+  const action=read('services/action-service.js');
+  const retention=read('services/safe-retention-service.js');
+  assert.match(action,/buildDecisionActionSummary/);
+  assert.match(action,/actionSummary/);
+  assert.match(retention,/compactOldActionDecisionSummaries/);
+  assert.match(retention,/actionSummary/);
+  assert.match(retention,/a\.decision_id IS NULL OR EXISTS/);
+  assert.ok(retention.indexOf('compactOldActionDecisionSummaries') < retention.indexOf('deleteOldActions(lock.conn'));
+});
+
+test('occupied locations receive bounded critical-resource maintenance and planner routing remains explicit',()=>{
+  const physical=read('services/physical-world-service.js');
+  const engine=read('simulation/engine.js');
+  const decision=read('services/decision-service.js');
+  assert.match(physical,/RESOURCE_DISTRIBUTION_POLICY/);
+  assert.match(physical,/maintainDistributedResources/);
+  assert.match(physical,/OCCUPIED_LOCATION_DISTRIBUTION/);
+  assert.match(engine,/maintainDistributedResources/);
+  assert.match(decision,/findNearestResourceLocation/);
+  assert.match(decision,/RESOURCE_UNAVAILABLE_LOCALLY/);
+});
+
+test('Gemini transient failures open an exponential backoff breaker',()=>{
+  const source=read('ai/gemini.js');
+  assert.match(source,/TRANSIENT_NETWORK_CODES/);
+  assert.match(source,/503/);
+  assert.match(source,/AI_TIMEOUT/);
+  assert.match(source,/providerFailureStreak/);
+  assert.match(source,/computeProviderBackoffMs/);
+  assert.match(source,/local circuit breaker opened with exponential backoff/);
+});
+
+test('Gemini autonomy receives a bounded context',()=>{
+  const source=read('services/autonomy-service.js');
+  assert.match(source,/buildGeminiDecisionContext/);
+  assert.match(source,/memories\.slice\(0,6\)/);
+  assert.match(source,/recentFailures/);
+  assert.match(source,/gemini\.chooseDecision\(geminiContext\)/);
+});
+
+test('mental state is refreshed from canonical needs on every actor tick',()=>{
+  const personality=read('services/personality-service.js');
+  const engine=read('simulation/engine.js');
+  assert.match(personality,/refreshMentalStateFromSimulation/);
+  assert.match(personality,/updatedSimulationAt: simulationTime/);
+  assert.match(engine,/refreshMentalStateFromSimulation/);
+  assert.match(engine,/activeActionType: wasCompleted \? null : active\.actionType/);
+  assert.match(engine,/activeActionType: null/);
+});
+
+test('simulation observability covers recovery, goal blocking, retention backlog and inactivity',()=>{
+  const obs=read('services/simulation-observability.js');
+  const engine=read('simulation/engine.js');
+  const planning=read('services/planning-service.js');
+  const retention=read('services/safe-retention-service.js');
+  for(const metric of ['resource_emergency_total','goal_blocked_total','recovery_failed_total','actor_inactivity_total']){
+    assert.match(obs,new RegExp(metric));
+  }
+  assert.match(obs,/retention_backlog_rows/);
+  assert.match(engine,/event:"RESOURCE_EMERGENCY"/);
+  assert.match(engine,/event:"RECOVERY_FAILED"/);
+  assert.match(engine,/event:"ACTOR_INACTIVITY"/);
+  assert.match(planning,/goal blocked by unavailable critical resource/);
+  assert.match(retention,/event:"RETENTION_BACKLOG"/);
+});
