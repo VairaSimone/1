@@ -14,7 +14,7 @@ require("./services/cognitive-causal-api-guard").install();
 const { env } = require("./config/env");
 const logger = require("./lib/logger");
 const { ensureDatabaseWithRetry } = require("./db/database-init");
-const { pingWithRetry, close, getDatabaseHealth } = require("./db/pool");
+const { pingWithRetry, close } = require("./db/pool");
 const { ensurePlanningStatusMigrations } = require("./db/schema-migrations");
 const { bootstrapCoreDefinitions } = require("./services/bootstrap-service");
 const { buildCognitiveRouter } = require("./services/cognitive-v2-router");
