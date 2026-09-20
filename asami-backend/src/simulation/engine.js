@@ -10,7 +10,7 @@ const actionService = require("../services/action-service");
 const { createMemory, decayMemories, buildActionMemory, buildFailureMemory } = require("../services/memory-service");
 const { generateWorldEvents } = require("../services/world-service");
 const { ensureWorld, evolveRelationships } = require("../services/world-population-service");
-const { seedPhysicalWorld, ensureCriticalResourceAvailability } = require("../services/physical-world-service");
+const { seedPhysicalWorld, ensureCriticalResourceAvailability, maintainDistributedResources } = require("../services/physical-world-service");
 const { updateDevelopment } = require("../services/development-service");
 const { initiateConversation } = require("../services/chat-service");
 const { recordHabitEvidence } = require("../services/habit-service");
@@ -194,7 +194,25 @@ class SimulationEngine {
       try {
         const elapsedMinutes = Math.min(10080, Math.max(0, (nextTime - previousTime) / 60000));
         const lastMaintenance = this.worldMaintenanceAt.get(sim.id); const maintenanceDue = lastMaintenance === undefined || nextTime.getTime() - lastMaintenance >= 3600000;
-        if (maintenanceDue) { phase = "world.initialize"; await ensureWorld(sim.id, nextTime); phase = "world.physical"; await seedPhysicalWorld(sim.id, nextTime); phase = "world.relationships"; await evolveRelationships(sim.id, nextTime); this.worldMaintenanceAt.set(sim.id, nextTime.getTime()); }
+        if (maintenanceDue) {
+          phase = "world.initialize";
+          await ensureWorld(sim.id, nextTime);
+          phase = "world.physical";
+          await seedPhysicalWorld(sim.id, nextTime);
+          phase = "world.resource_distribution";
+          const distributedResources = await maintainDistributedResources(sim.id, nextTime.toISOString());
+          if (distributedResources.replenished.length) {
+            logger.info({
+              simulationId: sim.id,
+              simulationTime: nextTime.toISOString(),
+              replenishedLocations: distributedResources.replenished.length,
+              resources: distributedResources.replenished
+            }, "distributed resource maintenance applied");
+          }
+          phase = "world.relationships";
+          await evolveRelationships(sim.id, nextTime);
+          this.worldMaintenanceAt.set(sim.id, nextTime.getTime());
+        }
         phase = "world.events"; await generateWorldEvents(sim.id, nextTime, tickId, elapsedMinutes);
         phase = "world.resource_invariant";
         const resourceInvariant = await ensureCriticalResourceAvailability(sim.id, nextTime.toISOString());
