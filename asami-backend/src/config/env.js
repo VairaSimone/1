@@ -53,6 +53,7 @@ const Env = z.object({
   DEFAULT_SPEED: z.coerce.number().nonnegative().default(60),
   SNAPSHOT_EVERY_TICKS: z.coerce.number().int().positive().default(60),
   MAX_ENTITIES_PER_TICK: z.coerce.number().int().positive().default(100),
+  MAX_CONCURRENT_SIMULATIONS: z.coerce.number().int().positive().default(1),
   ACTOR_INACTIVITY_ALERT_HOURS: z.coerce.number().positive().default(12),
   ACTOR_INACTIVITY_ALERT_REPEAT_HOURS: z.coerce.number().positive().default(6),
   RETENTION_ENABLED: z.preprocess((value)=>{if(typeof value!=="string")return value;const normalized=value.trim().toLowerCase();if(normalized==="true")return true;if(normalized==="false")return false;return value;},z.boolean()).default(true),
