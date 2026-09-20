@@ -1,7 +1,7 @@
 const {pool}=require("../db/pool");
 const {uuid}=require("../lib/ids");
 const {ACTIONS,scoreAction,RESOURCE_REQUIREMENTS,needPriorityState,CRITICAL_NEED_ACTIONS}=require("./decision-rules");
-const {getCognitiveProfile,cognitiveDecisionModifier}=require("./personality-service");
+const {getCognitiveProfile,getCognitiveProfiles,cognitiveDecisionModifier}=require("./personality-service");
 const {cognitiveExperienceModifier}=require("./experience-learning-service");
 const {assertTransition}=require("./state-machine");
 const RESOURCE_SEARCH_TTL_MINUTES=180,RESOURCE_TRAVEL_BONUS=.85,WALKING_SPEED_KMH=4.8,ROAD_FACTOR=1.18,MAX_EXPERIENCE_SCORE_EFFECT=.65,MAX_RECENT_ACTIONS=12,MAX_RECENT_INTERRUPTION_HOURS=12,MAX_RECENT_SOCIAL_INTERACTIONS=12,STOCHASTIC_TOP_K=4,BASE_TEMPERATURE=.24;
