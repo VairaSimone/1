@@ -523,3 +523,95 @@ test('simulation observability covers recovery, goal blocking, retention backlog
   assert.match(planning,/goal blocked by unavailable critical resource/);
   assert.match(retention,/event:"RETENTION_BACKLOG"/);
 });
+
+test('resource consumption is compare-and-swap based against the persisted location version',()=>{
+  const source=read('services/physical-world-service.js');
+  const start=source.indexOf('async function consumeResource');
+  const end=source.indexOf('async function replenishResource',start);
+  const section=source.slice(start,end);
+  assert.match(section,/updateLocationAttributes/);
+  assert.match(source,/WHERE id=UUID_TO_BIN\(\?\) AND simulation_id=UUID_TO_BIN\(\?\) AND version=\?/, 'location updates must be version-guarded');
+});
+
+test('simulation world logic uses simulation time while wall clock remains technical infrastructure',()=>{
+  const engine=read('simulation/engine.js');
+  const state=read('services/state-service.js');
+  const world=read('services/environment-service.js');
+  assert.match(engine,/nextTime = new Date/);
+  assert.match(engine,/simulationTime/);
+  assert.match(state,/updateNeeds\(entityId,simulationTime/);
+  assert.match(state,/applyEmotions\(entityId,simulationTime/);
+  assert.match(world,/hourOf\(simulationTime\)/);
+  assert.match(world,/daylight\(hour\)/);
+});
+
+test('replanning is bounded and records failed strategy constraints',()=>{
+  const source=read('services/planning-service.js');
+  assert.match(source,/MAX_PLAN_REPLANS=3/);
+  assert.match(source,/REPLAN_REQUIRED/);
+  assert.match(source,/avoidLocationIds/);
+  assert.match(source,/avoidTargetEntityIds/);
+  assert.match(source,/PLAN_REPLAN_LIMIT/);
+});
+
+test('social plan commitments yield to unavailable social targets',()=>{
+  const source=read('services/decision-service.js');
+  assert.match(source,/!c\.socialUnavailable/);
+  assert.match(source,/applySocialIsolationFallback/);
+  assert.match(source,/NO_REACHABLE_PERSON/);
+});
+
+test('database backpressure and deadlock controls are bounded',()=>{
+  const engine=read('simulation/engine.js');
+  const pool=read('db/pool.js');
+  const env=read('config/env.js');
+  assert.match(engine,/MAX_CONCURRENT_SIMULATIONS/);
+  assert.match(engine,/simulation_queue_depth/);
+  assert.match(pool,/DEADLOCK_ERRORS/);
+  assert.match(pool,/attempt<totalAttempts-1/);
+  assert.match(env,/MAX_CONCURRENT_SIMULATIONS/);
+});
+
+test('integrity checks cover cross-scope relationships beyond foreign-key existence',()=>{
+  const source=read('services/integrity-check-service.js');
+  assert.match(source,/actions_decision_scope/);
+  assert.match(source,/actions_goal_scope/);
+  assert.match(source,/plans_goal_scope/);
+  assert.match(source,/events_source_action_scope/);
+  assert.match(source,/memories_source_event_scope/);
+});
+
+test('AI proposal and executed action provenance are persisted separately',()=>{
+  const decision=read('services/decision-service.js');
+  const action=read('services/action-service.js');
+  assert.match(decision,/aiProposal/);
+  assert.match(decision,/validatedDecision/);
+  assert.match(decision,/transformation/);
+  assert.match(action,/executedAction/);
+});
+
+test('state machine defines terminal states and rejects impossible transitions',()=>{
+  const machine=read('services/state-machine.js');
+  assert.match(machine,/INVALID_STATE_TRANSITION/);
+  assert.match(machine,/COMPLETED:new Set\(\[\]\)/);
+  assert.match(machine,/EXECUTED:new Set\(\[\]\)/);
+  assert.match(machine,/RUNNING:new Set\(\["COMPLETED","FAILED","SKIPPED"\]\)/);
+});
+
+test('database query telemetry is tied to simulation runtime context',()=>{
+  const pool=read('db/pool.js');
+  const obs=read('services/simulation-observability.js');
+  assert.match(pool,/recordDbQuery/);
+  assert.match(obs,/AsyncLocalStorage/);
+  assert.match(obs,/db_queries_total/);
+  assert.match(obs,/db_slow_queries_total/);
+});
+
+test('environmental scheduling has an overdue-vital-event path',()=>{
+  const environment=read('services/environment-service.js');
+  const world=read('services/world-service.js');
+  assert.match(environment,/FAIR_EVENT_MAX_GAP_HOURS=24/);
+  assert.match(environment,/isVitalEnvironmentalEventDue/);
+  assert.match(world,/isVitalEnvironmentalEventDue/);
+  assert.match(world,/vitalDue/);
+});
