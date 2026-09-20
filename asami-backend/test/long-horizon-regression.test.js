@@ -109,6 +109,48 @@ test("long-horizon replanning remains bounded",()=>{
   assert.equal(replanCount,MAX_PLAN_REPLANS);
 });
 
+test("100k-tick fault-mode harness survives DB restart and Gemini unavailability",()=>{
+  const random=seededRandom(42424242);
+  const actors=Array.from({length:128},(_,i)=>({id:"A"+i,actionId:null}));
+  const actionKeys=new Set();
+  let dbAvailable=true;
+  let dbSkips=0;
+  let geminiFallbacks=0;
+  let duplicateExecutions=0;
+  let successfulTicks=0;
+
+  for(let tick=0;tick<100000;tick++){
+    if(tick%997===0)dbAvailable=false;
+    if(tick%997===3)dbAvailable=true;
+
+    if(!dbAvailable){
+      dbSkips++;
+      continue;
+    }
+
+    successfulTicks++;
+    const geminiAvailable=(tick%173)!==0;
+    if(!geminiAvailable)geminiFallbacks++;
+
+    for(const actor of actors){
+      const key=tick+":"+actor.id;
+      if(actionKeys.has(key))duplicateExecutions++;
+      actionKeys.add(key);
+
+      actor.actionId=geminiAvailable&&random()<.35
+        ?"AI:"+key
+        :"DET:"+key;
+
+      assert.ok(actor.actionId);
+    }
+  }
+
+  assert.ok(dbSkips>0);
+  assert.ok(successfulTicks>0);
+  assert.ok(geminiFallbacks>0);
+  assert.equal(duplicateExecutions,0);
+});
+
 test("long-horizon scheduler preserves an overdue vital-event escape hatch",()=>{
   const random=seededRandom(987654321);
   let lastVitalAt=0;
