@@ -190,8 +190,8 @@ async function ensureResourceReserveAtLocation({simulationId,locationId,resource
 }
 
 const RESOURCE_DISTRIBUTION_POLICY = Object.freeze({
-  water: { minimum: 4, refill: 12, cap: 20 },
-  food: { minimum: 2, refill: 8, cap: 16 }
+  water: { minimum: 4, cap: 20 },
+  food: { minimum: 2, cap: 16 }
 });
 
 async function maintainDistributedResources(simulationId, simulationTime) {
