@@ -87,7 +87,29 @@ function chooseSocialTargetCandidate(context,entityId){
     return{...candidate,selectionScore:returnScore,recentInteractionCount:recentCount};
   }).sort((a,b)=>Number(b.selectionScore||0)-Number(a.selectionScore||0))[0]||null;
 }
-function applySocialFeasibility(candidates,context,entityId){if(!Array.isArray(candidates))return candidates;const socialTarget=chooseSocialTargetCandidate(context,entityId);return candidates.map(candidate=>{if(normalizeAction(candidate.action)!=="TALKING")return candidate;if(!socialTarget)return{...candidate,score:0,targetEntityId:null,socialUnavailable:true};return{...candidate,score:Number(candidate.score||0)+.24,targetEntityId:socialTarget.id,targetName:socialTarget.name,socialTarget:true,socialSelectionScore:socialTarget.selectionScore};}).sort((a,b)=>Number(b.score||0)-Number(a.score||0));}
+function applySocialFeasibility(candidates,context,entityId){
+  if(!Array.isArray(candidates))return candidates;
+  const socialTarget=chooseSocialTargetCandidate(context,entityId);
+  return candidates.map(candidate=>{
+    if(normalizeAction(candidate.action)!=="TALKING")return candidate;
+    if(!socialTarget)return{...candidate,score:0,targetEntityId:null,socialUnavailable:true,socialFallbackReason:"NO_REACHABLE_PERSON"};
+    return{...candidate,score:Number(candidate.score||0)+.24,targetEntityId:socialTarget.id,targetName:socialTarget.name,socialTarget:true,socialSelectionScore:socialTarget.selectionScore};
+  }).sort((a,b)=>Number(b.score||0)-Number(a.score||0));
+}
+function applySocialIsolationFallback(candidates,context){
+  if(!Array.isArray(candidates))return candidates;
+  const socialPressure=Math.max(
+    Number((context?.needs||[]).find(n=>normalizeAction(n.code)==="SOCIAL_NEED")?.value||0),
+    Number((context?.needs||[]).find(n=>normalizeAction(n.code)==="BELONGING")?.value||0)
+  );
+  if((context?.social?.candidates||[]).length||socialPressure<.55)return candidates;
+  return candidates.map(candidate=>{
+    const action=normalizeAction(candidate.action);
+    if(action==="PLAYING")return{...candidate,score:Number(candidate.score||0)+.28,socialFallback:true,socialFallbackReason:"NO_REACHABLE_PERSON"};
+    if(action==="EXPLORING")return{...candidate,score:Number(candidate.score||0)+.12,socialFallback:true,socialFallbackReason:"NO_REACHABLE_PERSON"};
+    return candidate;
+  }).sort((a,b)=>Number(b.score||0)-Number(a.score||0));
+}
 function deriveProactivity({needs=[],goals=[],social=null,explorationDestination=null,activePlanStep=null}){const pressures=Object.fromEntries(needs.map(n=>[normalizeAction(n.code),Number(n.value||0)])),signals=[],topPressure=Object.entries(pressures).filter(([code])=>!['ENERGY','SAFETY'].includes(code)).sort((a,b)=>b[1]-a[1])[0];if(topPressure&&topPressure[1]>=.55)signals.push({type:"NEED",code:topPressure[0],intensity:topPressure[1]});const activeGoal=goals.find(g=>Number(g.progress||0)<1);if(activeGoal)signals.push({type:"GOAL",goalId:activeGoal.id,priority:Number(activeGoal.priority||0)});if(explorationDestination&&!criticalNeedState(needs))signals.push({type:"EXPLORATION",locationId:explorationDestination.locationId,novelty:Number(explorationDestination.novelty||0),score:Number(explorationDestination.score||0)});const socialCandidates=Array.isArray(social?.candidates)?social.candidates:[];if(socialCandidates.length&&!criticalNeedState(needs)&&Math.max(pressures.SOCIAL_NEED||0,pressures.BELONGING||0)>=.35)signals.push({type:"SOCIAL",targetEntityId:socialCandidates[0].id,candidateCount:socialCandidates.length});if(activePlanStep)signals.push({type:"PLAN",stepId:activePlanStep.id,actionType:normalizeAction(activePlanStep.result?.actionType||activePlanStep.actionType)});const critical=criticalNeedState(needs);return{mode:signals.length?"PROACTIVE":"AUTONOMOUS",priority:critical?"CRITICAL":signals.some(s=>s.type==="NEED")?"HIGH":signals.length?"MEDIUM":"LOW",signals,autonomous:Boolean(signals.length||critical),trigger:signals.length||critical?"INTERNAL_STATE":null};}
 function applyProactiveOpportunityBias(candidates,proactivity){if(!proactivity?.autonomous||!Array.isArray(candidates))return candidates;const signals=new Set((proactivity.signals||[]).map(s=>s.type));return candidates.map(c=>{let bonus=0,a=normalizeAction(c.action);if(signals.has("EXPLORATION")&&a==="EXPLORING")bonus+=.22;if(signals.has("SOCIAL")&&a==="TALKING")bonus+=.20;if(signals.has("PLAN")&&(proactivity.signals||[]).some(s=>s.type==="PLAN"&&normalizeAction(s.actionType)===a))bonus+=.24;if(signals.has("GOAL")&&["WALKING","EXPLORING","TALKING","STUDYING","READING","WORKING","PLAYING","EATING","DRINKING","SLEEPING"].includes(a))bonus+=.04;return bonus?{...c,score:Number(c.score||0)+bonus}:c;}).sort((a,b)=>Number(b.score||0)-Number(a.score||0));}
 async function loadResourceContext(simulationId,entityId,location,simulationTime,excludedLocationIds=[]){
@@ -621,6 +643,7 @@ async function makeDecision({
   candidates = applyPlanCommitment(candidates, context);
   candidates = applyExplorationCommitment(candidates, context);
   candidates = applySocialFeasibility(candidates, context, entityId);
+  candidates = applySocialIsolationFallback(candidates, context);
 
   // Resolve critical resource recovery before recovery blocks so a block cannot
   // hide the action currently required to satisfy a critical physiological need.
@@ -914,4 +937,4 @@ async function makeDecision({
 }
 
 function effectiveSimulationTimeString(value){const date=value instanceof Date?value:new Date(value);if(!Number.isFinite(date.getTime()))throw Object.assign(new Error("Invalid simulation time"),{code:"INVALID_SIMULATION_TIME"});const pad=n=>String(n).padStart(2,"0"),ms=String(date.getUTCMilliseconds()).padStart(3,"0");return `${date.getUTCFullYear()}-${pad(date.getUTCMonth()+1)}-${pad(date.getUTCDate())} ${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}:${pad(date.getUTCSeconds())}.${ms}`;}
-module.exports={ACTIONS,RESOURCE_REQUIREMENTS,scoreAction,buildDecisionContext,makeDecision,applyLocationBias,LOCATION_ACTION_BIAS,loadResourceContext,findNearestResourceLocation,shortestRoute,deriveProactivity,applyProactiveOpportunityBias,applyPlanCommitment,applyExplorationCommitment,applyRecoveryBlocks,criticalProtectedActions,recoveryBlockForInterruption,activeRecoveryBlocks,criticalNeedState,criticalNeedAction,criticalResourceNeedState,resolveCriticalResourceRecovery,resolveCriticalDecisionRequirement,validateCriticalDecision,applyRecentActionPenalty,individualityBias,chooseStochasticCandidate,resolvePlanCommitment,chooseSocialTargetCandidate,applySocialFeasibility,compactDecisionContext};
+module.exports={ACTIONS,RESOURCE_REQUIREMENTS,scoreAction,buildDecisionContext,makeDecision,applyLocationBias,LOCATION_ACTION_BIAS,loadResourceContext,findNearestResourceLocation,shortestRoute,deriveProactivity,applyProactiveOpportunityBias,applyPlanCommitment,applyExplorationCommitment,applyRecoveryBlocks,criticalProtectedActions,recoveryBlockForInterruption,activeRecoveryBlocks,criticalNeedState,criticalNeedAction,criticalResourceNeedState,resolveCriticalResourceRecovery,resolveCriticalDecisionRequirement,validateCriticalDecision,applyRecentActionPenalty,individualityBias,chooseStochasticCandidate,resolvePlanCommitment,chooseSocialTargetCandidate,applySocialFeasibility,applySocialIsolationFallback,compactDecisionContext};
