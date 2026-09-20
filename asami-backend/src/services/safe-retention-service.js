@@ -1,4 +1,5 @@
 const { pool, normalizeSimulationTimestamp } = require("../db/pool");
+const observability = require("./simulation-observability");
 const logger = require("../lib/logger");
 const { withEventWriteLock } = require("./event-service");
 
@@ -646,6 +647,20 @@ async function runSafeRetention(simulationId, simulationTime) {
       retentionBudgetMs: POLICY.timeBudgetMs,
       retentionBudgetRemainingMs: retentionBudgetRemainingMs(simulationId)
     };
+    observability.recordRetentionSummary(simulationId,summary);
+    if (summary.retentionBacklogTotal > 0) {
+      logger.warn({
+        simulationId,
+        simulationTime,
+        event:"RETENTION_BACKLOG",
+        backlogRows:summary.retentionBacklogTotal,
+        needHistoryBacklog:summary.needHistoryBacklog,
+        emotionHistoryBacklog:summary.emotionHistoryBacklog,
+        actionBacklog:summary.actionBacklog,
+        actionDecisionSummaryBacklog:summary.actionDecisionSummaryBacklog,
+        retentionBudgetMs:summary.retentionBudgetMs
+      },"retention backlog remains after bounded cleanup");
+    }
     if (
       summary.decisionContextsCompacted ||
       summary.decisionOptionsDeleted ||
