@@ -21,9 +21,8 @@ const { maybeRunSafeRetention } = require("../services/safe-retention-service");
 const INTERRUPTIBLE_ACTIONS = new Set(["SLEEPING", "WORKING", "STUDYING"]);
 const CRITICAL_EVENT_PATTERNS = /DANGER|EMERGENCY|ACCIDENT|THREAT|CRISIS|EVACUATION|ATTACK|FIRE/i;
 const EXPECTED_ENTITY_CONDITION_CODES = new Set(["MOVEMENT_ORIGIN_REQUIRED","MOVEMENT_DESTINATION_REQUIRED","MOVEMENT_DESTINATION_UNREACHABLE","MOVEMENT_ALREADY_ACTIVE"]);
-const CRITICAL_RESOURCE_CONDITION_CODES = new Set(["CRITICAL_RESOURCE_RECOVERY_UNAVAILABLE","CRITICAL_ACTION_UNAVAILABLE"]);
 function isExpectedEntityCondition(err){return EXPECTED_ENTITY_CONDITION_CODES.has(String(err?.code||"").toUpperCase());}
-function isCriticalResourceCondition(err){return CRITICAL_RESOURCE_CONDITION_CODES.has(String(err?.code||"").toUpperCase());}
+function isCriticalResourceRecoveryUnavailable(err){return String(err?.code||"").toUpperCase()==="CRITICAL_RESOURCE_RECOVERY_UNAVAILABLE";}
 
 function getNeedDirection(code) {
   const normalized = String(code || "").toUpperCase();
@@ -218,7 +217,7 @@ class SimulationEngine {
           }
           } catch (err) {
             const errorContext={simulationId:sim.id,entityId,actionType,phase};
-            if (isCriticalResourceCondition(err)) {
+            if (isCriticalResourceRecoveryUnavailable(err)) {
               logger.warn(logger.contextError({
                 ...errorContext,
                 resource: err.resource || null,
@@ -230,7 +229,7 @@ class SimulationEngine {
                 const recovery = await ensureCriticalResourceAvailability(
                   sim.id,
                   nextTime.toISOString(),
-                  { entityId: id }
+                  { entityId: id, resources: [err.resource || "water"] }
                 );
 
                 if (recovery.recovered.length) {
@@ -269,9 +268,12 @@ class SimulationEngine {
               } catch (recoveryError) {
                 logger.error(logger.contextError({
                   ...errorContext,
-                  phase
+                  phase,
+                  recoveryResource: err.resource || null
                 }, recoveryError, "critical resource emergency recovery failed"));
               }
+            } else if (String(err?.code||"").toUpperCase()==="CRITICAL_ACTION_UNAVAILABLE") {
+              logger.warn(logger.contextError(errorContext,err,"critical action unavailable; actor remains active for the next tick"));
             } else if (isExpectedEntityCondition(err)) {
               logger.debug(logger.contextError(errorContext,err,"expected entity condition; actor skipped for this tick"));
             } else {
