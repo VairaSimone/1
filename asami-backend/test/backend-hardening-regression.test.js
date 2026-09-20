@@ -439,3 +439,20 @@ test('need and emotion retention stop cooperatively when the cycle time budget i
   }
   assert.match(source,/while \(deleted < POLICY\.maxDeletesPerTable && retentionBudgetAvailable\(simulationId\)/);
 });
+
+
+test('failed plan paths also cancel every remaining open step',()=>{
+  const source=read('services/planning-service.js');
+  const start=source.indexOf('async function advancePlanForAction');
+  const end=source.indexOf('\nmodule.exports=',start);
+  const section=source.slice(start,end);
+  const cancelIndex=section.indexOf("status='CANCELLED'",section.indexOf('failedSteps>0'));
+  assert.ok(cancelIndex>=0);
+  assert.match(section.slice(Math.max(0,cancelIndex-500),cancelIndex+700),/UPDATE plan_steps SET status='CANCELLED'/);
+  assert.match(section.slice(Math.max(0,cancelIndex-500),cancelIndex+1000),/status IN \('PENDING','ACTIVE','BLOCKED'\)/);
+});
+
+test('blocked goals remain visible in persisted simulation snapshots',()=>{
+  const source=read('repositories/simulation-repo.js');
+  assert.match(source,/g\.status IN \('DRAFT','ACTIVE','PAUSED','BLOCKED'\)/);
+});
