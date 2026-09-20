@@ -10,7 +10,7 @@ const actionService = require("../services/action-service");
 const { createMemory, decayMemories, buildActionMemory, buildFailureMemory } = require("../services/memory-service");
 const { generateWorldEvents } = require("../services/world-service");
 const { ensureWorld, evolveRelationships } = require("../services/world-population-service");
-const { seedPhysicalWorld } = require("../services/physical-world-service");
+const { seedPhysicalWorld, ensureCriticalResourceAvailability } = require("../services/physical-world-service");
 const { updateDevelopment } = require("../services/development-service");
 const { initiateConversation } = require("../services/chat-service");
 const { recordHabitEvidence } = require("../services/habit-service");
@@ -20,8 +20,10 @@ const { maybeRunSafeRetention } = require("../services/safe-retention-service");
 
 const INTERRUPTIBLE_ACTIONS = new Set(["SLEEPING", "WORKING", "STUDYING"]);
 const CRITICAL_EVENT_PATTERNS = /DANGER|EMERGENCY|ACCIDENT|THREAT|CRISIS|EVACUATION|ATTACK|FIRE/i;
-const EXPECTED_ENTITY_CONDITION_CODES = new Set(["CRITICAL_RESOURCE_RECOVERY_UNAVAILABLE","CRITICAL_ACTION_UNAVAILABLE","MOVEMENT_ORIGIN_REQUIRED","MOVEMENT_DESTINATION_REQUIRED","MOVEMENT_DESTINATION_UNREACHABLE","MOVEMENT_ALREADY_ACTIVE"]);
+const EXPECTED_ENTITY_CONDITION_CODES = new Set(["MOVEMENT_ORIGIN_REQUIRED","MOVEMENT_DESTINATION_REQUIRED","MOVEMENT_DESTINATION_UNREACHABLE","MOVEMENT_ALREADY_ACTIVE"]);
+const CRITICAL_RESOURCE_CONDITION_CODES = new Set(["CRITICAL_RESOURCE_RECOVERY_UNAVAILABLE","CRITICAL_ACTION_UNAVAILABLE"]);
 function isExpectedEntityCondition(err){return EXPECTED_ENTITY_CONDITION_CODES.has(String(err?.code||"").toUpperCase());}
+function isCriticalResourceCondition(err){return CRITICAL_RESOURCE_CONDITION_CODES.has(String(err?.code||"").toUpperCase());}
 
 function getNeedDirection(code) {
   const normalized = String(code || "").toUpperCase();
@@ -140,7 +142,17 @@ class SimulationEngine {
         const elapsedMinutes = Math.min(10080, Math.max(0, (nextTime - previousTime) / 60000));
         const lastMaintenance = this.worldMaintenanceAt.get(sim.id); const maintenanceDue = lastMaintenance === undefined || nextTime.getTime() - lastMaintenance >= 3600000;
         if (maintenanceDue) { phase = "world.initialize"; await ensureWorld(sim.id, nextTime); phase = "world.physical"; await seedPhysicalWorld(sim.id, nextTime); phase = "world.relationships"; await evolveRelationships(sim.id, nextTime); this.worldMaintenanceAt.set(sim.id, nextTime.getTime()); }
-        phase = "world.events"; await generateWorldEvents(sim.id, nextTime, tickId, elapsedMinutes); const actors = await autonomyService.findAutonomousActors(sim.id, env.MAX_ENTITIES_PER_TICK);
+        phase = "world.events"; await generateWorldEvents(sim.id, nextTime, tickId, elapsedMinutes);
+        phase = "world.resource_invariant";
+        const resourceInvariant = await ensureCriticalResourceAvailability(sim.id, nextTime.toISOString());
+        if (resourceInvariant.recovered.length) {
+          logger.warn({
+            simulationId: sim.id,
+            simulationTime: nextTime.toISOString(),
+            recoveredResources: resourceInvariant.recovered
+          }, "critical resource emergency recovery applied");
+        }
+        const actors = await autonomyService.findAutonomousActors(sim.id, env.MAX_ENTITIES_PER_TICK);
         for (const id of actors) {
           try {
           entityId = id; actionType = null; phase = "entity.state"; await ensureEntityState(entityId, nextTime);
@@ -206,8 +218,65 @@ class SimulationEngine {
           }
           } catch (err) {
             const errorContext={simulationId:sim.id,entityId,actionType,phase};
-            if(isExpectedEntityCondition(err)) logger.debug(logger.contextError(errorContext,err,"expected entity condition; actor skipped for this tick"));
-            else logger.error(logger.contextError(errorContext,err,"entity tick failed; actor skipped"));
+            if (isCriticalResourceCondition(err)) {
+              logger.warn(logger.contextError({
+                ...errorContext,
+                resource: err.resource || null,
+                needCode: err.needCode || null
+              }, err, "critical resource condition; attempting emergency recovery"));
+
+              try {
+                phase = "entity.resource_emergency";
+                const recovery = await ensureCriticalResourceAvailability(
+                  sim.id,
+                  nextTime.toISOString(),
+                  { entityId: id }
+                );
+
+                if (recovery.recovered.length) {
+                  logger.warn({
+                    simulationId: sim.id,
+                    entityId: id,
+                    simulationTime: nextTime.toISOString(),
+                    recoveredResources: recovery.recovered
+                  }, "entity resource emergency restored");
+                }
+
+                phase = "entity.resource_emergency.retry";
+                const retry = await autonomyService.actForEntity({
+                  simulationId: sim.id,
+                  entityId: id,
+                  simulationTime: nextTime.toISOString(),
+                  gemini: this.gemini
+                });
+
+                if (retry?.decision?.actionType && retry?.started?.actionId) {
+                  actionType = retry.decision.actionType;
+                  this.hub.publish(sim.id, "action.created", {
+                    entityId: id,
+                    decision: retry.decision,
+                    action: retry.started
+                  });
+                  continue;
+                }
+
+                logger.warn({
+                  simulationId: sim.id,
+                  entityId: id,
+                  simulationTime: nextTime.toISOString(),
+                  recoveryHealthy: recovery.healthy
+                }, "critical resource recovery did not produce an executable action");
+              } catch (recoveryError) {
+                logger.error(logger.contextError({
+                  ...errorContext,
+                  phase
+                }, recoveryError, "critical resource emergency recovery failed"));
+              }
+            } else if (isExpectedEntityCondition(err)) {
+              logger.debug(logger.contextError(errorContext,err,"expected entity condition; actor skipped for this tick"));
+            } else {
+              logger.error(logger.contextError(errorContext,err,"entity tick failed; actor skipped"));
+            }
           }
         }
         phase = "world.decay"; await decayMemories(sim.id, nextTime); this.tickCounter.set(sim.id, Number(this.tickCounter.get(sim.id) || 0) + 1);
