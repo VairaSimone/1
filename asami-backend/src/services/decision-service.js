@@ -668,7 +668,10 @@ async function makeDecision({
 
   if (criticalResourceRecovery) {
     chosenCandidate = criticalResourceRecovery.candidate;
-    selectionMode = "CRITICAL_RESOURCE_RECOVERY";
+    selectionMode =
+      criticalResourceRecovery.mode === "RESOURCE_EMERGENCY"
+        ? "RESOURCE_EMERGENCY"
+        : "CRITICAL_RESOURCE_RECOVERY";
   } else if (criticalAction) {
     const criticalCandidate = candidates.find(
       candidate =>
@@ -730,7 +733,9 @@ async function makeDecision({
   let reason;
   if (criticalResourceRecovery) {
     reason =
-      "critical resource recovery: " +
+      (criticalResourceRecovery.mode === "RESOURCE_EMERGENCY"
+        ? "RESOURCE_EMERGENCY: "
+        : "critical resource recovery: ") +
       criticalResourceRecovery.critical.code +
       " -> " +
       chosen;
