@@ -189,6 +189,15 @@ async function ensureResourceReserveAtLocation({simulationId,locationId,resource
   return result;
 }
 
+async function isCriticalResourceReachable(simulationId,entityId,resource){
+  if(!simulationId||!entityId||!Object.prototype.hasOwnProperty.call(CRITICAL_RESOURCE_RESERVES,resource))return false;
+  const locations=await loadActiveLocations(simulationId);
+  if(!locations.length)return false;
+  const actorLocations=await loadActorLocationIds(simulationId,entityId);
+  const originId=actorLocations[0];
+  return Boolean(originId&&findReachableResource(locations,originId,resource));
+}
+
 async function ensureCriticalResourceAvailability(simulationId,simulationTime,{entityId=null,resources=Object.keys(CRITICAL_RESOURCE_RESERVES)}={}){
   let locations=await loadActiveLocations(simulationId);
   if(!locations.length)return{recovered:[],checked:[],healthy:false};
@@ -299,6 +308,7 @@ module.exports={
   ensureResourceReserveAtLocation,
   findReachableResource,
   reachableLocations,
+  isCriticalResourceReachable,
   CRITICAL_RESOURCE_RESERVES,
   RESOURCE_EMERGENCY_TTL_MINUTES,
   LOCATION_RESOURCES,
