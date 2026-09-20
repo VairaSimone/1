@@ -615,3 +615,51 @@ test('environmental scheduling has an overdue-vital-event path',()=>{
   assert.match(world,/isVitalEnvironmentalEventDue/);
   assert.match(world,/vitalDue/);
 });
+
+
+test('autonomy builds the heavy decision context in batch for the whole tick',()=>{
+  const decision=read('services/decision-service.js');
+  const autonomy=read('services/autonomy-service.js');
+  const engine=read('simulation/engine.js');
+  assert.match(decision,/async function buildDecisionContexts\(simulationId,entityIds=/);
+  assert.match(decision,/PARTITION BY entity_id/);
+  assert.match(decision,/entity_id IN \(\$\{placeholders\}\)/);
+  assert.match(autonomy,/prepareTickAutonomyContext/);
+  assert.match(autonomy,/recallContexts\(/);
+  assert.match(autonomy,/buildSocialContexts\(/);
+  assert.match(engine,/autonomyService\.prepareTickAutonomyContext/);
+  assert.match(engine,/batchContext: autonomyBatchContext/);
+});
+
+test('batched cognitive profiles preserve per-actor memory and plan limits',()=>{
+  const source=read('services/personality-service.js');
+  const start=source.indexOf('async function getCognitiveProfiles');
+  const end=source.indexOf('\nasync function updateMentalState',start);
+  const section=source.slice(start,end);
+  for(const limit of [24,24,24,16,8]) assert.match(section,new RegExp('rn<='+limit));
+  assert.match(section,/ROW_NUMBER\(\) OVER\(PARTITION BY entity_id/);
+});
+
+test('batched memory recall updates selected memories with one set-based write',()=>{
+  const source=read('services/memory-service.js');
+  const start=source.indexOf('async function recallContexts');
+  const end=source.indexOf('\nasync function recallContext',start);
+  const section=source.slice(start,end);
+  assert.match(section,/ROW_NUMBER\(\) OVER\(PARTITION BY entity_id/);
+  assert.match(section,/id IN \(\$\{selectedPlaceholders\}\)/);
+  assert.doesNotMatch(section,/for\(const id of selectedIds\)await pool\.query/);
+});
+
+test('batched autonomy refreshes only mutable physiological state before deciding',()=>{
+  const source=read('services/autonomy-service.js');
+  assert.match(source,/latestNeeds=await readNeeds\(entityId\)/);
+  assert.match(source,/rebuildDecisionCandidates/);
+  assert.match(source,/recoveryBlocks:decisionService\.activeRecoveryBlocks/);
+});
+
+test('batched decision context keeps resource-unavailable knowledge semantics',()=>{
+  const source=read('services/decision-service.js');
+  assert.match(source,/RESOURCE_UNAVAILABLE/);
+  assert.match(source,/resourceKnowledge/);
+  assert.match(source,/recentlyBlocked:Boolean\(blockedResources\[resource\]\)/);
+});
