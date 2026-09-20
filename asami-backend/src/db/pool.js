@@ -155,8 +155,23 @@ async function pingWithRetry({ attempts = env.DB_RETRY_ATTEMPTS, throwNonTransie
   return false;
 }
 
+async function getConnectionWithRetry({ attempts = env.DB_RETRY_ATTEMPTS } = {}) {
+  const totalAttempts = Math.max(1, Math.floor(Number(attempts) || 1));
+  let lastError = null;
+  for (let attempt = 0; attempt < totalAttempts; attempt += 1) {
+    try {
+      return await pool.getConnection();
+    } catch (err) {
+      lastError = err;
+      if (!isTransientDatabaseError(err) || attempt >= totalAttempts - 1) throw err;
+      await sleep(retryDelayMs(attempt));
+    }
+  }
+  throw lastError || new Error("Database connection acquisition failed");
+}
+
 async function withTransaction(fn) {
-  const conn = await pool.getConnection();
+  const conn = await getConnectionWithRetry();
   try {
     await conn.beginTransaction();
     const result = await fn(conn);
@@ -183,5 +198,6 @@ module.exports = {
   normalizeSimulationTimestamp,
   normalizeMysqlValues,
   isTransientDatabaseError,
-  getDatabaseHealth
+  getDatabaseHealth,
+  getConnectionWithRetry
 };
