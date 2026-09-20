@@ -240,7 +240,7 @@ async function buildDecisionContext(simulationId,entityId,simulationTime=null){l
 function rebuildDecisionCandidates(context={},entityId,needs=context?.needs||[]){
   const traits=context.traits||[],profile=context.cognitiveProfile||{},resourceContext=context.resourceContext||{};
   let candidates=ACTIONS.map(action=>({action,score:scoreAction(action,needs,traits,resourceContext)}));
-  candidates=candidates.map(c=>({...c,score:Number(c.score||0)+cognitiveDecisionModifier(profile,c.action)+Math.max(-MAX_EXPERIENCE_SCORE_EFFECT,Math.min(MAX_EXPERIENCE_SCORE_EFFECT,cognitiveExperienceModifier(profile,c.action,{locationType:context.location?.locationType,locationId:context.location?.locationId,simulationTime:context.simulationTime}))}));
+  candidates=candidates.map(c=>({...c,score:Number(c.score||0)+cognitiveDecisionModifier(profile,c.action)+Math.max(-MAX_EXPERIENCE_SCORE_EFFECT,Math.min(MAX_EXPERIENCE_SCORE_EFFECT,cognitiveExperienceModifier(profile,c.action,{locationType:context.location?.locationType,locationId:context.location?.locationId,simulationTime:context.simulationTime})))}));
   candidates=applyIndividualityBias(candidates,entityId);candidates=applyPlanBias(candidates,profile.plans);candidates=applyRecentActionPenalty(candidates,context.recentActions||[]);candidates=applyLocationBias(candidates,context.location);candidates=applyResourceRoutingBias(candidates,resourceContext,needs);
   const recoveryBlocks=Array.isArray(context.recoveryBlocks)?context.recoveryBlocks:activeRecoveryBlocks(context.recentInterruptions||[],needs);
   return applyRecoveryBlocks(candidates,recoveryBlocks,criticalProtectedActions(needs,resourceContext));
