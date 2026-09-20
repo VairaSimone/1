@@ -7,8 +7,9 @@ require("./services/development-duration-bootstrap").install();
 require("./services/decision-sql-compat-bootstrap").install();
 require("./services/action-runtime-bootstrap").install();
 require("./services/behavior-fix-bootstrap").install();
-const { ensureDatabase }=require("./db/database-init");
-const { ping,close }=require("./db/pool");
+const { ensureDatabaseWithRetry }=require("./db/database-init");
+const { pingWithRetry,close,getDatabaseHealth }=require("./db/pool");
+const { ensurePlanningStatusMigrations }=require("./db/schema-migrations");
 const { bootstrapCoreDefinitions }=require("./services/bootstrap-service");
 const { GeminiService }=require("./ai/gemini");
 const { RealtimeHub }=require("./realtime/hub");
@@ -16,8 +17,12 @@ const cognitiveV2=require("./services/cognitive-v2-bootstrap");
 const cognitiveV3=require("./services/cognitive-v3-bootstrap");
 
 async function main(){
-  await ensureDatabase();
-  await ping();
+  await ensureDatabaseWithRetry();
+  await pingWithRetry();
+  const planningMigration = await ensurePlanningStatusMigrations();
+  if (planningMigration.changed.length) {
+    logger.info({ changed: planningMigration.changed }, "planning status schema migrations applied");
+  }
   const staleTicks=await require("./repositories/simulation-repo").reconcileStaleRunningTicks();
   if(staleTicks) logger.warn({staleTicks},"stale simulation ticks reconciled at startup");
   await bootstrapCoreDefinitions();
