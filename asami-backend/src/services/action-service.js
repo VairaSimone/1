@@ -49,18 +49,13 @@ async function routeDetails(simulationId,originId,targetId){return shortestRoute
 async function getActiveRelationshipType(simulationId,sourceEntityId,targetEntityId){const[rows]=await pool.query(`SELECT rt.code AS type FROM relationships r JOIN relationship_types rt ON rt.id=r.relationship_type_id WHERE r.status='ACTIVE' AND ((r.source_entity_id=UUID_TO_BIN(?) AND r.target_entity_id=UUID_TO_BIN(?)) OR (r.source_entity_id=UUID_TO_BIN(?) AND r.target_entity_id=UUID_TO_BIN(?))) ORDER BY CASE rt.code WHEN 'PARTNER' THEN 3 WHEN 'FRIEND' THEN 2 WHEN 'ACQUAINTANCE' THEN 1 ELSE 0 END DESC LIMIT 1`,[sourceEntityId,targetEntityId,targetEntityId,sourceEntityId]);return rows[0]?.type||"ACQUAINTANCE";}
 async function getActiveAction(entityId,simulationId){const[rows]=await pool.query(`SELECT BIN_TO_UUID(id) AS id,action_type AS actionType,started_simulation_at AS startedSimulationAt,completed_simulation_at AS completedSimulationAt,BIN_TO_UUID(decision_id) AS decisionId,BIN_TO_UUID(source_intention_id) AS intentionId,target,parameters,result,version FROM actions WHERE entity_id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?) AND status='ACTIVE' ORDER BY started_simulation_at DESC LIMIT 1`,[entityId,simulationId]);const action=rows[0]||null;if(!action)return null;for(const key of ["parameters","result"]){if(Buffer.isBuffer(action[key]))action[key]=action[key].toString();if(typeof action[key]==="string")action[key]=parseJson(action[key],{});}if(Buffer.isBuffer(action.target))action.target=action.target.toString();action.metadata={...(action.parameters||{}),...(action.result||{})};return action;}
 async function startMovement({simulationId,entityId,origin,destination,simulationTime,distanceMeters,speedKmh}){
-  const conn=await pool.getConnection();
-  try{
-    await conn.beginTransaction();
+  return withTransaction(async conn=>{
     const [locationRows]=await conn.query(
       `SELECT location_id FROM entity_locations_current
        WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) LIMIT 1 FOR UPDATE`,
       [simulationId,entityId]
     );
-    if(!locationRows.length){
-      await conn.rollback();
-      return null;
-    }
+    if(!locationRows.length)return null;
     const [existing]=await conn.query(
       `SELECT id FROM movements
        WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?)
@@ -68,31 +63,21 @@ async function startMovement({simulationId,entityId,origin,destination,simulatio
        LIMIT 1 FOR UPDATE`,
       [simulationId,entityId]
     );
-    if(existing.length){
-      await conn.rollback();
-      return null;
-    }
-    const startedSimulationAt=normalizeSimulationTimestamp(simulationTime),
-      safeDistance=Math.max(5,Number(distanceMeters)||5),
-      safeSpeed=Math.max(1,Number(speedKmh)||WALKING_SPEED_KMH),
-      durationMinutes=Math.max(2,(safeDistance/1000/safeSpeed)*60),
-      expectedArrival=new Date(new Date(simulationTime).getTime()+durationMinutes*60000),
-      movementId=uuid();
+    if(existing.length)return null;
+    const startedSimulationAt=normalizeSimulationTimestamp(simulationTime);
+    const safeDistance=Math.max(5,Number(distanceMeters)||5);
+    const safeSpeed=Math.max(1,Number(speedKmh)||WALKING_SPEED_KMH);
+    const durationMinutes=Math.max(2,(safeDistance/1000/safeSpeed)*60);
+    const expectedArrival=new Date(new Date(simulationTime).getTime()+durationMinutes*60000);
+    const movementId=uuid();
     await conn.query(
       `INSERT INTO movements(id,simulation_id,entity_id,origin_location_id,destination_location_id,started_simulation_at,expected_arrival_simulation_at,status,reason,source_activity_id,version)
        VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,'ACTIVE','autonomous route',NULL,1)`,
       [movementId,simulationId,entityId,origin,destination,startedSimulationAt,expectedArrival]
     );
-    await conn.commit();
     return{movementId,durationMinutes,expectedArrival,distanceMeters:safeDistance,speedKmh:safeSpeed};
-  }catch(err){
-    try{await conn.rollback();}catch{}
-    throw err;
-  }finally{
-    conn.release();
-  }
+  });
 }
-
 async function completeMovement({simulationId,entityId,destination,movementId=null,simulationTime,db=pool}){const query=movementId?`SELECT BIN_TO_UUID(id) AS id,BIN_TO_UUID(origin_location_id) AS originLocationId,BIN_TO_UUID(destination_location_id) AS destinationLocationId,version FROM movements WHERE simulation_id=UUID_TO_BIN(?) AND id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND status='ACTIVE' LIMIT 1`:`SELECT BIN_TO_UUID(id) AS id,BIN_TO_UUID(origin_location_id) AS originLocationId,BIN_TO_UUID(destination_location_id) AS destinationLocationId,version FROM movements WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND destination_location_id=UUID_TO_BIN(?) AND status='ACTIVE' ORDER BY started_simulation_at DESC LIMIT 1`;const params=movementId?[simulationId,movementId,entityId]:[simulationId,entityId,destination],[rows]=await db.query(query,params);if(!rows.length)return false;const movement=rows[0],resolvedDestination=movement.destinationLocationId||destination;if(!resolvedDestination)return false;const[updated]=await db.query(`UPDATE movements SET status='COMPLETED',actual_arrival_simulation_at=?,version=version+1 WHERE simulation_id=UUID_TO_BIN(?) AND id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND status='ACTIVE' AND version=?`,[simulationTime,simulationId,movement.id,entityId,movement.version]);if(!updated.affectedRows)return false;await db.query(`INSERT INTO entity_location_history(id,simulation_id,entity_id,location_id,entered_simulation_at,reason,source_event_id) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,'AUTONOMOUS',NULL)`,[uuid(),simulationId,entityId,resolvedDestination,simulationTime]);await db.query(`UPDATE entity_location_history SET exited_simulation_at=? WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND exited_simulation_at IS NULL AND entered_simulation_at<?`,[simulationTime,simulationId,entityId,simulationTime]);await db.query(`INSERT INTO entity_locations_current(entity_id,simulation_id,location_id,since_simulation_at,reason,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,'AUTONOMOUS',1) ON DUPLICATE KEY UPDATE location_id=VALUES(location_id),since_simulation_at=VALUES(since_simulation_at),reason=VALUES(reason),version=version+1`,[entityId,simulationId,resolvedDestination,simulationTime]);return true;}
 async function startAction({simulationId,entityId,decisionId,intentionId=null,actionType,simulationTime,targetEntityId=null,targetLocationId=null,relationshipIntent="NONE",tickId=null}){
   if(decisionId){
