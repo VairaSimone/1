@@ -232,7 +232,8 @@ async function compactOldActionDecisionSummaries(conn, simulationId, simulationT
          AND JSON_EXTRACT(d.actual_outcome,'$.actionSummary') IS NULL`,
       [simulationId, cutoff]
     );
-    return { candidates: Number(rows[0]?.candidates || 0), updated: 0, dryRun: true };
+    const candidates=Number(rows[0]?.candidates || 0);
+    return { candidates, updated: 0, remainingCandidates: candidates, dryRun: true };
   }
   let updated = 0;
   while (updated < maxUpdates && retentionBudgetAvailable(simulationId)) {
