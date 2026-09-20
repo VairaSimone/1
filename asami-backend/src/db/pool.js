@@ -1,6 +1,60 @@
 const mysql = require("mysql2/promise");
 const { env } = require("../config/env");
 
+const TRANSIENT_DB_ERRORS = new Set([
+  "PROTOCOL_CONNECTION_LOST",
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "EPIPE",
+  "ETIMEDOUT",
+  "EAI_AGAIN",
+  "ENETUNREACH",
+  "EHOSTUNREACH"
+]);
+const databaseHealth = {
+  status: "UNKNOWN",
+  lastTransitionAt: 0,
+  lastErrorCode: null,
+  consecutiveFailures: 0
+};
+
+function isTransientDatabaseError(err) {
+  return TRANSIENT_DB_ERRORS.has(String(err?.code || "").toUpperCase());
+}
+
+function markDatabaseHealthy() {
+  if (databaseHealth.status !== "HEALTHY") {
+    databaseHealth.lastTransitionAt = Date.now();
+  }
+  databaseHealth.status = "HEALTHY";
+  databaseHealth.lastErrorCode = null;
+  databaseHealth.consecutiveFailures = 0;
+}
+
+function markDatabaseDegraded(err = null) {
+  const code = String(err?.code || "").toUpperCase() || "UNKNOWN_DB_ERROR";
+  databaseHealth.status = "DEGRADED";
+  databaseHealth.lastTransitionAt = Date.now();
+  databaseHealth.lastErrorCode = code;
+  databaseHealth.consecutiveFailures += 1;
+}
+
+function getDatabaseHealth() {
+  return { ...databaseHealth };
+}
+
+function retryDelayMs(attempt) {
+  const base = Math.max(25, Number(env.DB_RETRY_BASE_MS) || 250);
+  const maximum = Math.max(base, Number(env.DB_RETRY_MAX_MS) || 5000);
+  const exponential = Math.min(maximum, base * (2 ** Math.max(0, attempt)));
+  const jitter = exponential * 0.2 * Math.random();
+  return Math.min(maximum, Math.round(exponential + jitter));
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, Math.max(0, ms)));
+}
+
 function normalizeSimulationTimestamp(value) {
   if (typeof value !== "string") return value;
   const trimmed = value.trim();
@@ -46,19 +100,59 @@ const pool = mysql.createPool({
 });
 
 const originalPoolQuery = pool.query.bind(pool);
-pool.query = (sql, values) => originalPoolQuery(sql, normalizeMysqlValues(values));
+pool.query = async (sql, values) => {
+  try {
+    const result = await originalPoolQuery(sql, normalizeMysqlValues(values));
+    markDatabaseHealthy();
+    return result;
+  } catch (err) {
+    if (isTransientDatabaseError(err)) markDatabaseDegraded(err);
+    throw err;
+  }
+};
 
 const originalGetConnection = pool.getConnection.bind(pool);
 pool.getConnection = async () => {
-  const conn = await originalGetConnection();
-  const originalConnectionQuery = conn.query.bind(conn);
-  conn.query = (sql, values) => originalConnectionQuery(sql, normalizeMysqlValues(values));
-  return conn;
+  try {
+    const conn = await originalGetConnection();
+    const originalConnectionQuery = conn.query.bind(conn);
+    conn.query = async (sql, values) => {
+      try {
+        const result = await originalConnectionQuery(sql, normalizeMysqlValues(values));
+        markDatabaseHealthy();
+        return result;
+      } catch (err) {
+        if (isTransientDatabaseError(err)) markDatabaseDegraded(err);
+        throw err;
+      }
+    };
+    markDatabaseHealthy();
+    return conn;
+  } catch (err) {
+    if (isTransientDatabaseError(err)) markDatabaseDegraded(err);
+    throw err;
+  }
 };
 
 async function ping() {
   const [rows] = await pool.query("SELECT 1 AS ok");
-  return rows[0]?.ok === 1;
+  const healthy = rows[0]?.ok === 1;
+  if (healthy) markDatabaseHealthy();
+  return healthy;
+}
+
+async function pingWithRetry({ attempts = env.DB_RETRY_ATTEMPTS, throwNonTransient = true } = {}) {
+  const totalAttempts = Math.max(1, Math.floor(Number(attempts) || 1));
+  for (let attempt = 0; attempt < totalAttempts; attempt += 1) {
+    try {
+      if (await ping()) return true;
+    } catch (err) {
+      if (!isTransientDatabaseError(err) && throwNonTransient) throw err;
+      if (isTransientDatabaseError(err)) markDatabaseDegraded(err);
+    }
+    if (attempt < totalAttempts - 1) await sleep(retryDelayMs(attempt));
+  }
+  return false;
 }
 
 async function withTransaction(fn) {
@@ -80,4 +174,14 @@ async function close() {
   await pool.end();
 }
 
-module.exports = { pool, ping, withTransaction, close, normalizeSimulationTimestamp, normalizeMysqlValues };
+module.exports = {
+  pool,
+  ping,
+  pingWithRetry,
+  withTransaction,
+  close,
+  normalizeSimulationTimestamp,
+  normalizeMysqlValues,
+  isTransientDatabaseError,
+  getDatabaseHealth
+};
