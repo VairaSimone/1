@@ -84,6 +84,48 @@ function actorKey(simulationId,entityId) {
   return String(simulationId)+":"+String(entityId);
 }
 
+function recordGoalProgress(simulationId,entityId,simulationTime,{goalId,progress=0,status="ACTIVE",actionType=null}={}){
+  if(!simulationId||!entityId||!goalId)return null;
+  const now=parseSimulationMs(simulationTime);
+  if(now===null)return null;
+  const key="goal:"+actorKey(simulationId,goalId);
+  const previous=actorStates.get(key)||{
+    lastProgress:Number(progress)||0,
+    lastProgressAt:now,
+    lastActivityAt:now
+  };
+  const numericProgress=Math.max(0,Math.min(1,Number(progress)||0));
+  const previousProgress=Number(previous.lastProgress||0);
+  const progressed=numericProgress>previousProgress+0.0001;
+  const active=!["COMPLETED","FAILED","CANCELLED","ABANDONED"].includes(String(status||"").toUpperCase());
+  if(progressed){
+    previous.lastProgress=numericProgress;
+    previous.lastProgressAt=now;
+  }
+  if(actionType)previous.lastActivityAt=now;
+  actorStates.set(key,previous);
+  if(!active)return null;
+  const stagnantHours=Math.max(0,(now-Number(previous.lastProgressAt||now))/3600000);
+  const activityHours=Math.max(0,(now-Number(previous.lastActivityAt||now))/3600000);
+  const threshold=Math.max(1,Number(env.GOAL_STAGNATION_ALERT_HOURS)||24);
+  if(stagnantHours<threshold||!actionType)return null;
+  const alertKey=key+":alert";
+  const lastAlert=Number(actorStates.get(alertKey)?.lastAlertAt||0);
+  const repeat=Math.max(1,Number(env.GOAL_STAGNATION_ALERT_REPEAT_HOURS)||12);
+  if(lastAlert&&now-lastAlert<repeat*3600000)return null;
+  actorStates.set(alertKey,{lastAlertAt:now});
+  increment(simulationId,"goal_stagnation_total");
+  return {
+    entityId,
+    goalId,
+    simulationTime,
+    progress:numericProgress,
+    stagnantHours:Number(stagnantHours.toFixed(2)),
+    activityHours:Number(activityHours.toFixed(2)),
+    actionType
+  };
+}
+
 function recordActorTick(simulationId,entityId,simulationTime,{active=false,criticalNeed=false}={}) {
   if (!simulationId || !entityId) return null;
   const now=parseSimulationMs(simulationTime);
@@ -159,6 +201,7 @@ module.exports={
   recordGoalBlocked,
   recordRecoveryFailed,
   recordRetentionSummary,
+  recordGoalProgress,
   recordActorTick,
   snapshot,
   logSnapshot
