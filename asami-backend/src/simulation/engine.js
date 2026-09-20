@@ -420,7 +420,7 @@ class SimulationEngine {
           observability.recordRecoveryFailed(sim.id);
           logger.error({
             simulationId:sim.id,
-            simulationTime:nextTime?.toISOString?.()||null,
+            simulationTime:context.simulationTime||null,
             event:"RECOVERY_FAILED",
             resource:err.resource||null,
             phase
