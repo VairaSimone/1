@@ -11,6 +11,9 @@ const TRANSIENT_DB_ERRORS = new Set([
   "ENETUNREACH",
   "EHOSTUNREACH"
 ]);
+const DEADLOCK_ERRORS = new Set(["ER_LOCK_DEADLOCK", "ER_LOCK_WAIT_TIMEOUT"]);
+const DB_TRANSACTION_RETRY_ATTEMPTS = Math.max(1, Math.min(5, Number(process.env.DB_TRANSACTION_RETRY_ATTEMPTS) || 3));
+
 const databaseHealth = {
   status: "UNKNOWN",
   lastTransitionAt: 0,
@@ -170,19 +173,29 @@ async function getConnectionWithRetry({ attempts = env.DB_RETRY_ATTEMPTS } = {})
   throw lastError || new Error("Database connection acquisition failed");
 }
 
-async function withTransaction(fn) {
-  const conn = await getConnectionWithRetry();
-  try {
-    await conn.beginTransaction();
-    const result = await fn(conn);
-    await conn.commit();
-    return result;
-  } catch (err) {
-    try { await conn.rollback(); } catch {}
-    throw err;
-  } finally {
-    conn.release();
+async function withTransaction(fn, { retryAttempts = DB_TRANSACTION_RETRY_ATTEMPTS } = {}) {
+  const totalAttempts=Math.max(1,Math.min(5,Math.floor(Number(retryAttempts)||1)));
+  let lastError=null;
+  for(let attempt=0;attempt<totalAttempts;attempt+=1){
+    const conn = await getConnectionWithRetry();
+    let committed=false;
+    try {
+      await conn.beginTransaction();
+      const result = await fn(conn);
+      await conn.commit();
+      committed=true;
+      return result;
+    } catch (err) {
+      lastError=err;
+      try { if(!committed) await conn.rollback(); } catch {}
+      const retryable=DEADLOCK_ERRORS.has(String(err?.code||"").toUpperCase()) && attempt<totalAttempts-1;
+      if(!retryable) throw err;
+      await sleep(retryDelayMs(attempt));
+    } finally {
+      conn.release();
+    }
   }
+  throw lastError || new Error("Database transaction failed");
 }
 
 async function close() {
@@ -199,5 +212,6 @@ module.exports = {
   normalizeMysqlValues,
   isTransientDatabaseError,
   getDatabaseHealth,
-  getConnectionWithRetry
+  getConnectionWithRetry,
+  DEADLOCK_ERRORS
 };
