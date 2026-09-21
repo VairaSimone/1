@@ -52,6 +52,7 @@ test("retention wires all high-growth tables and deletes events before actions",
     "deleteOldNeedHistory",
     "deleteOldEmotionHistory",
     "deleteOldEvents",
+    "compactOldActionDecisionSummaries",
     "deleteOldActions",
     "archiveStaleMemories",
     "deleteOldMemories"
@@ -61,8 +62,12 @@ test("retention wires all high-growth tables and deletes events before actions",
   }
 
   assert.ok(
-    source.indexOf("const events = await deleteOldEvents") <
-    source.indexOf("const actions = await deleteOldActions")
+    source.indexOf("deleteOldEvents(conn, simulationId, mysqlSimulationTime)") <
+    source.indexOf("compactOldActionDecisionSummaries(lock.conn, simulationId, mysqlSimulationTime)")
+  );
+  assert.ok(
+    source.indexOf("compactOldActionDecisionSummaries(lock.conn, simulationId, mysqlSimulationTime)") <
+    source.indexOf("deleteOldActions(lock.conn, simulationId, mysqlSimulationTime)")
   );
   assert.match(
     source,
