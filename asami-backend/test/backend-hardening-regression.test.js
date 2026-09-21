@@ -169,8 +169,7 @@ test('entity need persistence is serialized and current plus history share one t
   const source=read('services/state-service.js');
   assert.match(source,/async function withEntityStateLock\(entityId, fn\)/);
   assert.match(source,/GET_LOCK\(\?,\?\)/);
-  assert.match(source,/await conn\.beginTransaction\(\)/);
-  assert.match(source,/await conn\.commit\(\)/);
+  assert.match(source,/withTransaction\(fn, \{ connection: conn \}\)/);
   assert.match(source,/SELECT RELEASE_LOCK/);
   assert.match(source,/async function persistNeedTransition\([\s\S]*db = pool/);
   const updateStart=source.indexOf('async function updateNeeds(');
