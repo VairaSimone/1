@@ -219,7 +219,7 @@ async function createMemory({ simulationId, entityId, eventId = null, activityId
   if (memoryKind === "action_outcome" && !isSalientActionOutcome({ metadata, importance, emotionalIntensity })) {
     const routine = await upsertRoutineActionMemory({ simulationId, entityId, locationId, importance, strength, confidence, emotionalIntensity, simulationAt, metadata });
     if (routine && routine.isNew) {
-      metadata = routine.metadata; content = routine.content; type = routine.type; importance = routine.importance; strength = routine.strength; confidence = routine.confidence; emotionalIntensity = routine.emotionalIntensity;
+      metadata = routine.metadata; content = routine.content; type = routine.type; importance = routine.importance; strength = routine.strength; confidence = routine.confidence; emotionalIntensity = routine.emotionalIntensity; dedupeKey = null;
     } else if (routine) return routine;
   }
   if (dedupeKey && type === "EPISODIC") {
