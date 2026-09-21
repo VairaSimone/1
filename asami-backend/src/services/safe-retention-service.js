@@ -802,7 +802,40 @@ async function runSafeRetention(simulationId, simulationTime) {
       summary.retentionBacklogTotal > 0 ||
       POLICY.dryRun
     ) {
-      logger.info(summary, "safe retention cycle completed");
+      const changes = {};
+      const changeFields = [
+        ["contexts",summary.decisionContextsCompacted],
+        ["options",summary.decisionOptionsDeleted],
+        ["events",summary.eventsDeleted],
+        ["actionSummaries",summary.actionDecisionSummariesUpdated],
+        ["actions",summary.actionsDeleted],
+        ["needHistory",summary.needHistoryDeleted],
+        ["emotionHistory",summary.emotionHistoryDeleted],
+        ["memoryDedupe",summary.memoriesDeduped],
+        ["memoryCapArchived",summary.episodicMemoryCapArchived],
+        ["expectationCaps",summary.cognitiveExpectationsCapped],
+        ["counterfactualCaps",summary.counterfactualsCapped],
+        ["counterfactualWorldCaps",summary.counterfactualWorldsCapped],
+        ["relationshipHistory",summary.relationshipHistoryDeleted],
+        ["dedupeBackfilled",summary.memoryDedupeBackfilled],
+        ["memoriesArchived",summary.memoriesArchived],
+        ["memoriesDeleted",summary.memoriesDeleted],
+        ["expectationsDeleted",summary.expectationsDeleted],
+        ["counterfactualsDeleted",summary.counterfactualsDeleted],
+        ["counterfactualWorldsDeleted",summary.counterfactualWorldsDeleted]
+      ];
+      for (const [key,value] of changeFields) {
+        if (Number(value) > 0) changes[key]=Number(value);
+      }
+      logger.info({
+        simulationId,
+        simulationTime,
+        changes,
+        backlogRows:summary.retentionBacklogTotal,
+        budgetMs:summary.retentionBudgetMs,
+        budgetRemainingMs:summary.retentionBudgetRemainingMs
+      },"retention cycle");
+      logger.debug(summary,"retention cycle detail");
     }
     return summary;
   } finally {
