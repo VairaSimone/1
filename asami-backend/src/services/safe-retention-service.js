@@ -390,8 +390,7 @@ async function deleteUnselectedDecisionOptions(conn, simulationId, simulationTim
     "AND dopt.id <> d.selected_option_id " +
     "AND d.simulation_time < ? " +
     "LIMIT " + limit;
-  if (POLICY.dryRun) {
-    const countSql =
+  const countSql =
       "SELECT COUNT(*) AS candidates FROM decision_options dopt " +
       "JOIN decisions d ON d.id=dopt.decision_id " +
       "WHERE d.simulation_id=UUID_TO_BIN(?) " +
@@ -399,6 +398,7 @@ async function deleteUnselectedDecisionOptions(conn, simulationId, simulationTim
       "AND d.selected_option_id IS NOT NULL " +
       "AND dopt.id <> d.selected_option_id " +
       "AND d.simulation_time < ?";
+  if (POLICY.dryRun) {
     const [rows] = await conn.query(countSql, [simulationId, cutoff]);
     return { candidates: Number(rows[0]?.candidates || 0), deleted: 0, dryRun: true };
   }
@@ -434,8 +434,7 @@ async function deleteResolvedExpectations(conn, simulationId, simulationTime) {
     "AND d.simulation_time < ? " +
     "AND ce.resolved_simulation_at < ? " +
     "LIMIT " + limit;
-  if (POLICY.dryRun) {
-    const countSql =
+  const countSql =
       "SELECT COUNT(*) AS candidates FROM cognitive_expectations ce " +
       "JOIN decisions d ON d.id=ce.decision_id " +
       "WHERE ce.simulation_id=UUID_TO_BIN(?) " +
@@ -443,6 +442,7 @@ async function deleteResolvedExpectations(conn, simulationId, simulationTime) {
       "AND d.status IN ('EXECUTED','FAILED','CANCELLED') " +
       "AND d.simulation_time < ? " +
       "AND ce.resolved_simulation_at < ?";
+  if (POLICY.dryRun) {
     const [rows] = await conn.query(countSql, [simulationId, cutoff, cutoff]);
     return { candidates: Number(rows[0]?.candidates || 0), deleted: 0, dryRun: true };
   }
@@ -476,13 +476,13 @@ async function deleteResolvedCounterfactuals(conn, simulationId, simulationTime)
     "AND d.status IN ('EXECUTED','FAILED','CANCELLED') " +
     "AND d.simulation_time < ? " +
     "LIMIT " + limit;
-  if (POLICY.dryRun) {
-    const countSql =
+  const countSql =
       "SELECT COUNT(*) AS candidates FROM counterfactuals cf " +
       "JOIN decisions d ON d.id=cf.decision_id " +
       "WHERE cf.simulation_id=UUID_TO_BIN(?) " +
       "AND d.status IN ('EXECUTED','FAILED','CANCELLED') " +
       "AND d.simulation_time < ?";
+  if (POLICY.dryRun) {
     const [rows] = await conn.query(countSql, [simulationId, cutoff]);
     return { candidates: Number(rows[0]?.candidates || 0), deleted: 0, dryRun: true };
   }
@@ -518,8 +518,7 @@ async function deleteResolvedCounterfactualWorlds(conn, simulationId, simulation
     "AND d.simulation_time < ? " +
     "AND cw.resolved_simulation_at < ? " +
     "LIMIT " + limit;
-  if (POLICY.dryRun) {
-    const countSql =
+  const countSql =
       "SELECT COUNT(*) AS candidates FROM counterfactual_worlds cw " +
       "JOIN decisions d ON d.id=cw.decision_id " +
       "WHERE cw.simulation_id=UUID_TO_BIN(?) " +
@@ -527,6 +526,7 @@ async function deleteResolvedCounterfactualWorlds(conn, simulationId, simulation
       "AND d.status IN ('EXECUTED','FAILED','CANCELLED') " +
       "AND d.simulation_time < ? " +
       "AND cw.resolved_simulation_at < ?";
+  if (POLICY.dryRun) {
     const [rows] = await conn.query(countSql, [simulationId, cutoff, cutoff]);
     return { candidates: Number(rows[0]?.candidates || 0), deleted: 0, dryRun: true };
   }
