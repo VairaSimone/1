@@ -35,6 +35,12 @@ const POLICY = Object.freeze({
   memoryArchiveDays: positiveInt(process.env.RETENTION_MEMORY_ARCHIVE_DAYS, 30, 7),
   memoryDeleteDays: positiveInt(process.env.RETENTION_MEMORY_DELETE_DAYS, 7, 1),
   memoryArchiveImportanceMax: boundedNumber(process.env.RETENTION_MEMORY_ARCHIVE_IMPORTANCE_MAX, 0.75, 0, 1),
+  memoryPermanentImportance: boundedNumber(process.env.RETENTION_MEMORY_PERMANENT_IMPORTANCE, 0.82, 0, 1),
+  maxEpisodicMemoriesPerActor: Math.min(10000, positiveInt(process.env.RETENTION_MAX_EPISODIC_MEMORIES_PER_ACTOR, 1200, 100)),
+  maxCognitiveExpectationsPerActor: Math.min(10000, positiveInt(process.env.RETENTION_MAX_COGNITIVE_EXPECTATIONS_PER_ACTOR, 1200, 100)),
+  maxCounterfactualsPerActor: Math.min(20000, positiveInt(process.env.RETENTION_MAX_COUNTERFACTUALS_PER_ACTOR, 2500, 100)),
+  maxCounterfactualWorldsPerActor: Math.min(20000, positiveInt(process.env.RETENTION_MAX_COUNTERFACTUAL_WORLDS_PER_ACTOR, 3000, 100)),
+  relationshipHistoryDays: positiveInt(process.env.RETENTION_RELATIONSHIP_HISTORY_DAYS, 45, 7),
   eventImportanceKeepThreshold: boundedNumber(process.env.RETENTION_EVENT_IMPORTANCE_KEEP_THRESHOLD, 0.8, 0, 1),
   batchSize: Math.min(5000, positiveInt(process.env.RETENTION_BATCH_SIZE, 2000, 250)),
   maxDeletesPerTable: Math.min(20000, positiveInt(process.env.RETENTION_MAX_DELETES_PER_TABLE, 8000, 500)),
@@ -157,6 +163,82 @@ async function deleteHistoryDirectBatch(conn,table,simulationId,cutoff,maxDelete
     [simulationId,cutoff]
   );
   return {deleted,remainingCandidates:Number(backlog[0]?.candidates||0),budgetExhausted:retentionBudgetRemainingMs(simulationId)<=0};
+}
+
+async function archiveExcessEpisodicMemories(conn,simulationId,simulationTime){
+  const cutoff=cutoffDateTime(simulationTime,POLICY.memoryArchiveDays);
+  const permanentImportance=POLICY.memoryPermanentImportance;
+  const maxPerActor=POLICY.maxEpisodicMemoriesPerActor;
+  const selectSql=
+    "SELECT id FROM ("+
+    "SELECT m.id,ROW_NUMBER() OVER(PARTITION BY m.entity_id ORDER BY m.importance DESC,m.strength DESC,m.created_simulation_at DESC) AS rn "+
+    "FROM memories m WHERE m.simulation_id=UUID_TO_BIN(?) AND m.memory_type='EPISODIC' "+
+    "AND m.status IN ('ACTIVE','FADING') AND m.created_simulation_at>=? "+
+    "AND m.importance < ? "+
+    "AND COALESCE(JSON_UNQUOTE(JSON_EXTRACT(m.metadata,'$.kind')),'') NOT IN ('resource_failure','goal_progress')"+
+    ") ranked WHERE ranked.rn>? LIMIT "+POLICY.batchSize;
+  if(POLICY.dryRun){
+    const [rows]=await conn.query(
+      "SELECT COUNT(*) AS candidates FROM ("+
+      "SELECT m.id,ROW_NUMBER() OVER(PARTITION BY m.entity_id ORDER BY m.importance DESC,m.strength DESC,m.created_simulation_at DESC) AS rn "+
+      "FROM memories m WHERE m.simulation_id=UUID_TO_BIN(?) AND m.memory_type='EPISODIC' AND m.status IN ('ACTIVE','FADING') "+
+      "AND m.created_simulation_at>=? AND m.importance < ? "+
+      "AND COALESCE(JSON_UNQUOTE(JSON_EXTRACT(m.metadata,'$.kind')),'') NOT IN ('resource_failure','goal_progress')"+
+      ") ranked WHERE ranked.rn>?",
+      [simulationId,cutoff,permanentImportance,maxPerActor]
+    );
+    const candidates=Number(rows[0]?.candidates||0);
+    return{candidates,archived:0,remainingCandidates:candidates,dryRun:true};
+  }
+  let archived=0;
+  while(archived<POLICY.maxDeletesPerTable&&retentionBudgetAvailable(simulationId)){
+    const limit=Math.min(POLICY.batchSize,POLICY.maxDeletesPerTable-archived);
+    const [rows]=await conn.query(selectSql,[simulationId,cutoff,permanentImportance,maxPerActor]);
+    if(!rows.length)break;
+    const ids=rows.map(row=>row.id).filter(Boolean);
+    if(!ids.length)break;
+    const placeholders=ids.map(()=> "UUID_TO_BIN(?)").join(",");
+    const [result]=await conn.query(
+      "UPDATE memories SET status='ARCHIVED',forgotten_simulation_at=?,version=version+1 WHERE id IN ("+placeholders+") AND status IN ('ACTIVE','FADING')",
+      [simulationTime,...ids]
+    );
+    const affected=Number(result.affectedRows||0);
+    archived+=affected;
+    if(affected<rows.length)break;
+  }
+  return{archived};
+}
+
+async function deleteActorCognitiveArtifacts(conn,simulationId,simulationTime){
+  const cutoff=cutoffDateTime(simulationTime,POLICY.cognitiveArtifactDays);
+  const targets=[
+    {table:"cognitive_expectations",max:POLICY.maxCognitiveExpectationsPerActor,timeColumn:"created_simulation_at",where:"status='RESOLVED'"},
+    {table:"counterfactuals",max:POLICY.maxCounterfactualsPerActor,timeColumn:"created_simulation_at",where:"1=1"},
+    {table:"counterfactual_worlds",max:POLICY.maxCounterfactualWorldsPerActor,timeColumn:"created_simulation_at",where:"status='RESOLVED'"}
+  ];
+  const totals={expectations:0,counterfactuals:0,counterfactualWorlds:0};
+  for(const target of targets){
+    if(!retentionBudgetAvailable(simulationId))break;
+    const [result]=await conn.query(
+      "DELETE FROM "+target.table+" WHERE id IN (SELECT id FROM ("+
+      "SELECT id,ROW_NUMBER() OVER(PARTITION BY entity_id ORDER BY "+target.timeColumn+" DESC) AS rn "+
+      "FROM "+target.table+" WHERE simulation_id=UUID_TO_BIN(?) AND "+target.where+" AND "+target.timeColumn+">?"+
+      ") ranked WHERE ranked.rn>?)",
+      [simulationId,cutoff,target.max]
+    );
+    const affected=Number(result.affectedRows||0);
+    if(target.table==="cognitive_expectations")totals.expectations=affected;
+    else if(target.table==="counterfactuals")totals.counterfactuals=affected;
+    else totals.counterfactualWorlds=affected;
+  }
+  return totals;
+}
+
+async function deleteOldRelationshipHistory(conn,simulationId,simulationTime){
+  const cutoff=cutoffDateTime(simulationTime,POLICY.relationshipHistoryDays);
+  const selectSql="SELECT BIN_TO_UUID(rh.id) AS id FROM relationship_history rh JOIN relationships r ON r.id=rh.relationship_id WHERE rh.simulation_id=UUID_TO_BIN(?) AND rh.simulation_time<? AND r.status IN ('ACTIVE','ENDED') ORDER BY rh.simulation_time ASC LIMIT "+POLICY.batchSize;
+  const countSql="SELECT COUNT(*) AS candidates FROM relationship_history rh WHERE rh.simulation_id=UUID_TO_BIN(?) AND rh.simulation_time<?";
+  return deleteSelectedRows(conn,{selectSql,selectParams:[simulationId,cutoff],countSql,countParams:[simulationId,cutoff],deleteTable:"relationship_history",resultKey:"deleted"});
 }
 
 async function backfillMemoryDedupeKeys(conn,simulationId){
@@ -613,14 +695,17 @@ async function runSafeRetention(simulationId, simulationTime) {
     const actionSummaries = await compactOldActionDecisionSummaries(lock.conn, simulationId, mysqlSimulationTime);
     const actions = await deleteOldActions(lock.conn, simulationId, mysqlSimulationTime);
     const memoryDedupeBackfilled = await backfillMemoryDedupeKeys(lock.conn, simulationId);
+    const episodicMemoryCap = await archiveExcessEpisodicMemories(lock.conn, simulationId, mysqlSimulationTime);
     const duplicateMemories = await compactDuplicateMemories(lock.conn, simulationId, mysqlSimulationTime);
     const needs = await deleteOldNeedHistory(lock.conn, simulationId, mysqlSimulationTime);
     const emotions = await deleteOldEmotionHistory(lock.conn, simulationId, mysqlSimulationTime);
     const memoryArchive = await archiveStaleMemories(lock.conn, simulationId, mysqlSimulationTime);
     const memories = await deleteOldMemories(lock.conn, simulationId, mysqlSimulationTime);
     const expectations = await deleteResolvedExpectations(lock.conn, simulationId, mysqlSimulationTime);
+    const cognitiveActorCaps = await deleteActorCognitiveArtifacts(lock.conn, simulationId, mysqlSimulationTime);
     const counterfactuals = await deleteResolvedCounterfactuals(lock.conn, simulationId, mysqlSimulationTime);
     const worlds = await deleteResolvedCounterfactualWorlds(lock.conn, simulationId, mysqlSimulationTime);
+    const relationshipHistory = await deleteOldRelationshipHistory(lock.conn, simulationId, mysqlSimulationTime);
     const summary = {
       simulationId,
       simulationTime,
@@ -635,6 +720,11 @@ async function runSafeRetention(simulationId, simulationTime) {
       needHistoryDeleted: Number(needs.deleted || 0),
       emotionHistoryDeleted: Number(emotions.deleted || 0),
       memoriesDeduped: Number(duplicateMemories.deleted || 0),
+      episodicMemoryCapArchived: Number(episodicMemoryCap.archived || 0),
+      cognitiveExpectationsCapped: Number(cognitiveActorCaps.expectations || 0),
+      counterfactualsCapped: Number(cognitiveActorCaps.counterfactuals || 0),
+      counterfactualWorldsCapped: Number(cognitiveActorCaps.counterfactualWorlds || 0),
+      relationshipHistoryDeleted: Number(relationshipHistory.deleted || 0),
       memoryDedupeBackfilled: Number(memoryDedupeBackfilled || 0),
       memoriesArchived: Number(memoryArchive.archived || 0),
       memoriesDeleted: Number(memories.deleted || 0),
@@ -659,6 +749,7 @@ async function runSafeRetention(simulationId, simulationTime) {
       memoryArchiveBacklog: Number(memoryArchive.remainingCandidates || 0),
       memoryDedupeBacklog: Number(duplicateMemories.remainingCandidates || 0),
       memoryDeleteBacklog: Number(memories.remainingCandidates || 0),
+      relationshipHistoryBacklog: Number(relationshipHistory.remainingCandidates || 0),
       expectationBacklog: Number(expectations.remainingCandidates || 0),
       counterfactualBacklog: Number(counterfactuals.remainingCandidates || 0),
       counterfactualWorldBacklog: Number(worlds.remainingCandidates || 0),
@@ -671,6 +762,7 @@ async function runSafeRetention(simulationId, simulationTime) {
         Number(memoryArchive.remainingCandidates || 0) +
         Number(duplicateMemories.remainingCandidates || 0) +
         Number(memories.remainingCandidates || 0) +
+        Number(relationshipHistory.remainingCandidates || 0) +
         Number(expectations.remainingCandidates || 0) +
         Number(counterfactuals.remainingCandidates || 0) +
         Number(worlds.remainingCandidates || 0),
@@ -686,6 +778,7 @@ async function runSafeRetention(simulationId, simulationTime) {
         backlogRows:summary.retentionBacklogTotal,
         needHistoryBacklog:summary.needHistoryBacklog,
         emotionHistoryBacklog:summary.emotionHistoryBacklog,
+        relationshipHistoryBacklog:summary.relationshipHistoryBacklog,
         actionBacklog:summary.actionBacklog,
         actionDecisionSummaryBacklog:summary.actionDecisionSummaryBacklog,
         retentionBudgetMs:summary.retentionBudgetMs
@@ -701,6 +794,11 @@ async function runSafeRetention(simulationId, simulationTime) {
       summary.emotionHistoryDeleted ||
       summary.memoriesArchived ||
       summary.memoriesDeleted ||
+      summary.episodicMemoryCapArchived ||
+      summary.cognitiveExpectationsCapped ||
+      summary.counterfactualsCapped ||
+      summary.counterfactualWorldsCapped ||
+      summary.relationshipHistoryDeleted ||
       summary.expectationsDeleted ||
       summary.counterfactualsDeleted ||
       summary.counterfactualWorldsDeleted ||
@@ -743,6 +841,9 @@ function getRetentionPolicy() {
 }
 
 module.exports = {
+  archiveExcessEpisodicMemories,
+  deleteActorCognitiveArtifacts,
+  deleteOldRelationshipHistory,
   getRetentionPolicy,
   isTerminalDecisionStatus,
   isTerminalActionStatus,
