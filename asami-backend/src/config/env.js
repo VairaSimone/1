@@ -30,7 +30,11 @@ const Env = z.object({
     return Number.isFinite(n)?Math.max(30000,n):value;
   },z.coerce.number().int().positive().default(30000)),
   GEMINI_ENABLED: z.preprocess((value)=>{if(typeof value!=="string")return value;const normalized=value.trim().toLowerCase();if(normalized==="true")return true;if(normalized==="false")return false;return value;},z.boolean()).default(true),
-  GEMINI_AUTONOMY_OUTPUT_TOKEN_CEILING: z.coerce.number().int().min(128).max(20000).default(768),
+  GEMINI_AUTONOMY_OUTPUT_TOKEN_CEILING: z.preprocess((value)=>{
+    if(value===undefined||value===null||String(value).trim()==="")return 2048;
+    const n=Number(value);
+    return Number.isFinite(n)?Math.max(2048,n):value;
+  },z.coerce.number().int().min(2048).max(20000).default(2048)),
   GEMINI_DIALOGUE_OUTPUT_TOKEN_CEILING: z.coerce.number().int().min(256).max(20000).default(1536),
   GEMINI_INPUT_PRICE_USD_PER_1M: z.coerce.number().nonnegative().default(0.75),
   GEMINI_OUTPUT_PRICE_USD_PER_1M: z.coerce.number().nonnegative().default(3.75),
