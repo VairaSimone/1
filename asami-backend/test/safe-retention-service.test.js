@@ -104,3 +104,11 @@ test("retention contains actor-level caps and preserves open counterfactuals",()
   assert.match(source,/EXISTS \(SELECT 1 FROM decisions d/);
   assert.match(source,/RETENTION_MAX_EPISODIC_MEMORIES_PER_ACTOR/);
 });
+
+test("memory dedupe backfill uses valid MySQL SHA2 syntax",()=>{
+  const fs=require("node:fs");
+  const path=require("node:path");
+  const source=fs.readFileSync(path.join(__dirname,"../src/services/safe-retention-service.js"),"utf8");
+  assert.match(source,/SHA2\(CONCAT_WS\([^;]+,256\)/);
+  assert.doesNotMatch(source,/\)\),256\) WHERE simulation_id/);
+});
