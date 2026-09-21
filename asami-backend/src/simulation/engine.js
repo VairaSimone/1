@@ -19,6 +19,7 @@ const { recordSignificantExperience } = require("../services/experience-learning
 const { maybeRunSafeRetention } = require("../services/safe-retention-service");
 const { reconcileCompletedActions } = require("../services/action-reconciliation-service");
 const { runSimulationIntegrityCheck } = require("../services/integrity-check-service");
+const { calibrateDecisionOutcome } = require("../services/decision-service");
 const observability = require("../services/simulation-observability");
 
 const INTERRUPTIBLE_ACTIONS = new Set(["SLEEPING", "WORKING", "STUDYING"]);
@@ -152,6 +153,7 @@ async function interruptActiveAction({ simulationId, entityId, active, simulatio
   await applyEmotions(entityId, simulationTime, needChanges, eventId, actionId, actionType, 0, { event: true, outcome: "PARTIAL", expectedOutcome: null, targetEntityId: active.metadata?.targetEntityId || null, targetLocationId: active.metadata?.targetLocationId || null, relationshipIntent: active.metadata?.relationshipIntent || "NONE", failureReason: "ACTION_INTERRUPTED" });
   await flushPendingNeedHistory(entityId, actionId);
   await autonomyService.completeGoalForAction(active.metadata?.goalId || null, actionType, simulationTime, "PARTIAL", result);
+  if(active.decisionId) await calibrateDecisionOutcome(active.decisionId,"PARTIAL");
   await actionService.markActionPostProcessingComplete(actionId);
   return true;
 }
@@ -305,6 +307,7 @@ class SimulationEngine {
               const completion = await actionService.completeAction({ simulationId: sim.id, entityId, actionId: active.id, decisionId: active.decisionId, eventId, intentionId: active.intentionId, actionType: active.actionType, simulationTime: completionAt, targetEntityId, targetLocationId, relationshipIntent });
               if (!completion?.completed) { logger.warn({ simulationId: sim.id, entityId, actionId: active.id }, "action completion was not committed; skipping downstream learning"); continue; }
               const outcome = completion.outcome || "SUCCESS"; const successful = outcome === "SUCCESS";
+              if(active.decisionId) await calibrateDecisionOutcome(active.decisionId,outcome);
               setPhase("entity.emotions.outcome");
               const expectedOutcome = active.decisionId ? await getDecisionExpectedOutcome(active.decisionId) : null;
               const needRelief = needChanges.filter(change => Number(change.delta) < 0).reduce((sum, change) => sum + Math.abs(Number(change.delta)), 0);
