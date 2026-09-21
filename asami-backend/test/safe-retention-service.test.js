@@ -132,3 +132,12 @@ test("actor cognitive cap uses joined DELETE instead of LIMIT in IN subquery",()
   assert.match(block,/JOIN \(SELECT id FROM/);
   assert.doesNotMatch(block,/WHERE id IN \(SELECT id FROM \(SELECT id/);
 });
+
+test("retention services continuous histories before slower cognitive cleanup",()=>{
+  const fs=require("node:fs");
+  const path=require("node:path");
+  const source=fs.readFileSync(path.join(__dirname,"../src/services/safe-retention-service.js"),"utf8");
+  const run=source.slice(source.indexOf("async function runSafeRetention"),source.indexOf("async function maybeRunSafeRetention"));
+  assert.ok(run.indexOf("const needs = await deleteOldNeedHistory")<run.indexOf("const context = await compactOldDecisionContexts"));
+  assert.ok(run.indexOf("const emotions = await deleteOldEmotionHistory")<run.indexOf("const context = await compactOldDecisionContexts"));
+});
