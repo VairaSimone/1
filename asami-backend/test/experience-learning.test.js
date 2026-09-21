@@ -36,3 +36,10 @@ test("experience cognition biases later action selection within a bounded range"
   const modifier = cognitiveExperienceModifier(profile, "DRINKING", { locationType: "HOME", locationId: "home" });
   assert.ok(modifier >= -0.65 && modifier <= 0.65);
 });
+
+test("exploration and goal-linked successes are significant learning experiences",()=>{
+  const { isSignificantExperience } = require("../src/services/experience-learning-service");
+  assert.equal(isSignificantExperience({outcome:"SUCCESS",actionType:"EXPLORING",needChanges:[]}),true);
+  assert.equal(isSignificantExperience({outcome:"SUCCESS",actionType:"READING",goalId:"goal-1",needChanges:[]}),true);
+  assert.equal(isSignificantExperience({outcome:"SUCCESS",actionType:"READING",needChanges:[]}),false);
+});
