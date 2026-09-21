@@ -192,6 +192,8 @@ class SimulationEngine {
     return observability.runWithContext(runtimeContext,async()=>{
     const context = { simulationId: sim.id, simulationVersion: sim.version, simulationTime: sim.currentSimulationAt || null };
     let tickId = null, phase = "clock", entityId = null, actionType = null;
+    const setPhase = nextPhase => { phase = nextPhase; runtimeContext.phase = nextPhase; };
+    runtimeContext.phase = phase;
     try {
       const clock = await simRepo.getActiveClock(sim.id); if (!clock) return;
       const nextTime = new Date(new Date(clock.simulationAnchorAt).getTime() + (Date.now() - new Date(clock.realAnchorAt).getTime()) * Number(clock.speed));
@@ -204,16 +206,16 @@ class SimulationEngine {
       tickId = await simRepo.advanceAndCreateTick(sim.id, nextTime, sim.version, "AUTONOMOUS", env.ENGINE_VERSION); if (!tickId) return;
       runtimeContext.tickId=tickId;
       runtimeContext.tickQueryCount=0;
-      context.simulationTime = nextTime.toISOString(); phase = "tick.create";
+      context.simulationTime = nextTime.toISOString(); setPhase("tick.create");
       try {
         const elapsedMinutes = Math.min(10080, Math.max(0, (nextTime - previousTime) / 60000));
         const lastMaintenance = this.worldMaintenanceAt.get(sim.id); const maintenanceDue = lastMaintenance === undefined || nextTime.getTime() - lastMaintenance >= 3600000;
         if (maintenanceDue) {
-          phase = "world.initialize";
+          setPhase("world.initialize");
           await ensureWorld(sim.id, nextTime);
-          phase = "world.physical";
+          setPhase("world.physical");
           await seedPhysicalWorld(sim.id, nextTime);
-          phase = "world.resource_distribution";
+          setPhase("world.resource_distribution");
           const distributedResources = await maintainDistributedResources(sim.id, nextTime.toISOString());
           if (distributedResources.replenished.length) {
             logger.info({
@@ -223,14 +225,14 @@ class SimulationEngine {
               resources: distributedResources.replenished
             }, "distributed resource maintenance applied");
           }
-          phase = "world.relationships";
+          setPhase("world.relationships");
           await evolveRelationships(sim.id, nextTime);
-          phase = "action.reconcile";
+          setPhase("action.reconcile");
           const reconciliation = await reconcileCompletedActions(sim.id,{limit:100});
           if (reconciliation.reconciled) {
             logger.info({simulationId:sim.id,simulationTime:nextTime.toISOString(),event:"ACTION_RECONCILIATION",reconciled:reconciliation.reconciled},"completed action post-processing reconciled");
           }
-          phase = "integrity.check";
+          setPhase("integrity.check");
           const integrity = await runSimulationIntegrityCheck(sim.id,nextTime.toISOString());
           if(!integrity.skipped && !integrity.healthy){
             const violations=Array.isArray(integrity.violations)?integrity.violations:[];
@@ -239,8 +241,8 @@ class SimulationEngine {
           this.worldMaintenanceAt.set(sim.id, nextTime.getTime());
           observability.logSnapshot(sim.id,nextTime.toISOString());
         }
-        phase = "world.events"; await generateWorldEvents(sim.id, nextTime, tickId, elapsedMinutes);
-        phase = "world.resource_invariant";
+        setPhase("world.events"); await generateWorldEvents(sim.id, nextTime, tickId, elapsedMinutes);
+        setPhase("world.resource_invariant");
         const resourceInvariant = await ensureCriticalResourceAvailability(sim.id, nextTime.toISOString());
         if (resourceInvariant.recovered.length) {
           observability.recordResourceEmergency(sim.id,resourceInvariant.recovered);
@@ -254,7 +256,7 @@ class SimulationEngine {
         const actors = await autonomyService.findAutonomousActors(sim.id, env.MAX_ENTITIES_PER_TICK);
         let autonomyBatchContext=null;
         try {
-          phase="autonomy.context.batch";
+          setPhase("autonomy.context.batch");
           autonomyBatchContext=await autonomyService.prepareTickAutonomyContext({simulationId:sim.id,entityIds:actors,simulationTime:nextTime.toISOString()});
           logger.debug({simulationId:sim.id,simulationTime:nextTime.toISOString(),actorCount:actors.length,batchActorCount:autonomyBatchContext?.contexts?.size||0},"autonomy tick context prepared in batch");
         } catch(batchError) {
@@ -264,21 +266,21 @@ class SimulationEngine {
         for (const id of actors) {
           let actorHadActivity=false;
           try {
-          entityId = id; actionType = null; phase = "entity.state"; await ensureEntityState(entityId, nextTime);
+          entityId = id; actionType = null; setPhase("entity.state"); await ensureEntityState(entityId, nextTime);
           const elapsedHours = Math.min(168, Math.max(0, (nextTime - previousTime) / 3600000)); const active = await actionService.getActiveAction(entityId, sim.id);
           if (active) {
             actorHadActivity=true;
             actionType = active.actionType; const actionStart = new Date(active.startedSimulationAt); const durationMinutes = Number(active.metadata?.durationMinutes || 30); const completionAt = new Date(actionStart.getTime() + durationMinutes * 60000);
             const eventId = active.metadata?.eventId || null; const targetEntityId = active.metadata?.targetEntityId || null; const targetLocationId = active.metadata?.targetLocationId || null; const relationshipIntent = active.metadata?.relationshipIntent || "NONE";
             const wasCompleted = nextTime >= completionAt; const updateTime = wasCompleted ? completionAt : nextTime; const updateHours = Math.min(168, Math.max(0, (updateTime - previousTime) / 3600000));
-            phase = "entity.perception"; const perception = await perceive(sim.id, entityId, nextTime);
-            phase = "entity.needs"; const needChanges = await updateNeeds(entityId, updateTime, updateHours, null, active.id, active.actionType, { significant: wasCompleted, perception });
-            phase = "entity.emotions"; await applyEmotions(entityId, updateTime, needChanges, null, active.id, active.actionType, updateHours);
-            phase = "entity.interruption"; const interruption = !wasCompleted ? getInterruptionReason(active.actionType, await readNeeds(entityId), perception) : null;
+            setPhase("entity.perception"); const perception = await perceive(sim.id, entityId, nextTime);
+            setPhase("entity.needs"); const needChanges = await updateNeeds(entityId, updateTime, updateHours, null, active.id, active.actionType, { significant: wasCompleted, perception });
+            setPhase("entity.emotions"); await applyEmotions(entityId, updateTime, needChanges, null, active.id, active.actionType, updateHours);
+            setPhase("entity.interruption"); const interruption = !wasCompleted ? getInterruptionReason(active.actionType, await readNeeds(entityId), perception) : null;
             if (interruption) {
               const interrupted = await interruptActiveAction({ simulationId: sim.id, entityId, active, simulationTime: updateTime, interruption, needChanges, perception });
               if (interrupted) {
-                phase = "entity.mental_state";
+                setPhase("entity.mental_state");
                 await refreshMentalStateFromSimulation({
                   simulationId: sim.id,
                   entityId,
@@ -286,7 +288,7 @@ class SimulationEngine {
                   needs: await readNeeds(entityId),
                   activeActionType: null
                 });
-                phase = "entity.publish";
+                setPhase("entity.publish");
                 this.hub.publish(sim.id, "entity.state", {
                   entityId,
                   action: { ...active, status: "INTERRUPTED", interrupted: true },
@@ -298,21 +300,21 @@ class SimulationEngine {
               }
             }
             if (wasCompleted) {
-              phase = "entity.action.complete";
+              setPhase("entity.action.complete");
               const completion = await actionService.completeAction({ simulationId: sim.id, entityId, actionId: active.id, decisionId: active.decisionId, eventId, intentionId: active.intentionId, actionType: active.actionType, simulationTime: completionAt, targetEntityId, targetLocationId, relationshipIntent });
               if (!completion?.completed) { logger.warn({ simulationId: sim.id, entityId, actionId: active.id }, "action completion was not committed; skipping downstream learning"); continue; }
               const outcome = completion.outcome || "SUCCESS"; const successful = outcome === "SUCCESS";
-              phase = "entity.emotions.outcome";
+              setPhase("entity.emotions.outcome");
               const expectedOutcome = active.decisionId ? await getDecisionExpectedOutcome(active.decisionId) : null;
               const needRelief = needChanges.filter(change => Number(change.delta) < 0).reduce((sum, change) => sum + Math.abs(Number(change.delta)), 0);
               await applyEmotions(entityId, completionAt, needChanges, eventId, active.id, active.actionType, 0, { event: true, outcome, expectedOutcome, targetEntityId, targetLocationId, relationshipIntent, failureReason: completion.failureReason || null, meaning: active.metadata?.goalId ? (outcome === "SUCCESS" ? "GOAL_PROGRESS" : "GOAL_BLOCKED") : null, needRelief: Math.min(1, needRelief) });
-              phase = "entity.goal"; await autonomyService.completeGoalForAction(active.metadata?.goalId || null, active.actionType, completionAt, outcome, { simulationId: sim.id, entityId, actionId: active.id, targetEntityId, targetLocationId, ...completion });
-              phase = "entity.learning"; if (successful) await actionService.learnFromAction(entityId, active.actionType, completionAt);
-              phase = "entity.development"; if (successful) await updateDevelopment(sim.id, entityId, completionAt, active.actionType);
-              phase = "entity.traits"; await developTraits(entityId, completionAt, { actionType: active.actionType, outcome, targetEntityId, relationshipIntent, goalId: active.metadata?.goalId || null, planId: active.metadata?.planId || null, planStepId: active.metadata?.planStepId || null, intentionId: active.intentionId, decisionId: active.decisionId }, eventId, active.id);
-              phase = "entity.habit"; if (successful) await recordHabitEvidence({ entityId, simulationTime: completionAt, actionType: active.actionType });
-              phase = "entity.cognition"; const cognitive = await recordSignificantExperience({ simulationId: sim.id, entityId, simulationTime: completionAt, actionType: active.actionType, outcome, locationId: perception.location?.locationId || null, locationType: perception.location?.locationType || null, targetEntityId, resource: completion.resource || null, needChanges, relationshipIntent, consequence: outcome === "SUCCESS" ? "expected result obtained" : "intended result not fully obtained", learning: completion.resourceLearning?.type || completion.failureReason || null });
-              phase = "entity.memory";
+              setPhase("entity.goal"); await autonomyService.completeGoalForAction(active.metadata?.goalId || null, active.actionType, completionAt, outcome, { simulationId: sim.id, entityId, actionId: active.id, targetEntityId, targetLocationId, ...completion });
+              setPhase("entity.learning"); if (successful) await actionService.learnFromAction(entityId, active.actionType, completionAt);
+              setPhase("entity.development"); if (successful) await updateDevelopment(sim.id, entityId, completionAt, active.actionType);
+              setPhase("entity.traits"); await developTraits(entityId, completionAt, { actionType: active.actionType, outcome, targetEntityId, relationshipIntent, goalId: active.metadata?.goalId || null, planId: active.metadata?.planId || null, planStepId: active.metadata?.planStepId || null, intentionId: active.intentionId, decisionId: active.decisionId }, eventId, active.id);
+              setPhase("entity.habit"); if (successful) await recordHabitEvidence({ entityId, simulationTime: completionAt, actionType: active.actionType });
+              setPhase("entity.cognition"); const cognitive = await recordSignificantExperience({ simulationId: sim.id, entityId, simulationTime: completionAt, actionType: active.actionType, outcome, locationId: perception.location?.locationId || null, locationType: perception.location?.locationType || null, targetEntityId, resource: completion.resource || null, needChanges, relationshipIntent, consequence: outcome === "SUCCESS" ? "expected result obtained" : "intended result not fully obtained", learning: completion.resourceLearning?.type || completion.failureReason || null });
+              setPhase("entity.memory");
               const memoryPayload = outcome === "FAILURE" ? buildFailureMemory({ locationId: perception.location?.locationId || null, simulationTime: completionAt, actionType: active.actionType, perception, decision: { actionType: active.actionType, goalId: active.metadata?.goalId || null }, needChanges, physical: completion.resource, failureReason: completion.failureReason, resourceLearning: completion.resourceLearning }) : buildActionMemory({ actionType: active.actionType, outcome, perception, decision: { actionType: active.actionType, goalId: active.metadata?.goalId || null }, needChanges, completion, simulationAt: completionAt });
               await createMemory({ simulationId: sim.id, entityId, eventId, locationId: perception.location?.locationId || null, type: "EPISODIC", content: memoryPayload.content, importance: memoryPayload.importance, strength: memoryPayload.strength, confidence: memoryPayload.confidence, emotionalIntensity: memoryPayload.emotionalIntensity, simulationAt: completionAt, metadata: { ...memoryPayload.metadata, actionId: active.id, eventId, durationMinutes, relationshipIntent, goalId: active.metadata?.goalId || null, planId: active.metadata?.planId || null, planStepId: active.metadata?.planStepId || null, cognitiveRefs: { preferenceIds: Array.isArray(cognitive?.preferenceIds) ? cognitive.preferenceIds.slice(0, 8) : [], beliefId: cognitive?.beliefId || null, knowledgeId: cognitive?.knowledgeId || null, learningStrength: Number.isFinite(Number(cognitive?.learningStrength)) ? Number(Number(cognitive.learningStrength).toFixed(4)) : null, semanticBeliefId: cognitive?.semantic?.beliefId || null, semanticPreferenceId: cognitive?.semantic?.preferenceId || null, semanticReliability: Number.isFinite(Number(cognitive?.semantic?.reliability)) ? Number(Number(cognitive.semantic.reliability).toFixed(4)) : null } } });
               // A large simulation jump can finish the active action long before nextTime.
@@ -320,16 +322,16 @@ class SimulationEngine {
               // at the action completion timestamp.
               const postActionGapHours = Math.min(168, Math.max(0, (nextTime - completionAt) / 3600000));
               if (postActionGapHours > 0.0001) {
-                phase = "entity.gap.catchup";
+                setPhase("entity.gap.catchup");
                 const passiveNeedChanges = await updateNeeds(entityId, nextTime, postActionGapHours, null, null, null, { significant: false });
                 await applyEmotions(entityId, nextTime, passiveNeedChanges, null, null, null, postActionGapHours);
               }
             }
             if (wasCompleted) {
-              phase = "entity.post_processing.commit";
+              setPhase("entity.post_processing.commit");
               await actionService.markActionPostProcessingComplete(active.id);
             }
-            phase = "entity.mental_state";
+            setPhase("entity.mental_state");
             const latestNeeds = await readNeeds(entityId);
             await refreshMentalStateFromSimulation({
               simulationId: sim.id,
@@ -338,14 +340,14 @@ class SimulationEngine {
               needs: latestNeeds,
               activeActionType: wasCompleted ? null : active.actionType
             });
-            phase = "entity.publish"; this.hub.publish(sim.id, "entity.state", { entityId, action: { ...active, status: wasCompleted ? "COMPLETED" : "ACTIVE" }, needChanges });
+            setPhase("entity.publish"); this.hub.publish(sim.id, "entity.state", { entityId, action: { ...active, status: wasCompleted ? "COMPLETED" : "ACTIVE" }, needChanges });
           } else {
             if (elapsedHours > 0.0001) {
-              phase = "entity.gap.catchup";
+              setPhase("entity.gap.catchup");
               const passiveNeedChanges = await updateNeeds(entityId, nextTime, elapsedHours, null, null, null, { significant: false });
               await applyEmotions(entityId, nextTime, passiveNeedChanges, null, null, null, elapsedHours);
             }
-            phase = "entity.mental_state";
+            setPhase("entity.mental_state");
             const latestNeeds = await readNeeds(entityId);
             await refreshMentalStateFromSimulation({
               simulationId: sim.id,
@@ -354,13 +356,13 @@ class SimulationEngine {
               needs: latestNeeds,
               activeActionType: null
             });
-            phase = "entity.autonomy";
+            setPhase("entity.autonomy");
             const autonomy = await autonomyService.actForEntity({ simulationId: sim.id, entityId, simulationTime: nextTime.toISOString(), gemini: this.gemini, tickId, batchContext: autonomyBatchContext });
             if (!autonomy) continue;
             const decision = autonomy.decision;
             if (!decision?.actionType) throw Object.assign(new Error("Autonomy produced no executable action type"), { code: "AUTONOMY_ACTION_TYPE_REQUIRED" });
             actionType = decision.actionType;
-            phase = "entity.action.start";
+            setPhase("entity.action.start");
             const started = autonomy.started || null;
             if (!started?.actionId) throw Object.assign(new Error("Autonomy action was not started"), { code: "AUTONOMY_ACTION_START_REQUIRED" });
             actorHadActivity=true;
@@ -383,7 +385,7 @@ class SimulationEngine {
               }, err, "critical resource condition; attempting emergency recovery"));
 
               try {
-                phase = "entity.resource_emergency";
+                setPhase("entity.resource_emergency");
                 const recovery = await ensureCriticalResourceAvailability(
                   sim.id,
                   nextTime.toISOString(),
@@ -401,7 +403,7 @@ class SimulationEngine {
                   }, "entity resource emergency restored");
                 }
 
-                phase = "entity.resource_emergency.retry";
+                setPhase("entity.resource_emergency.retry");
                 const retry = await autonomyService.actForEntity({
                   simulationId: sim.id,
                   entityId: id,
@@ -482,7 +484,7 @@ class SimulationEngine {
             }
           }
         }
-        phase = "world.decay"; await decayMemories(sim.id, nextTime); this.tickCounter.set(sim.id, Number(this.tickCounter.get(sim.id) || 0) + 1);
+        setPhase("world.decay"); await decayMemories(sim.id, nextTime); this.tickCounter.set(sim.id, Number(this.tickCounter.get(sim.id) || 0) + 1);
         const count = Number(this.tickCounter.get(sim.id) || 0); if (count % env.GEMINI_PROACTIVE_EVERY_TICKS === 0) { try { const asami = await getAsamiCandidate(sim.id); if (asami) await initiateConversation({ simulationId: sim.id, asamiEntityId: asami.id, simulationTime: nextTime.toISOString(), gemini: this.gemini, hub: this.hub }); } catch (err) { logger.warn({ simulationId: sim.id, phase: "proactive_conversation", err }, "proactive conversation attempt failed"); } } if (count % env.SNAPSHOT_EVERY_TICKS === 0) await simRepo.createSnapshot(sim.id, nextTime);
         await simRepo.completeTick(tickId, { status: "COMPLETED", entityCount: actors.length });
         void maybeRunSafeRetention(sim.id, nextTime.toISOString());
