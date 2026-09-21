@@ -150,3 +150,13 @@ test("retention scheduling is based on simulation time during accelerated runs",
   assert.match(source,/simulationMs-lastSimulationMs/);
   assert.match(source,/RETENTION_CHECK_SIMULATION_HOURS/);
 });
+
+test("retention keeps dedicated need and emotion history workers wired",()=>{
+  const fs=require("node:fs");
+  const path=require("node:path");
+  const source=fs.readFileSync(path.join(__dirname,"../src/services/safe-retention-service.js"),"utf8");
+  assert.match(source,/async function deleteOldNeedHistory/);
+  assert.match(source,/async function deleteOldEmotionHistory/);
+  assert.match(source,/deleteHistoryDirectBatch\(conn,"entity_need_history"/);
+  assert.match(source,/deleteHistoryDirectBatch\(conn,"entity_emotion_history"/);
+});
