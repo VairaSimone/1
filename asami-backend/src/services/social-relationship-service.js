@@ -74,7 +74,7 @@ function socialRouteDistance(locations,originId,targetId){
   }
   return {distanceMeters,travelMinutes:distanceMeters/1000/4.8*60};
 }
-function buildRemoteCandidatesForSource(sourceId,allPeople,traitsByEntity,relationshipsByPair,locations,maxCandidates){
+function buildRemoteCandidatesForSource(sourceId,allPeople,traitsByEntity,relationshipsByPair,locations,maxCandidates,simulationTime=null){
   const source=allPeople.get(sourceId);if(!source?.locationId)return[];
   const sourceTraits=traitsByEntity.get(sourceId)||[],candidates=[];
   for(const person of allPeople.values()){
@@ -82,7 +82,7 @@ function buildRemoteCandidatesForSource(sourceId,allPeople,traitsByEntity,relati
     const route=socialRouteDistance(locations,source.locationId,person.locationId);if(!route||!Number.isFinite(route.travelMinutes))continue;
     const pair=relationshipsByPair.get(sourceId+"|"+person.id)||relationshipsByPair.get(person.id+"|"+sourceId),rel=pair?.status==="ACTIVE"?pair:null;
     const targetTraits=traitsByEntity.get(person.id)||[],compatibility=compatibilityFromTraits(sourceTraits,targetTraits),targetExtraversion=traitValue(targetTraits,"EXTRAVERSION"),targetEmpathy=traitValue(targetTraits,"EMPATHY"),targetPatience=traitValue(targetTraits,"PATIENCE"),receptiveness=clamp(targetExtraversion*.40+targetEmpathy*.35+targetPatience*.25);
-    const formationAccepted=Boolean(rel)||relationshipFormationAccepted({compatibility,receptiveness,simulationAt:person.locationId,sourceEntityId:sourceId,targetEntityId:person.id,sourceTraits,targetTraits});
+    const formationAccepted=Boolean(rel)||relationshipFormationAccepted({compatibility,receptiveness,simulationAt:simulationTime||"REMOTE_TARGET_EVALUATION",sourceEntityId:sourceId,targetEntityId:person.id,sourceTraits,targetTraits});
     if(!formationAccepted)continue;
     const relationship=rel||{},relationshipValue=relationshipScore(relationship);
     const novelty=rel?0:.18,distancePenalty=Math.min(.75,route.travelMinutes/60*.75),noise=stableInteractionNoise(sourceId,person.id,person.locationId);
@@ -181,7 +181,7 @@ async function socialCandidates(simulationId,entityId){
   }).sort((a,b)=>b.score-a.score||b.romanticScore-a.romanticScore);
 }
 async function buildSocialContext(simulationId,entityId){const[partner,candidates,traits]=await Promise.all([currentPartner(simulationId,entityId),socialCandidates(simulationId,entityId),loadTraits(entityId)]);return{partner,candidates,traits};}
-async function buildSocialContexts(simulationId,entityIds=[],{maxCandidates=20,worldLocations=[]}={}){
+async function buildSocialContexts(simulationId,entityIds=[],{maxCandidates=20,worldLocations=[],simulationTime=null}={}){
   const ids=[...new Set((entityIds||[]).filter(Boolean).map(String))],contexts=new Map();if(!ids.length)return contexts;
   const placeholders=ids.map(()=> 'UUID_TO_BIN(?)').join(',');
   const [people]=await pool.query(`SELECT BIN_TO_UUID(me.entity_id) AS sourceEntityId,BIN_TO_UUID(other.id) AS id,other.display_name AS name,BIN_TO_UUID(me.location_id) AS locationId FROM entity_locations_current me JOIN entity_locations_current otherLoc ON otherLoc.simulation_id=me.simulation_id AND otherLoc.location_id=me.location_id AND otherLoc.entity_id<>me.entity_id JOIN entities other ON other.id=otherLoc.entity_id AND other.simulation_id=me.simulation_id JOIN persons p ON p.entity_id=other.id WHERE me.simulation_id=UUID_TO_BIN(?) AND me.entity_id IN (${placeholders}) AND other.status='ACTIVE' ORDER BY me.entity_id,other.display_name`,[simulationId,...ids]);
@@ -211,7 +211,7 @@ async function buildSocialContexts(simulationId,entityIds=[],{maxCandidates=20,w
       const targetTraits=traitsByEntity.get(person.id)||[],pair=relationshipsByPair.get(id+"|"+person.id)||relationshipsByPair.get(person.id+"|"+id),rel=pair?.status==='ACTIVE'?pair:null,endedPartner=rel?null:(pair?.status==='ENDED'&&pair?.type==='PARTNER'?pair:null),compatibility=compatibilityFromTraits(sourceTraits,targetTraits),targetExtraversion=traitValue(targetTraits,"EXTRAVERSION"),targetEmpathy=traitValue(targetTraits,"EMPATHY"),targetPatience=traitValue(targetTraits,"PATIENCE"),receptiveness=clamp(targetExtraversion*.40+targetEmpathy*.35+targetPatience*.25),sociallyValid=Boolean(rel)||relationshipFormationAccepted({compatibility,receptiveness,simulationAt:"LOCAL",sourceEntityId:id,targetEntityId:person.id,sourceTraits,targetTraits}),romantic=romanticScore(rel||{},compatibility);
       return{id:person.id,name:person.name,locationId:person.locationId,relationshipType:rel?.type||endedPartner?.type||null,relationship:rel,endedRelationship:endedPartner,compatibility,receptiveness,sociallyValid,romanticScore:romantic,score:relationshipScore(rel)};
     }).sort((a,b)=>b.score-a.score||b.romanticScore-a.romanticScore);
-    const remoteCandidates=buildRemoteCandidatesForSource(id,allPeople,traitsByEntity,relationshipsByPair,worldLocations,maxCandidates);
+    const remoteCandidates=buildRemoteCandidatesForSource(id,allPeople,traitsByEntity,relationshipsByPair,worldLocations,maxCandidates,simulationTime);
     contexts.set(id,{partner,candidates,remoteCandidates,traits:sourceTraits});
   }
   return contexts;
