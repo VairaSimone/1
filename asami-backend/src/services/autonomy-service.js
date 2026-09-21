@@ -168,7 +168,7 @@ async function prepareTickAutonomyContext({simulationId,entityIds=[],simulationT
   const decisionContexts=await decisionService.buildDecisionContexts(simulationId,ids,simulationTime,{worldLocations});
   const socialContexts=await buildSocialContexts(simulationId,ids);
   const visitedByEntity=await loadVisitedLocationsBatch(simulationId,ids);
-  const recentLocationsByEntity=await loadRecentLocationIdsBatch(ids);
+  const recentLocationsByEntity=await loadRecentLocationIdsBatch(simulationId,ids);
   const recallBase=new Map();for(const id of ids){const base=decisionContexts.get(id);if(!base)continue;recallBase.set(id,{simulationTime,goalIds:(base.goals||[]).map(goal=>goal.id).filter(Boolean),locationId:base.location?.locationId||null,locationType:base.location?.locationType||null,candidateActionTypes:(base.candidates||[]).map(candidate=>candidate.action).filter(Boolean)});}
   const memoriesByEntity=await require('./memory-service').recallContexts(simulationId,ids,8,recallBase);
   for(const id of ids){
@@ -214,10 +214,10 @@ async function loadVisitedLocationsBatch(simulationId,entityIds=[]){
   for(const row of rows){if(!result.has(row.entityId))result.set(row.entityId,new Map());result.get(row.entityId).set(row.locationId,row.lastVisitedAt);}
   return result;
 }
-async function loadRecentLocationIdsBatch(entityIds=[]){
+async function loadRecentLocationIdsBatch(simulationId,entityIds=[]){
   const ids=[...new Set((entityIds||[]).filter(Boolean).map(String))],result=new Map();if(!ids.length)return result;
   const placeholders=ids.map(()=> 'UUID_TO_BIN(?)').join(',');
-  const [rows]=await pool.query(`SELECT entityId,locationId,rn FROM (SELECT BIN_TO_UUID(entity_id) AS entityId,BIN_TO_UUID(location_id) AS locationId,ROW_NUMBER() OVER(PARTITION BY entity_id ORDER BY entered_simulation_at DESC) AS rn FROM entity_location_history WHERE entity_id IN (${placeholders})) ranked WHERE rn<=2 ORDER BY entityId,rn`,ids);
+  const [rows]=await pool.query(`SELECT entityId,locationId,rn FROM (SELECT BIN_TO_UUID(entity_id) AS entityId,BIN_TO_UUID(location_id) AS locationId,ROW_NUMBER() OVER(PARTITION BY entity_id ORDER BY entered_simulation_at DESC) AS rn FROM entity_location_history WHERE simulation_id=UUID_TO_BIN(?) AND entity_id IN (${placeholders})) ranked WHERE rn<=2 ORDER BY entityId,rn`,[simulationId,...ids]);
   for(const id of ids)result.set(id,{lastLocationId:null,previousLocationId:null});
   for(const row of rows){const entry=result.get(row.entityId);if(!entry)continue;if(Number(row.rn)===1)entry.lastLocationId=row.locationId;if(Number(row.rn)===2)entry.previousLocationId=row.locationId;}
   return result;
