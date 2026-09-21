@@ -42,7 +42,7 @@ test("first routine success creates a semantic aggregate", async () => {
     const id = await createMemory({ simulationId: "simulation-1", entityId: "entity-1", locationId: "shop", simulationAt: "2026-09-19T12:00:00.000Z", content: "routine", importance: 0.5, strength: 0.86, confidence: 0.85, emotionalIntensity: 0.24, metadata: { kind: "action_outcome", actionType: "WALKING", outcome: "SUCCESS", location: { id: "shop", type: "SHOP", label: "Shop" }, needChanges: [{ code: "CURIOSITY", delta: -0.04 }] } });
     assert.ok(id);
     assert.equal(calls.length, 2);
-    const metadata = JSON.parse(calls[1].values[calls[1].values.length - 1]);
+    const metadata = JSON.parse(calls[1].values[calls[1].values.length - 2]);
     assert.equal(metadata.kind, "action_routine");
     assert.equal(metadata.routineObservationCount, 1);
   } finally { pool.query = originalQuery; }
