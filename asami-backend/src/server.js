@@ -28,10 +28,6 @@ const { errorHandler } = require("./api/error-handler");
 async function main(){
   await ensureDatabaseWithRetry();
   await pingWithRetry({ attempts: env.DB_STARTUP_RETRY_ATTEMPTS });
-  const planningMigration = await ensurePlanningStatusMigrations();
-  if (planningMigration.changed.length) {
-    logger.info({ changed: planningMigration.changed }, "planning status schema migrations applied");
-  }
   const staleTicks = await require("./repositories/simulation-repo").reconcileStaleRunningTicks();
   if (staleTicks) logger.warn({staleTicks}, "stale simulation ticks reconciled at startup");
   await bootstrapCoreDefinitions();
@@ -39,6 +35,12 @@ async function main(){
   await gemini.init();
   await cognitiveV2.install({gemini});
   await cognitiveV3.install();
+
+  // Cognitive schemas must exist before retention migrations create indexes on them.
+  const planningMigration = await ensurePlanningStatusMigrations();
+  if (planningMigration.changed.length) {
+    logger.info({ changed: planningMigration.changed }, "planning status schema migrations applied");
+  }
   const { SimulationEngine } = require("./simulation/engine");
   const hub=new RealtimeHub();
   const app=express();
