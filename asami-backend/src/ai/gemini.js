@@ -139,12 +139,13 @@ class GeminiService {
       dailyBudgetUsd:env.GEMINI_DAILY_BUDGET_USD,
       monthlyBudgetUsd:env.GEMINI_MONTHLY_BUDGET_USD,
       timeoutMs:env.GEMINI_TIMEOUT_MS,
+      autonomyOutputTokenCeiling:env.GEMINI_AUTONOMY_OUTPUT_TOKEN_CEILING,
       autonomyIntervalMinutes:env.GEMINI_AUTONOMY_MIN_INTERVAL_MINUTES
     },"Gemini cognitive budget enabled");
     return true;
   }
   canUseAutonomyDecision(entityId,simulationTime,{highValue=false}={}){
-    if(budget.providerBlockRemainingMs()>0||!this._hasAvailableModel())return false;
+    if(!this._hasAvailableModel())return false;
     const previous=this.lastAutonomyDecisionAt.get(entityId);
     if(!previous){
       this.lastAutonomyDecisionAt.set(entityId,new Date(simulationTime).getTime());
@@ -335,25 +336,29 @@ class GeminiService {
         }
 
         if(failure.kind==="RATE_LIMIT"||failure.kind==="QUOTA"){
-          this.providerFailureStreak=0;
-          budget.blockProvider(failure.retryAfterMs||60000,fallbackReason);
+          const state=this._modelState(model);
+          state.failureStreak=0;
+          const modelCooldown=Math.max(failure.retryAfterMs||0,failure.kind==="QUOTA"?60000:30000);
+          this._blockModel(model,modelCooldown,fallbackReason);
           this.lastRequestStatus={
             status:"FALLBACK",
             source:"DETERMINISTIC_FALLBACK",
             reason:fallbackReason,
             attempted:true,
-            retryAfterMs:failure.retryAfterMs||60000,
+            retryAfterMs:modelCooldown,
             kind,
             model,
             fallbackDepth:modelIndex
           };
+          const fallbackModel=models[modelIndex+1]||null;
           logger.warn({
             kind,
             model,
             reason:fallbackReason,
-            retryAfterMs:failure.retryAfterMs||60000
-          },"Gemini provider limit reached; local circuit breaker enabled");
-          return null;
+            retryAfterMs:modelCooldown,
+            fallbackTo:fallbackModel
+          },"Gemini model limit reached; trying fallback model");
+          continue;
         }
 
         if(failure.kind==="TIMEOUT"||failure.kind==="TRANSIENT"||failure.kind==="NETWORK"){
