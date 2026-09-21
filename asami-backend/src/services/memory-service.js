@@ -1,5 +1,6 @@
 const { pool } = require("../db/pool");
 const { uuid } = require("../lib/ids");
+const crypto = require("crypto");
 
 const DECAY_BATCH_SIZE = 250;
 const DECAY_CHECKPOINT_MINUTES = 360;
@@ -134,6 +135,42 @@ function buildActionMemory({ actionType, outcome = "SUCCESS", perception = null,
 
 function buildFailureMemory({ locationId, simulationTime, actionType, perception, decision, needChanges, physical, failureReason, resourceLearning, strategyAlternative = null }) { const resource = physical?.resource ? String(physical.resource).toLowerCase() : null; const resourceState = Number.isFinite(Number(physical?.remaining)) ? Number(physical.remaining) : null; const normalizedLearning = resourceLearning ? { ...resourceLearning, type: resourceLearning.type || "RESOURCE_UNAVAILABLE" } : null; const memory = buildActionMemory({ actionType, outcome: "FAILURE", perception, decision, needChanges, simulationAt: simulationTime, completion: { failureReason: failureReason || "ACTION_FAILED", resource: physical || null, resourceLearning: normalizedLearning, strategyAlternative: strategyAlternative || (resource ? `go to another location with ${resource} available` : "choose another strategy") } }); memory.context.resource = { ...(memory.context.resource || {}), name: resource, remaining: resourceState }; memory.metadata.resource = physical || null; memory.metadata.locationId = locationId || memory.metadata.location?.id || null; memory.metadata.failureReason = failureReason || "ACTION_FAILED"; memory.metadata.resourceLearning = normalizedLearning; memory.metadata.strategyAlternative = strategyAlternative || memory.metadata.strategyAlternative; memory.metadata.source = "action_completion"; memory.metadata.kind = "resource_failure"; return memory; }
 
+function buildMemoryDedupeKey({entityId,locationId,metadata,content}={}) {
+  const actionType=normalizeText(metadata?.actionType),outcome=normalizeOutcome(metadata?.outcome),goalId=metadata?.decision?.goalId||metadata?.goalId||null,planId=metadata?.planId||metadata?.decision?.planId||null;
+  if(String(metadata?.kind||"")!=="action_outcome"||outcome!=="SUCCESS"||!actionType||actionType==="talking")return null;
+  const needChanges=Array.isArray(metadata?.needChanges)?metadata.needChanges:[];
+  const totalRelief=needChanges.reduce((sum,change)=>sum+Math.abs(Number(change?.delta||0)),0);
+  if(totalRelief>=.20||Number(metadata?.emotionalIntensity||0)>=.45)return null;
+  return crypto.createHash("sha256").update([
+    String(entityId||""),String(locationId||metadata?.locationId||metadata?.location?.id||""),
+    actionType,outcome,String(goalId||""),String(planId||""),String(content||"").trim()
+  ].join("|")).digest("hex");
+}
+async function upsertDeduplicatedActionMemory({simulationId,entityId,locationId,simulationAt,content,importance,strength,confidence,emotionalIntensity,metadata,dedupeKey}){
+  if(!dedupeKey)return null;
+  const [rows]=await pool.query(
+    "SELECT BIN_TO_UUID(id) AS id,version,importance,strength,confidence,emotional_intensity AS emotionalIntensity,created_simulation_at AS createdAt,metadata FROM memories WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND status='ACTIVE' AND memory_dedupe_key=? ORDER BY created_simulation_at DESC LIMIT 1",
+    [simulationId,entityId,dedupeKey]
+  );
+  const existing=rows[0]||null;
+  if(!existing)return null;
+  const previousMetadata=normalizeJson(existing.metadata)||{};
+  const observationCount=Math.max(1,Number(previousMetadata.dedupeObservationCount||1)+1);
+  const nextMetadata={...previousMetadata,...metadata,memory_dedupe_key:dedupeKey,dedupeObservationCount:observationCount,firstObservedSimulationAt:previousMetadata.firstObservedSimulationAt||existing.createdAt,lastObservedSimulationAt:simulationAt,aggregated:true};
+  const nextStrength=Math.min(.94,Math.max(Number(existing.strength||0),Number(strength||0),.52+Math.log1p(observationCount)*.075));
+  const nextConfidence=Math.min(.95,Math.max(Number(existing.confidence||0),Number(confidence||0),.55+Math.log1p(observationCount)*.06));
+  const nextImportance=Math.min(.62,Math.max(Number(existing.importance||0),Number(importance||0)));
+  await pool.query(
+    "UPDATE memories SET content=?,memory_type='SEMANTIC',importance=?,strength=?,confidence=?,emotional_intensity=?,location_id=UUID_TO_BIN(?),created_simulation_at=?,last_recalled_simulation_at=?,metadata=?,version=version+1 WHERE id=UUID_TO_BIN(?) AND version=?",
+    [
+      "Repeated action pattern: "+actionLabel(metadata?.actionType)+" at "+(metadata?.location?.label||metadata?.location?.type||"the same place")+"; observed "+observationCount+" times.",
+      nextImportance,nextStrength,nextConfidence,Math.min(.25,Math.max(.08,Number(emotionalIntensity)||.08)),locationId||metadata?.locationId||metadata?.location?.id||null,
+      simulationAt,simulationAt,JSON.stringify(nextMetadata),existing.id,existing.version
+    ]
+  );
+  return existing.id;
+}
+
 function routineLocationKey(locationId, metadata = {}) {
   const id = locationId || metadata?.locationId || metadata?.location?.id;
   if (id) return String(id);
@@ -178,11 +215,19 @@ async function upsertRoutineActionMemory({ simulationId, entityId, locationId, i
 async function createMemory({ simulationId, entityId, eventId = null, activityId = null, locationId = null, type = "EPISODIC", content, importance = 0.5, strength = 1, confidence = 0.8, emotionalIntensity = 0.2, simulationAt, metadata = null }) {
   metadata = compactMemoryMetadata(metadata);
   const memoryKind = metadata?.kind || null;
+  const dedupeKey = buildMemoryDedupeKey({entityId,locationId,metadata,content});
   if (memoryKind === "action_outcome" && !isSalientActionOutcome({ metadata, importance, emotionalIntensity })) {
     const routine = await upsertRoutineActionMemory({ simulationId, entityId, locationId, importance, strength, confidence, emotionalIntensity, simulationAt, metadata });
     if (routine && routine.isNew) {
       metadata = routine.metadata; content = routine.content; type = routine.type; importance = routine.importance; strength = routine.strength; confidence = routine.confidence; emotionalIntensity = routine.emotionalIntensity;
     } else if (routine) return routine;
+  }
+  if (dedupeKey && type === "EPISODIC") {
+    const aggregated = await upsertDeduplicatedActionMemory({
+      simulationId,entityId,locationId,simulationAt,content,importance,strength,confidence,emotionalIntensity,metadata,dedupeKey
+    });
+    if (aggregated) return aggregated;
+    metadata = {...metadata,memory_dedupe_key:dedupeKey,dedupeObservationCount:1};
   }
   if (memoryKind === "resource_failure") {
     const resource = metadata?.resource?.resource || metadata?.resource || null, resourceName = resource ? String(resource).trim().toLowerCase() : null, memoryLocationId = locationId || metadata?.locationId || metadata?.location?.id || null;
@@ -191,7 +236,7 @@ async function createMemory({ simulationId, entityId, eventId = null, activityId
       if (existingRows.length) { const existing = existingRows[0]; await pool.query(`UPDATE memories SET content=?,importance=?,strength=?,confidence=?,emotional_intensity=?,source_event_id=UUID_TO_BIN(?),source_activity_id=UUID_TO_BIN(?),location_id=UUID_TO_BIN(?),created_simulation_at=?,metadata=?,status='ACTIVE',forgotten_simulation_at=NULL,version=version+1 WHERE id=UUID_TO_BIN(?) AND version=?`, [content, importance, Math.max(0.99, Number(strength) || 0), confidence, emotionalIntensity, eventId, activityId, memoryLocationId, simulationAt, metadata ? JSON.stringify(metadata) : null, existing.id, existing.version]); return existing.id; }
     }
   }
-  const id = uuid(); await pool.query(`INSERT INTO memories (id,simulation_id,entity_id,memory_type,content,importance,strength,confidence,emotional_intensity,source_event_id,source_activity_id,location_id,created_simulation_at,status,metadata,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?, ?,?,?,?,UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,'ACTIVE',?,1)`, [id, simulationId, entityId, type, content, importance, strength, confidence, emotionalIntensity, eventId, activityId, locationId, simulationAt, metadata ? JSON.stringify(metadata) : null]); return id;
+  const id = uuid(); await pool.query(`INSERT INTO memories (id,simulation_id,entity_id,memory_type,content,importance,strength,confidence,emotional_intensity,source_event_id,source_activity_id,location_id,created_simulation_at,status,metadata,memory_dedupe_key,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?, ?,?,?,?,UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,'ACTIVE',?,?,1)`, [id, simulationId, entityId, type, content, importance, strength, confidence, emotionalIntensity, eventId, activityId, locationId, simulationAt, metadata ? JSON.stringify(metadata) : null, dedupeKey]); return id;
 }
 
 async function decayMemories(simulationId, simulationTime) {
@@ -257,4 +302,4 @@ async function recallContext(simulationId, entityId, limit = 8, context = {}) {
   return memories;
 }
 
-module.exports = { createMemory, decayMemories, listMemories, recallContext, recallContexts, buildMemoryContext, buildActionMemory, buildFailureMemory, memoryRelevance, deriveRecallContext, compactMemoryMetadata, isSalientActionOutcome, routineLocationKey };
+module.exports = { createMemory, decayMemories, listMemories, recallContext, recallContexts, buildMemoryContext, buildActionMemory, buildFailureMemory, memoryRelevance, deriveRecallContext, compactMemoryMetadata, isSalientActionOutcome, routineLocationKey, buildMemoryDedupeKey, upsertDeduplicatedActionMemory };
