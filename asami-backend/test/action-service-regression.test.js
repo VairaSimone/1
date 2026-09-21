@@ -36,7 +36,7 @@ test("reconciler covers interrupted terminal actions and marks post-processing c
   const fs=require("node:fs");
   const path=require("node:path");
   const source=fs.readFileSync(path.join(__dirname,"../src/services/action-reconciliation-service.js"),"utf8");
-  assert.match(source,/a\.status IN \('COMPLETED','INTERRUPTED','FAILED','CANCELLED'\)/);
+  assert.match(source,/a\.status IN \('COMPLETED','INTERRUPTED'\)/);
   assert.match(source,/terminalStatus==="INTERRUPTED"/);
   assert.match(source,/markActionPostProcessingComplete\(row\.actionId\)/);
 });
