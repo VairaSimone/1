@@ -22,6 +22,9 @@ function getContext(){return runtimeContext.getStore()||null;}
 function recordDbQuery(durationMs){
   const context=getContext();
   if(!context?.simulationId)return;
+  const phase=String(context.phase||"unknown").replace(/[^a-zA-Z0-9_.-]+/g,"_").slice(0,80);
+  increment(context.simulationId,`db_queries_phase_${phase}_total`);
+  increment(context.simulationId,`db_query_latency_phase_${phase}_ms_total`,Math.max(0,Number(durationMs)||0));
   increment(context.simulationId,"db_queries_total");
   increment(context.simulationId,"db_query_latency_ms_total",Math.max(0,Number(durationMs)||0));
   setGauge(context.simulationId,"db_query_latency_ms_last",Math.max(0,Number(durationMs)||0));
