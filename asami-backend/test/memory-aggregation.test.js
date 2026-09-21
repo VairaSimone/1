@@ -1,7 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { pool } = require("../src/db/pool");
-const { createMemory, isSalientActionOutcome } = require("../src/services/memory-service");
+const { createMemory, isSalientActionOutcome, buildMemoryDedupeKey } = require("../src/services/memory-service");
 
 test("routine successful action is aggregateable", () => {
   assert.equal(isSalientActionOutcome({ metadata: { kind: "action_outcome", actionType: "WALKING", outcome: "SUCCESS", needChanges: [{ code: "CURIOSITY", delta: -0.04 }] }, importance: 0.5, emotionalIntensity: 0.2 }), false);
@@ -46,4 +46,25 @@ test("first routine success creates a semantic aggregate", async () => {
     assert.equal(metadata.kind, "action_routine");
     assert.equal(metadata.routineObservationCount, 1);
   } finally { pool.query = originalQuery; }
+});
+
+test("repeatable action outcomes receive a stable dedupe key",()=>{
+  const base={
+    entityId:"entity-1",
+    locationId:"shop",
+    metadata:{
+      kind:"action_outcome",
+      actionType:"WALKING",
+      outcome:"SUCCESS",
+      decision:{goalId:"goal-1"},
+      needChanges:[{code:"CURIOSITY",delta:-.04}]
+    },
+    content:"I tried to walk at Shop. It succeeded."
+  };
+  const first=buildMemoryDedupeKey(base);
+  const second=buildMemoryDedupeKey({...base});
+  const talking=buildMemoryDedupeKey({...base,metadata:{...base.metadata,actionType:"TALKING"}});
+  assert.ok(first);
+  assert.equal(first,second);
+  assert.equal(talking,null);
 });
