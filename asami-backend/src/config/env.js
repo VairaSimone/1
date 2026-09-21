@@ -78,7 +78,7 @@ const Env = z.object({
   RETENTION_MAX_COUNTERFACTUALS_PER_ACTOR: z.coerce.number().int().min(100).max(20000).default(2500),
   RETENTION_MAX_COUNTERFACTUAL_WORLDS_PER_ACTOR: z.coerce.number().int().min(100).max(20000).default(3000),
   RETENTION_RELATIONSHIP_HISTORY_DAYS: z.coerce.number().int().min(7).default(45),
-  RETENTION_BATCH_SIZE: z.coerce.number().int().min(250).max(5000).default(2000),
+  RETENTION_BATCH_SIZE: z.coerce.number().int().min(250).max(5000).default(5000),
   RETENTION_MAX_DELETES_PER_TABLE: z.coerce.number().int().min(500).max(20000).default(8000),
   RETENTION_TIME_BUDGET_MS: z.coerce.number().int().min(250).max(30000).default(5000),
   RETENTION_DRY_RUN: z.preprocess((value)=>{if(typeof value!=="string")return value;const normalized=value.trim().toLowerCase();if(normalized==="true")return true;if(normalized==="false")return false;return value;},z.boolean()).default(false),
