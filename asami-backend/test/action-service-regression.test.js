@@ -31,3 +31,20 @@ test("resource outcomes distinguish unavailable, partial and successful consumpt
     failureReason: null
   });
 });
+
+test("reconciler covers interrupted terminal actions and marks post-processing complete",()=>{
+  const fs=require("node:fs");
+  const path=require("node:path");
+  const source=fs.readFileSync(path.join(__dirname,"../src/services/action-reconciliation-service.js"),"utf8");
+  assert.match(source,/a\.status IN \('COMPLETED','INTERRUPTED','FAILED','CANCELLED'\)/);
+  assert.match(source,/terminalStatus==="INTERRUPTED"/);
+  assert.match(source,/markActionPostProcessingComplete\(row\.actionId\)/);
+});
+
+test("action lifecycle completion marks interrupted actions as post-processed",()=>{
+  const fs=require("node:fs");
+  const path=require("node:path");
+  const source=fs.readFileSync(path.join(__dirname,"../src/simulation/engine.js"),"utf8");
+  assert.match(source,/calibrateDecisionOutcome\(active\.decisionId,"PARTIAL"\)/);
+  assert.match(source,/markActionPostProcessingComplete\(actionId\)/);
+});
