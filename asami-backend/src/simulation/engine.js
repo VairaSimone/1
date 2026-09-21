@@ -152,6 +152,7 @@ async function interruptActiveAction({ simulationId, entityId, active, simulatio
   await applyEmotions(entityId, simulationTime, needChanges, eventId, actionId, actionType, 0, { event: true, outcome: "PARTIAL", expectedOutcome: null, targetEntityId: active.metadata?.targetEntityId || null, targetLocationId: active.metadata?.targetLocationId || null, relationshipIntent: active.metadata?.relationshipIntent || "NONE", failureReason: "ACTION_INTERRUPTED" });
   await flushPendingNeedHistory(entityId, actionId);
   await autonomyService.completeGoalForAction(active.metadata?.goalId || null, actionType, simulationTime, "PARTIAL", result);
+  await actionService.markActionPostProcessingComplete(actionId);
   return true;
 }
 
