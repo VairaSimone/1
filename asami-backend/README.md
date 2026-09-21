@@ -40,7 +40,8 @@ Il default tecnico del backend usa un intervallo minimo di **60 minuti** tra del
 
 ```dotenv
 GEMINI_ENABLED=true
-GEMINI_MODEL=gemini-3.6-flash
+GEMINI_MODEL=gemini-3.8-flash
+GEMINI_FALLBACK_MODELS=gemini-3.7-flash,gemini-3.6-flash
 GEMINI_DAILY_BUDGET_USD=0.35
 GEMINI_MONTHLY_BUDGET_USD=10
 GEMINI_DAILY_MAX_REQUESTS=100
@@ -48,6 +49,8 @@ GEMINI_MONTHLY_MAX_REQUESTS=2500
 GEMINI_AUTONOMY_MIN_INTERVAL_MINUTES=60
 ```
 
+Il backend usa una catena di modelli Gemini: il modello principale può degradare automaticamente sui modelli di fallback quando riceve errori transitori come HTTP 503. Il circuito di disponibilità è mantenuto separatamente per modello, così un problema di capacità su un modello non disabilita gli altri.
+ 
 Il backend crea automaticamente la tabella `gemini_usage` al primo avvio. Il consumo viene registrato con i token riportati dall'API Gemini, compresi i token di reasoning, e una richiesta viene bloccata prima dell'invio quando il budget giornaliero o mensile non è più disponibile.
 
 Le decisioni autonome usano Gemini solo quando la scelta deterministica è debole o realmente ambigua. Le scelte evidenti restano interamente locali. Le decisioni ricevono inoltre il contesto di memoria, esperienza, piani e interruzioni recenti.
