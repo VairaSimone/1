@@ -415,7 +415,7 @@ async function markActionPostProcessingComplete(actionId,db=pool){
      SET post_processing_status='COMPLETED',
          result=JSON_SET(COALESCE(result,JSON_OBJECT()),'$.postProcessingStatus','COMPLETED'),
          version=version+1
-     WHERE id=UUID_TO_BIN(?) AND status='COMPLETED' AND post_processing_status='PENDING'`,
+     WHERE id=UUID_TO_BIN(?) AND status IN ('COMPLETED','INTERRUPTED') AND post_processing_status='PENDING'`,
     [actionId]
   );
   return Boolean(result.affectedRows);
