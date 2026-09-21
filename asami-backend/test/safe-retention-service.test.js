@@ -69,3 +69,13 @@ test("retention wires all high-growth tables and deletes events before actions",
     /JSON_UNQUOTE\(JSON_EXTRACT\(m\.metadata,'\$\.kind'\)\).*resource_failure/
   );
 });
+
+test("retention uses direct set-based deletion for high-growth history",()=>{
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const source = fs.readFileSync(path.join(__dirname,"../src/services/safe-retention-service.js"),"utf8");
+  assert.match(source,/async function deleteHistoryDirectBatch/);
+  assert.match(source,/DELETE FROM "\+table\+" WHERE id IN/);
+  assert.match(source,/memory_dedupe_key/);
+  assert.match(source,/compactDuplicateMemories/);
+});
