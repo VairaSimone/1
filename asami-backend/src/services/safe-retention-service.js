@@ -213,17 +213,20 @@ async function deleteActorCognitiveArtifacts(conn,simulationId,simulationTime){
   const cutoff=cutoffDateTime(simulationTime,POLICY.cognitiveArtifactDays);
   const targets=[
     {table:"cognitive_expectations",max:POLICY.maxCognitiveExpectationsPerActor,timeColumn:"created_simulation_at",where:"status='RESOLVED'"},
-    {table:"counterfactuals",max:POLICY.maxCounterfactualsPerActor,timeColumn:"created_simulation_at",where:"EXISTS (SELECT 1 FROM decisions d WHERE d.id=counterfactuals.decision_id AND d.status IN (\'EXECUTED\',\'FAILED\',\'CANCELLED\'))"},
+    {table:"counterfactuals",max:POLICY.maxCounterfactualsPerActor,timeColumn:"created_simulation_at",where:"EXISTS (SELECT 1 FROM decisions d WHERE d.id=counterfactuals.decision_id AND d.status IN ('EXECUTED','FAILED','CANCELLED'))"},
     {table:"counterfactual_worlds",max:POLICY.maxCounterfactualWorldsPerActor,timeColumn:"created_simulation_at",where:"status='RESOLVED'"}
   ];
   const totals={expectations:0,counterfactuals:0,counterfactualWorlds:0};
   for(const target of targets){
     if(!retentionBudgetAvailable(simulationId))break;
+    const limit=Math.min(POLICY.batchSize,target.max);
     const [result]=await conn.query(
-      "DELETE FROM "+target.table+" WHERE id IN (SELECT id FROM ("+
-      "SELECT id,ROW_NUMBER() OVER(PARTITION BY entity_id ORDER BY "+target.timeColumn+" DESC) AS rn "+
-      "FROM "+target.table+" WHERE simulation_id=UUID_TO_BIN(?) AND "+target.where+" AND "+target.timeColumn+">?"+
-      ") ranked WHERE ranked.rn>? LIMIT "+POLICY.batchSize,
+      "DELETE t FROM "+target.table+" t "+
+      "JOIN (SELECT id FROM ("+
+      "SELECT x.id,ROW_NUMBER() OVER(PARTITION BY x.entity_id ORDER BY x."+target.timeColumn+" DESC) AS rn "+
+      "FROM "+target.table+" x WHERE x.simulation_id=UUID_TO_BIN(?) AND "+target.where.replace(/counterfactuals\.decision_id/g,"x.decision_id")+" AND x."+target.timeColumn+">?"+
+      ") ranked WHERE ranked.rn>? LIMIT "+limit+
+      ") doomed ON doomed.id=t.id",
       [simulationId,cutoff,target.max]
     );
     const affected=Number(result.affectedRows||0);
