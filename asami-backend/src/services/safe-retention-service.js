@@ -223,7 +223,7 @@ async function deleteActorCognitiveArtifacts(conn,simulationId,simulationTime){
       "DELETE FROM "+target.table+" WHERE id IN (SELECT id FROM ("+
       "SELECT id,ROW_NUMBER() OVER(PARTITION BY entity_id ORDER BY "+target.timeColumn+" DESC) AS rn "+
       "FROM "+target.table+" WHERE simulation_id=UUID_TO_BIN(?) AND "+target.where+" AND "+target.timeColumn+">?"+
-      ") ranked WHERE ranked.rn>?)",
+      ") ranked WHERE ranked.rn>? LIMIT "+POLICY.batchSize,
       [simulationId,cutoff,target.max]
     );
     const affected=Number(result.affectedRows||0);
