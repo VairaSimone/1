@@ -11,6 +11,82 @@ function avg(values){return values.length?values.reduce((sum,v)=>sum+v,0)/values
 function relationshipScore(r){return Number(r?.familiarity||0)*.9+Number(r?.closeness||0)*1.1+Number(r?.affection||0)*1.2+Number(r?.trust||0)+Number(r?.attraction||0)*.8;}
 function romanticScore(r,compatibility){return clamp(compatibility*.35+Number(r?.attraction||0)*.25+Number(r?.affection||0)*.2+Number(r?.closeness||0)*.15+Number(r?.trust||0)*.05);}
 function compatibilityFromTraits(sourceTraits,targetTraits){const source=new Map((sourceTraits||[]).map(t=>[String(t.code).toUpperCase(),Number(t.value)])),target=new Map((targetTraits||[]).map(t=>[String(t.code).toUpperCase(),Number(t.value)])),diffs=[];for(const code of TRAIT_CODES)if(source.has(code)&&target.has(code))diffs.push(Math.abs(source.get(code)-target.get(code)));return diffs.length?clamp(1-avg(diffs)):.5;}
+function stableInteractionNoise(sourceEntityId,targetEntityId,simulationAt){
+  const input=`${sourceEntityId}:${targetEntityId}:${simulationAt}`;
+  let hash=2166136261;
+  for(let i=0;i<input.length;i++){hash^=input.charCodeAt(i);hash=Math.imul(hash,16777619);}
+  return ((hash>>>0)/4294967295)-.5;
+}
+function traitValue(traits,code,fallback=.5){
+  const row=(traits||[]).find(t=>String(t.code||"").toUpperCase()===String(code).toUpperCase());
+  return row?clamp(row.value):fallback;
+}
+function socialChemistry(sourceTraits,targetTraits,compatibility,receptiveness){
+  const extraversionGap=Math.abs(traitValue(sourceTraits,"EXTRAVERSION")-traitValue(targetTraits,"EXTRAVERSION"));
+  const patienceGap=Math.abs(traitValue(sourceTraits,"PATIENCE")-traitValue(targetTraits,"PATIENCE"));
+  const impulsivityDisciplineGap=Math.abs(
+    traitValue(sourceTraits,"IMPULSIVITY")-(1-traitValue(targetTraits,"CONSCIENTIOUSNESS"))
+  );
+  const empathyGap=Math.abs(traitValue(sourceTraits,"EMPATHY")-traitValue(targetTraits,"EMPATHY"));
+  const tension=clamp(extraversionGap*.22+patienceGap*.22+impulsivityDisciplineGap*.28+empathyGap*.16);
+  return clamp(Number(compatibility)*.58+Number(receptiveness)*.27+(1-tension)*.15);
+}
+function relationshipFormationAccepted({compatibility,receptiveness,simulationAt,sourceEntityId,targetEntityId}){
+  const chemistry=socialChemistry([],[],compatibility,receptiveness);
+  const noise=stableInteractionNoise(sourceEntityId,targetEntityId,simulationAt);
+  return chemistry + noise*.20 >= .66;
+}
+function socialInteractionOutcome({compatibility,receptiveness,simulationAt,sourceEntityId,targetEntityId}){
+  const noise=stableInteractionNoise(sourceEntityId,targetEntityId,simulationAt);
+  const chemistry=socialChemistry([],[],compatibility,receptiveness);
+  if(chemistry<=.40 || (chemistry<.52 && noise<-.08))return "NEGATIVE";
+  if(chemistry>=.67 && noise>-.28)return "POSITIVE";
+  return "NEUTRAL";
+}
+function socialRouteDistance(locations,originId,targetId){
+  if(!originId||!targetId||String(originId)===String(targetId))return {distanceMeters:0,travelMinutes:0};
+  const byId=new Map((locations||[]).map(location=>[String(location.locationId),location]));
+  const origin=byId.get(String(originId)),target=byId.get(String(targetId));
+  if(!origin||!target)return null;
+  const queue=[originId],previous=new Map([[String(originId),null]]);
+  let found=false;
+  while(queue.length){
+    const currentId=queue.shift();
+    if(String(currentId)===String(targetId)){found=true;break;}
+    const current=byId.get(String(currentId));
+    for(const connection of Array.isArray(current?.data?.connections)?current.data.connections:[]){
+      const next=byId.get(String(connection))||[...byId.values()].find(item=>String(item.data?.worldCode||"").toUpperCase()===String(connection).toUpperCase());
+      if(!next||previous.has(String(next.locationId)))continue;
+      previous.set(String(next.locationId),String(currentId));queue.push(next.locationId);
+    }
+  }
+  if(!found)return null;
+  const path=[];let cursor=String(targetId);
+  while(cursor){path.unshift(cursor);cursor=previous.get(cursor)||null;}
+  let distanceMeters=0;
+  for(let i=1;i<path.length;i++){
+    const a=byId.get(String(path[i-1])),b=byId.get(String(path[i]));
+    const lat1=Number(a?.latitude),lon1=Number(a?.longitude),lat2=Number(b?.latitude),lon2=Number(b?.longitude);
+    if([lat1,lon1,lat2,lon2].some(v=>!Number.isFinite(v)))return null;
+    const rad=Math.PI/180,R=6371000,dLat=(lat2-lat1)*rad,dLon=(lon2-lon1)*rad;
+    const h=Math.sin(dLat/2)**2+Math.cos(lat1*rad)*Math.cos(lat2*rad)*Math.sin(dLon/2)**2;
+    distanceMeters+=2*R*Math.asin(Math.sqrt(h));
+  }
+  return {distanceMeters,travelMinutes:distanceMeters/1000/4.8*60};
+}
+function buildRemoteCandidatesForSource(sourceId,allPeople,traitsByEntity,relationshipsByPair,locations,maxCandidates){
+  const source=allPeople.get(sourceId);if(!source?.locationId)return[];
+  const sourceTraits=traitsByEntity.get(sourceId)||[],candidates=[];
+  for(const person of allPeople.values()){
+    if(person.id===sourceId||!person.locationId||person.locationId===source.locationId)continue;
+    const route=socialRouteDistance(locations,source.locationId,person.locationId);if(!route||!Number.isFinite(route.travelMinutes))continue;
+    const pair=relationshipsByPair.get(`${sourceId}|${person.id}`)||relationshipsByPair.get(`${person.id}|${sourceId}`),rel=pair?.status==="ACTIVE"?pair:null;
+    const targetTraits=traitsByEntity.get(person.id)||[],compatibility=compatibilityFromTraits(sourceTraits,targetTraits),relationship=rel||{},relationshipValue=relationshipScore(relationship);
+    const novelty=rel?0:.18,distancePenalty=Math.min(.75,route.travelMinutes/60*.75),noise=stableInteractionNoise(sourceId,person.id,person.locationId);
+    candidates.push({id:person.id,name:person.name,locationId:person.locationId,relationshipType:rel?.type||null,relationship:rel,compatibility,romanticScore:romanticScore(rel||{},compatibility),score:relationshipValue+compatibility*.50+novelty-distancePenalty+noise*.08,remote:true,travelMinutes:route.travelMinutes,distanceMeters:route.distanceMeters});
+  }
+  return candidates.sort((a,b)=>b.score-a.score||b.romanticScore-a.romanticScore).slice(0,maxCandidates);
+}
 async function loadTraits(entityId){const[rows]=await pool.query(`SELECT td.code,etc.value FROM entity_traits_current etc JOIN trait_definitions td ON td.id=etc.trait_id WHERE etc.entity_id=UUID_TO_BIN(?) AND td.active=1`,[entityId]);return rows.map(r=>({code:r.code,value:Number(r.value)}));}
 async function relationshipBetween(simulationId,a,b,status=null){const statusClause=status?"AND r.status=?":"",params=status?[simulationId,a,b,b,a,status]:[simulationId,a,b,b,a];const[rows]=await pool.query(`SELECT BIN_TO_UUID(r.id) AS id,r.status,r.version,BIN_TO_UUID(r.source_entity_id) AS sourceEntityId,BIN_TO_UUID(r.target_entity_id) AS targetEntityId,rt.code AS type,r.trust_score AS trust,r.affection_score AS affection,r.respect_score AS respect,r.familiarity_score AS familiarity,r.attraction_score AS attraction,r.conflict_score AS conflict,r.fear_score AS fear,r.admiration_score AS admiration,r.jealousy_score AS jealousy,r.dependence_score AS dependence,r.closeness_score AS closeness,r.irritation_score AS irritation,r.started_simulation_at AS startedSimulationAt,r.ended_simulation_at AS endedSimulationAt FROM relationships r JOIN relationship_types rt ON rt.id=r.relationship_type_id WHERE r.simulation_id=UUID_TO_BIN(?) AND ((r.source_entity_id=UUID_TO_BIN(?) AND r.target_entity_id=UUID_TO_BIN(?)) OR (r.source_entity_id=UUID_TO_BIN(?) AND r.target_entity_id=UUID_TO_BIN(?))) ${statusClause} ORDER BY CASE rt.code WHEN 'PARTNER' THEN 3 WHEN 'FRIEND' THEN 2 WHEN 'ACQUAINTANCE' THEN 1 ELSE 0 END DESC,r.started_simulation_at DESC LIMIT 1`,params);return rows[0]||null;}
 async function currentPartner(simulationId,entityId){const[rows]=await pool.query(`SELECT BIN_TO_UUID(CASE WHEN r.source_entity_id=UUID_TO_BIN(?) THEN r.target_entity_id ELSE r.source_entity_id END) AS partnerId,BIN_TO_UUID(r.id) AS relationshipId FROM relationships r JOIN relationship_types rt ON rt.id=r.relationship_type_id WHERE r.simulation_id=UUID_TO_BIN(?) AND rt.code='PARTNER' AND r.status='ACTIVE' AND (r.source_entity_id=UUID_TO_BIN(?) OR r.target_entity_id=UUID_TO_BIN(?)) LIMIT 1`,[entityId,simulationId,entityId,entityId]);return rows[0]||null;}
@@ -102,19 +178,39 @@ async function socialCandidates(simulationId,entityId){
   }).sort((a,b)=>b.score-a.score||b.romanticScore-a.romanticScore);
 }
 async function buildSocialContext(simulationId,entityId){const[partner,candidates,traits]=await Promise.all([currentPartner(simulationId,entityId),socialCandidates(simulationId,entityId),loadTraits(entityId)]);return{partner,candidates,traits};}
-async function buildSocialContexts(simulationId,entityIds=[],{maxCandidates=20}={}){
+async function buildSocialContexts(simulationId,entityIds=[],{maxCandidates=20,worldLocations=[]}={}){
   const ids=[...new Set((entityIds||[]).filter(Boolean).map(String))],contexts=new Map();if(!ids.length)return contexts;
   const placeholders=ids.map(()=> 'UUID_TO_BIN(?)').join(',');
   const [people]=await pool.query(`SELECT BIN_TO_UUID(me.entity_id) AS sourceEntityId,BIN_TO_UUID(other.id) AS id,other.display_name AS name,BIN_TO_UUID(me.location_id) AS locationId FROM entity_locations_current me JOIN entity_locations_current otherLoc ON otherLoc.simulation_id=me.simulation_id AND otherLoc.location_id=me.location_id AND otherLoc.entity_id<>me.entity_id JOIN entities other ON other.id=otherLoc.entity_id AND other.simulation_id=me.simulation_id JOIN persons p ON p.entity_id=other.id WHERE me.simulation_id=UUID_TO_BIN(?) AND me.entity_id IN (${placeholders}) AND other.status='ACTIVE' ORDER BY me.entity_id,other.display_name`,[simulationId,...ids]);
   const bySource=new Map(ids.map(id=>[id,[]]));for(const row of people){const list=bySource.get(row.sourceEntityId);if(list&&list.length<maxCandidates)list.push(row);}
-  const candidateIds=[...new Set(people.map(row=>row.id).filter(Boolean))],allPersonIds=[...new Set([...ids,...candidateIds])];
+  const allPeopleRows=await pool.query(`SELECT BIN_TO_UUID(elc.entity_id) AS entityId,BIN_TO_UUID(e.id) AS id,e.display_name AS name,BIN_TO_UUID(elc.location_id) AS locationId
+       FROM entity_locations_current elc JOIN entities e ON e.id=elc.entity_id JOIN persons p ON p.entity_id=e.id
+       WHERE elc.simulation_id=UUID_TO_BIN(?) AND e.status='ACTIVE'`,[simulationId]);
+  const allPeople=new Map(allPeopleRows[0].map(row=>({id:row.id,name:row.name,locationId:row.locationId})).map(row=>[row.id,row]));
+  for(const id of ids)if(!allPeople.has(id))allPeople.set(id,{id,name:"",locationId:null});
+  const candidateIds=[...new Set(people.map(row=>row.id).filter(Boolean))],allPersonIds=[...new Set([...ids,...allPeople.keys()])];
   const allPlaceholders=allPersonIds.map(()=> 'UUID_TO_BIN(?)').join(',');
   const [traitRows]=allPersonIds.length?await pool.query(`SELECT BIN_TO_UUID(etc.entity_id) AS entityId,td.code,etc.value FROM entity_traits_current etc JOIN trait_definitions td ON td.id=etc.trait_id AND td.active=1 WHERE etc.entity_id IN (${allPlaceholders})`,allPersonIds):[[]];
   const [relationshipRows]=candidateIds.length?await pool.query(`SELECT BIN_TO_UUID(r.id) AS id,r.status,r.started_simulation_at AS startedSimulationAt,BIN_TO_UUID(r.source_entity_id) AS sourceEntityId,BIN_TO_UUID(r.target_entity_id) AS targetEntityId,rt.code AS type,r.trust_score AS trust,r.affection_score AS affection,r.respect_score AS respect,r.familiarity_score AS familiarity,r.attraction_score AS attraction,r.conflict_score AS conflict,r.fear_score AS fear,r.admiration_score AS admiration,r.jealousy_score AS jealousy,r.dependence_score AS dependence,r.closeness_score AS closeness,r.irritation_score AS irritation,r.ended_simulation_at AS endedSimulationAt FROM relationships r JOIN relationship_types rt ON rt.id=r.relationship_type_id WHERE r.simulation_id=UUID_TO_BIN(?) AND r.status IN ('ACTIVE','ENDED') AND ((r.source_entity_id IN (${placeholders}) AND r.target_entity_id IN (${allPlaceholders})) OR (r.target_entity_id IN (${placeholders}) AND r.source_entity_id IN (${allPlaceholders})))`,[simulationId,...ids,...allPersonIds,...ids,...allPersonIds]):[[]];
   const traitsByEntity=new Map();for(const row of traitRows){if(!traitsByEntity.has(row.entityId))traitsByEntity.set(row.entityId,[]);traitsByEntity.get(row.entityId).push({code:row.code,value:Number(row.value)});}
-  const relationshipsByPair=new Map();for(const row of relationshipRows){const other=row.sourceEntityId&&ids.includes(row.sourceEntityId)?row.targetEntityId:row.sourceEntityId,key=`${row.sourceEntityId}|${row.targetEntityId}`;const reverse=`${row.targetEntityId}|${row.sourceEntityId}`;const current=relationshipsByPair.get(reverse)||relationshipsByPair.get(key);if(!current||(row.status==='ACTIVE'&&current.status!=='ACTIVE')||(row.status===current.status&&new Date(row.startedSimulationAt||0).getTime()>new Date(current.startedSimulationAt||0).getTime()))relationshipsByPair.set(key,row);}
+  const relationshipsByPair=new Map();
+  for(const row of relationshipRows){
+    const key=`${row.sourceEntityId}|${row.targetEntityId}`;
+    const reverse=`${row.targetEntityId}|${row.sourceEntityId}`;
+    const current=relationshipsByPair.get(reverse)||relationshipsByPair.get(key);
+    if(!current||(row.status==='ACTIVE'&&current.status!=='ACTIVE')||(row.status===current.status&&new Date(row.startedSimulationAt||0).getTime()>new Date(current.startedSimulationAt||0).getTime()))relationshipsByPair.set(key,row);
+  }
   const sourceTraitsByEntity=new Map();for(const id of ids)sourceTraitsByEntity.set(id,traitsByEntity.get(id)||[]);
-  for(const id of ids){const sourceTraits=sourceTraitsByEntity.get(id)||[],sourcePeople=bySource.get(id)||[],partnerRow=relationshipRows.find(row=>row.status==='ACTIVE'&&row.type==='PARTNER'&&(row.sourceEntityId===id||row.targetEntityId===id));let partner=partnerRow?{partnerId:partnerRow.sourceEntityId===id?partnerRow.targetEntityId:partnerRow.sourceEntityId,relationshipId:partnerRow.id}:null;const sourceByCode=new Map(sourceTraits.map(t=>[String(t.code).toUpperCase(),Number(t.value)]));const candidates=sourcePeople.map(person=>{const targetTraits=traitsByEntity.get(person.id)||[],pair=relationshipsByPair.get(`${id}|${person.id}`)||relationshipsByPair.get(`${person.id}|${id}`),rel=pair?.status==='ACTIVE'?pair:null,endedPartner=rel?null:(pair?.status==='ENDED'&&pair?.type==='PARTNER'?pair:null),compatibility=compatibilityFromTraits(sourceTraits,targetTraits),romantic=romanticScore(rel||{},compatibility);return{id:person.id,name:person.name,locationId:person.locationId,relationshipType:rel?.type||endedPartner?.type||null,relationship:rel,endedRelationship:endedPartner,compatibility,romanticScore:romantic,score:relationshipScore(rel)};}).sort((a,b)=>b.score-a.score||b.romanticScore-a.romanticScore);contexts.set(id,{partner,candidates,traits:sourceTraits});}
+  for(const id of ids){
+    const sourceTraits=sourceTraitsByEntity.get(id)||[],sourcePeople=bySource.get(id)||[],partnerRow=relationshipRows.find(row=>row.status==='ACTIVE'&&row.type==='PARTNER'&&(row.sourceEntityId===id||row.targetEntityId===id));
+    const partner=partnerRow?{partnerId:partnerRow.sourceEntityId===id?partnerRow.targetEntityId:partnerRow.sourceEntityId,relationshipId:partnerRow.id}:null;
+    const candidates=sourcePeople.map(person=>{
+      const targetTraits=traitsByEntity.get(person.id)||[],pair=relationshipsByPair.get(`${id}|${person.id}`)||relationshipsByPair.get(`${person.id}|${id}`),rel=pair?.status==='ACTIVE'?pair:null,endedPartner=rel?null:(pair?.status==='ENDED'&&pair?.type==='PARTNER'?pair:null),compatibility=compatibilityFromTraits(sourceTraits,targetTraits),romantic=romanticScore(rel||{},compatibility);
+      return{id:person.id,name:person.name,locationId:person.locationId,relationshipType:rel?.type||endedPartner?.type||null,relationship:rel,endedRelationship:endedPartner,compatibility,romanticScore:romantic,score:relationshipScore(rel)};
+    }).sort((a,b)=>b.score-a.score||b.romanticScore-a.romanticScore);
+    const remoteCandidates=buildRemoteCandidatesForSource(id,allPeople,traitsByEntity,relationshipsByPair,worldLocations,maxCandidates);
+    contexts.set(id,{partner,candidates,remoteCandidates,traits:sourceTraits});
+  }
   return contexts;
 }
 function deriveSocialIntent({actionType,targetId,partner,candidates}){if(actionType!=="TALKING"||!targetId)return"NONE";const candidate=(candidates||[]).find(x=>x.id===targetId);if(!candidate)return"NONE";if(candidate.endedRelationship?.type==='PARTNER'&&!partner){const r=candidate.endedRelationship;if(Number(r.affection)>=.45&&Number(r.trust)>=.4&&Number(r.closeness)>=.4)return"RECONCILE";}if(partner?.partnerId===targetId)return"NONE";if(Number(candidate.romanticScore)>=.62&&Number(candidate.compatibility)>=.5)return"PURSUE_RELATIONSHIP";if(!partner&&Number(candidate.romanticScore)<.32)return"STAY_SINGLE";return"NONE";}
@@ -173,7 +269,56 @@ function mergeRelationshipDeltas(base={},outcome={}){
 async function applyConversationOutcome({simulationId,sourceEntityId,targetEntityId,simulationAt,eventId,outcome="NEUTRAL",intent="NONE"}){const rel=await relationshipBetween(simulationId,sourceEntityId,targetEntityId,"ACTIVE");if(!rel)return null;const deltas=conversationOutcomeDeltas(outcome),updated=await updateRelationshipScores(simulationId,rel.id,simulationAt,deltas,eventId);if(updated&&intent==='PURSUE_RELATIONSHIP')return requestPartnership({simulationId,sourceEntityId,targetEntityId,simulationAt,eventId,compatibility:.5});return updated;}
 async function ensureSocialConversation(simulationId,sourceEntityId,targetEntityId,simulationAt){const[existing]=await pool.query(`SELECT BIN_TO_UUID(c.id) AS id FROM conversations c JOIN conversation_participants p1 ON p1.conversation_id=c.id AND p1.entity_id=UUID_TO_BIN(?) JOIN conversation_participants p2 ON p2.conversation_id=c.id AND p2.entity_id=UUID_TO_BIN(?) WHERE c.simulation_id=UUID_TO_BIN(?) AND c.status='ACTIVE' AND p1.left_simulation_at IS NULL AND p2.left_simulation_at IS NULL ORDER BY c.created_simulation_at DESC LIMIT 1`,[sourceEntityId,targetEntityId,simulationId]);if(existing.length)return existing[0].id;const conversationId=uuid();await pool.query(`INSERT INTO conversations(id,simulation_id,channel,created_simulation_at,status,metadata,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),'CHAT',?,'ACTIVE',?,1)`,[conversationId,simulationId,simulationAt,JSON.stringify({type:"AUTONOMOUS_SOCIAL",sourceEntityId,targetEntityId})]);for(const entityId of[sourceEntityId,targetEntityId])await pool.query(`INSERT INTO conversation_participants(conversation_id,simulation_id,entity_id,joined_simulation_at) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?)`,[conversationId,simulationId,entityId,simulationAt]);return conversationId;}
 async function createSocialMessage({simulationId,conversationId,senderEntityId,content,simulationAt,metadata}){const messageId=uuid();await pool.query(`INSERT INTO messages(id,simulation_id,conversation_id,sender_entity_id,message_type,content,simulation_created_at,status,metadata,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),'ASSISTANT',?,?,'DELIVERED',?,1)`,[messageId,simulationId,conversationId,senderEntityId,content,simulationAt,JSON.stringify({source:"AUTONOMOUS_SOCIAL",...(metadata||{})})]);return messageId;}
-async function processSocialInteraction({simulationId,sourceEntityId,targetEntityId,simulationAt,eventId,relationshipIntent="NONE",locationId=null}){if(!sourceEntityId||!targetEntityId||sourceEntityId===targetEntityId)return null;const[sourceTraits,targetTraits]=await Promise.all([loadTraits(sourceEntityId),loadTraits(targetEntityId)]),compatibility=compatibilityFromTraits(sourceTraits,targetTraits),sourceMap=new Map(sourceTraits.map(t=>[String(t.code).toUpperCase(),Number(t.value)])),targetMap=new Map(targetTraits.map(t=>[String(t.code).toUpperCase(),Number(t.value)]));const sourceExtra=clamp(sourceMap.get("EXTRAVERSION")??.5),sourceConfidence=clamp(sourceMap.get("CONFIDENCE")??.5),targetExtra=clamp(targetMap.get("EXTRAVERSION")??.5),targetEmpathy=clamp(targetMap.get("EMPATHY")??.5),targetPatience=clamp(targetMap.get("PATIENCE")??.5),receptiveness=clamp(targetExtra*.45+targetEmpathy*.35+targetPatience*.20),interactionOutcome=receptiveness>=.58&&compatibility>=.45?"POSITIVE":receptiveness<=.32||compatibility<.25?"NEGATIVE":"NEUTRAL";const baselineDeltas={familiarity:.06,trust:.01+compatibility*.025,affection:(receptiveness-.5)*.018,closeness:(receptiveness-.5)*.016,respect:sourceConfidence*.012};const outcomeDeltas=conversationOutcomeDeltas(interactionOutcome),relationshipDeltas=mergeRelationshipDeltas(baselineDeltas,outcomeDeltas),relationshipId=await upsertInteractionRelationship({simulationId,sourceEntityId,targetEntityId,simulationAt,deltas:relationshipDeltas,typeCode:"ACQUAINTANCE",sourceEventId:eventId});if(!relationshipId)return null;const updatedRelationship=await matureRelationship(simulationId,sourceEntityId,targetEntityId,simulationAt,eventId);const conversationId=await ensureSocialConversation(simulationId,sourceEntityId,targetEntityId,simulationAt);const[sourceRows,targetRows]=await Promise.all([pool.query(`SELECT display_name AS name FROM entities WHERE id=UUID_TO_BIN(?) LIMIT 1`,[sourceEntityId]),pool.query(`SELECT display_name AS name FROM entities WHERE id=UUID_TO_BIN(?) LIMIT 1`,[targetEntityId])]),sourceName=sourceRows[0][0]?.name||"",targetName=targetRows[0][0]?.name||"";const opener=sourceExtra>.7?`Ehi ${targetName}, che fai?`:`Ciao ${targetName}, come stai?`,response=receptiveness>.68?`Ciao ${sourceName}! Bene, grazie. Mi fa piacere vederti.`:receptiveness>.46?`Ciao ${sourceName}, tutto bene. E tu?`:`Ciao. Tutto bene, grazie.`;const sourceMessageId=await createSocialMessage({simulationId,conversationId,senderEntityId:sourceEntityId,content:opener,simulationAt,metadata:{role:"INITIATOR",targetEntityId,compatibility,receptiveness,relationshipIntent}}),targetMessageId=await createSocialMessage({simulationId,conversationId,senderEntityId:targetEntityId,content:response,simulationAt,metadata:{role:"RESPONDER",targetEntityId:sourceEntityId,compatibility,receptiveness,interactionOutcome}});const intentId=uuid();await pool.query(`INSERT INTO communication_intents(id,simulation_id,entity_id,target_entity_id,channel,reason_type,priority,status,created_simulation_at,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),'CHAT','AUTONOMOUS_INITIATED',?,?,?,1)`,[intentId,simulationId,sourceEntityId,targetEntityId,clamp(.45+Math.max(0,receptiveness-.5)+Math.max(0,compatibility-.5)),"SENT",simulationAt]);const attemptId=uuid();await pool.query(`INSERT INTO communication_attempts(id,simulation_id,intent_id,attempted_simulation_at,status,result,message_id) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,'DELIVERED',?,UUID_TO_BIN(?))`,[attemptId,simulationId,intentId,simulationAt,JSON.stringify({conversationId,interactionOutcome,sourceMessageId,targetMessageId,relationshipId}),targetMessageId]);await recordSocialMemory({simulationId,entityId:sourceEntityId,targetEntityId,targetName,locationId,simulationAt,eventId,relationshipType:updatedRelationship?.type||"ACQUAINTANCE",intent:relationshipIntent,outcome:interactionOutcome,compatibility,scoreChanges:relationshipDeltas});await recordSocialMemory({simulationId,entityId:targetEntityId,targetEntityId:sourceEntityId,targetName:sourceName,locationId,simulationAt,eventId,relationshipType:updatedRelationship?.type||"ACQUAINTANCE",intent:"NONE",outcome:`received interaction from ${sourceName}: ${interactionOutcome}`,compatibility,scoreChanges:relationshipDeltas});return{relationshipId:updatedRelationship?.id||relationshipId,conversationId,sourceMessageId,targetMessageId,interactionOutcome,compatibility,receptiveness};}
+async function processSocialInteraction({simulationId,sourceEntityId,targetEntityId,simulationAt,eventId,relationshipIntent="NONE",locationId=null}){
+  if(!sourceEntityId||!targetEntityId||sourceEntityId===targetEntityId)return null;
+  const [sourceTraits,targetTraits]=await Promise.all([loadTraits(sourceEntityId),loadTraits(targetEntityId)]);
+  const compatibility=compatibilityFromTraits(sourceTraits,targetTraits);
+  const sourceExtra=traitValue(sourceTraits,"EXTRAVERSION"),sourceConfidence=traitValue(sourceTraits,"CONFIDENCE");
+  const targetExtra=traitValue(targetTraits,"EXTRAVERSION"),targetEmpathy=traitValue(targetTraits,"EMPATHY"),targetPatience=traitValue(targetTraits,"PATIENCE");
+  const receptiveness=clamp(targetExtra*.40+targetEmpathy*.35+targetPatience*.25);
+  const chemistry=socialChemistry(sourceTraits,targetTraits,compatibility,receptiveness);
+  const existingRelationship=await relationshipBetween(simulationId,sourceEntityId,targetEntityId,"ACTIVE");
+  const formationAccepted=Boolean(existingRelationship)||relationshipFormationAccepted({compatibility,receptiveness,simulationAt,sourceEntityId,targetEntityId});
+  const interactionOutcome=socialInteractionOutcome({compatibility,receptiveness,simulationAt,sourceEntityId,targetEntityId});
+  if(!formationAccepted&&!existingRelationship){
+    await recordSocialMemory({
+      simulationId,entityId:sourceEntityId,targetEntityId,targetName:targetEntityId,locationId,simulationAt,eventId,
+      relationshipType:"NONE",intent:relationshipIntent,outcome:interactionOutcome,compatibility,
+      scoreChanges:{conflict:interactionOutcome==="NEGATIVE"?.015:0,affection:0}
+    });
+    return{relationshipId:null,conversationId:null,interactionOutcome,compatibility,receptiveness,relationshipFormed:false};
+  }
+
+  const outcomeDeltas=conversationOutcomeDeltas(interactionOutcome);
+  const chemistryDeltas=interactionOutcome==="POSITIVE"
+    ? {attraction:.018*compatibility*receptiveness,affection:.012*chemistry,trust:.010*chemistry,closeness:.010*chemistry}
+    : interactionOutcome==="NEGATIVE"
+      ? {attraction:-.020,affection:-.025,trust:-.030,closeness:-.022,conflict:.045,irritation:.040,fear:.015}
+      : {attraction:.005*compatibility,conflict:.004,irritation:.003};
+  const relationshipDeltas=mergeRelationshipDeltas(outcomeDeltas,chemistryDeltas);
+  const relationshipId=await upsertInteractionRelationship({simulationId,sourceEntityId,targetEntityId,simulationAt,deltas:relationshipDeltas,typeCode:"ACQUAINTANCE",sourceEventId:eventId});
+  if(!relationshipId)return{relationshipId:null,conversationId:null,interactionOutcome,compatibility,receptiveness,relationshipFormed:false};
+
+  const updatedRelationship=await matureRelationship(simulationId,sourceEntityId,targetEntityId,simulationAt,eventId);
+  const conversationId=await ensureSocialConversation(simulationId,sourceEntityId,targetEntityId,simulationAt);
+  const [sourceRows,targetRows]=await Promise.all([
+    pool.query(`SELECT display_name AS name FROM entities WHERE id=UUID_TO_BIN(?) LIMIT 1`,[sourceEntityId]),
+    pool.query(`SELECT display_name AS name FROM entities WHERE id=UUID_TO_BIN(?) LIMIT 1`,[targetEntityId])
+  ]);
+  const sourceName=sourceRows[0][0]?.name||"",targetName=targetRows[0][0]?.name||"";
+  const opener=sourceExtra>.7?`Ehi ${targetName}, che fai?`:`Ciao ${targetName}, come stai?`;
+  const response=receptiveness>.68?`Ciao ${sourceName}! Bene, grazie. Mi fa piacere vederti.`:receptiveness>.46?`Ciao ${sourceName}, tutto bene. E tu?`:`Ciao. Tutto bene, grazie.`;
+  const sourceMessageId=await createSocialMessage({simulationId,conversationId,senderEntityId:sourceEntityId,content:opener,simulationAt,metadata:{role:"INITIATOR",targetEntityId,compatibility,receptiveness,interactionOutcome}});
+  const targetMessageId=await createSocialMessage({simulationId,conversationId,senderEntityId:targetEntityId,content:response,simulationAt,metadata:{role:"RESPONDER",targetEntityId:sourceEntityId,compatibility,receptiveness,interactionOutcome}});
+  const intentId=uuid();
+  await pool.query(`INSERT INTO communication_intents(id,simulation_id,entity_id,target_entity_id,channel,reason_type,priority,status,created_simulation_at,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),'CHAT','AUTONOMOUS_INITIATED',?,?,?,1)`,[intentId,simulationId,sourceEntityId,targetEntityId,clamp(.40+chemistry*.45), "SENT",simulationAt]);
+  const attemptId=uuid();
+  await pool.query(`INSERT INTO communication_attempts(id,simulation_id,intent_id,attempted_simulation_at,status,result,message_id) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,'DELIVERED',?,UUID_TO_BIN(?))`,[attemptId,simulationId,intentId,simulationAt,JSON.stringify({conversationId,interactionOutcome,sourceMessageId,targetMessageId,relationshipId}),targetMessageId]);
+  await recordSocialMemory({simulationId,entityId:sourceEntityId,targetEntityId,targetName,locationId,simulationAt,eventId,relationshipType:updatedRelationship?.type||"ACQUAINTANCE",intent:relationshipIntent,outcome:interactionOutcome,compatibility,scoreChanges:relationshipDeltas});
+  await recordSocialMemory({simulationId,entityId:targetEntityId,targetEntityId:sourceEntityId,targetName:sourceName,locationId,simulationAt,eventId,relationshipType:updatedRelationship?.type||"ACQUAINTANCE",intent:"NONE",outcome:`received interaction from ${sourceName}: ${interactionOutcome}`,compatibility,scoreChanges:relationshipDeltas});
+  return{relationshipId:updatedRelationship?.id||relationshipId,conversationId,sourceMessageId,targetMessageId,interactionOutcome,compatibility,receptiveness,relationshipFormed:!existingRelationship};
+}
+
 async function maintainRelationships(simulationId,simulationAt){const[candidates]=await pool.query(`SELECT BIN_TO_UUID(r.id) AS id,r.status,r.started_simulation_at AS startedSimulationAt,r.source_entity_id AS sourceEntityId,r.target_entity_id AS targetEntityId,rt.code AS type FROM relationships r JOIN relationship_types rt ON rt.id=r.relationship_type_id WHERE r.simulation_id=UUID_TO_BIN(?)`,[simulationId]);for(const r of candidates){const ageHours=Math.max(0,(new Date(simulationAt)-new Date(r.startedSimulationAt))/3600000);if(r.status==='ACTIVE'&&ageHours>24*45&&r.type==='ACQUAINTANCE')await endRelationship(r.id,simulationAt,"TIMEOUT");if(r.status==='ACTIVE'&&ageHours>24*120&&r.type==='FRIEND')await endRelationship(r.id,simulationAt,"FRIENDSHIP_DECAY");}}
 
-module.exports={maintainRelationships,buildSocialContext,buildSocialContexts,socialCandidates,relationshipBetween,currentPartner,deriveSocialIntent,updateRelationshipScores,setRelationshipType,reactivateRelationship,requestPartnership,reconcileRelationship,recordBetrayal,conversationOutcomeDeltas,mergeRelationshipDeltas,shouldPromoteToFriend,matureRelationship,applyConversationOutcome,recordSocialMemory,compatibilityFromTraits,processSocialInteraction};
+module.exports={maintainRelationships,buildSocialContext,buildSocialContexts,socialCandidates,relationshipBetween,currentPartner,deriveSocialIntent,updateRelationshipScores,setRelationshipType,reactivateRelationship,requestPartnership,reconcileRelationship,recordBetrayal,conversationOutcomeDeltas,mergeRelationshipDeltas,shouldPromoteToFriend,matureRelationship,applyConversationOutcome,recordSocialMemory,compatibilityFromTraits,processSocialInteraction,stableInteractionNoise,socialChemistry,relationshipFormationAccepted,socialInteractionOutcome};
