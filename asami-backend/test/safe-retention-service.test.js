@@ -128,7 +128,7 @@ test("actor cognitive cap uses joined DELETE instead of LIMIT in IN subquery",()
   const start=source.indexOf("async function deleteActorCognitiveArtifacts");
   const end=source.indexOf("\nasync function deleteOldRelationshipHistory",start);
   const block=source.slice(start,end);
-  assert.match(block,/DELETE t FROM \+target\.table\+ t/);
+  assert.match(block,/DELETE t FROM "\+target\.table\+" t/);
   assert.match(block,/JOIN \(SELECT id FROM/);
   assert.doesNotMatch(block,/WHERE id IN \(SELECT id FROM \(SELECT id/);
 });
