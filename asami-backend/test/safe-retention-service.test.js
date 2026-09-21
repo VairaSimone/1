@@ -79,3 +79,27 @@ test("retention uses direct set-based deletion for high-growth history",()=>{
   assert.match(source,/memory_dedupe_key/);
   assert.match(source,/compactDuplicateMemories/);
 });
+
+test("retention exposes actor caps and differentiated history policy",()=>{
+  const policy=retention.getRetentionPolicy();
+  assert.ok(policy.needHistoryDays<=3);
+  assert.ok(policy.emotionHistoryDays<=3);
+  assert.ok(policy.cognitiveArtifactDays<=14);
+  assert.ok(policy.maxEpisodicMemoriesPerActor>=100);
+  assert.ok(policy.maxCognitiveExpectationsPerActor>=100);
+  assert.ok(policy.maxCounterfactualsPerActor>=100);
+  assert.ok(policy.maxCounterfactualWorldsPerActor>=100);
+  assert.ok(policy.relationshipHistoryDays>=7);
+  assert.ok(policy.memoryPermanentImportance>=0.75);
+});
+
+test("retention contains actor-level caps and preserves open counterfactuals",()=>{
+  const fs=require("node:fs");
+  const path=require("node:path");
+  const source=fs.readFileSync(path.join(__dirname,"../src/services/safe-retention-service.js"),"utf8");
+  assert.match(source,/async function archiveExcessEpisodicMemories/);
+  assert.match(source,/async function deleteActorCognitiveArtifacts/);
+  assert.match(source,/status='RESOLVED'/);
+  assert.match(source,/EXISTS \(SELECT 1 FROM decisions d/);
+  assert.match(source,/RETENTION_MAX_EPISODIC_MEMORIES_PER_ACTOR/);
+});
