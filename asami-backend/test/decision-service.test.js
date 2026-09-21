@@ -1,6 +1,7 @@
 const test=require("node:test");
 const assert=require("node:assert/strict");
 const fs=require("node:fs");
+const path=require("node:path");
 const {scoreAction,criticalNeedModifier}=require("../src/services/decision-rules");
 
 test("need pressure makes the corresponding action preferable",()=>{
