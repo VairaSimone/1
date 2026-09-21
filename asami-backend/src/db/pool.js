@@ -180,11 +180,12 @@ async function getConnectionWithRetry({ attempts = env.DB_RETRY_ATTEMPTS } = {})
   throw lastError || new Error("Database connection acquisition failed");
 }
 
-async function withTransaction(fn, { retryAttempts = DB_TRANSACTION_RETRY_ATTEMPTS } = {}) {
+async function withTransaction(fn, { retryAttempts = DB_TRANSACTION_RETRY_ATTEMPTS, connection = null } = {}) {
   const totalAttempts=Math.max(1,Math.min(5,Math.floor(Number(retryAttempts)||1)));
   let lastError=null;
   for(let attempt=0;attempt<totalAttempts;attempt+=1){
-    const conn = await getConnectionWithRetry();
+    const ownsConnection=!connection;
+    const conn = connection || await getConnectionWithRetry();
     let committed=false;
     try {
       await conn.beginTransaction();
@@ -199,7 +200,7 @@ async function withTransaction(fn, { retryAttempts = DB_TRANSACTION_RETRY_ATTEMP
       if(!retryable) throw err;
       await sleep(retryDelayMs(attempt));
     } finally {
-      conn.release();
+      if(ownsConnection) conn.release();
     }
   }
   throw lastError || new Error("Database transaction failed");
