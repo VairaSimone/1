@@ -1,4 +1,4 @@
-const { pool } = require("../db/pool");
+const { pool, withTransaction } = require("../db/pool");
 const { uuid } = require("../lib/ids");
 const crypto = require("crypto");
 const { clamp } = require("./state-rules");
@@ -25,24 +25,13 @@ async function withEntityStateLock(entityId, fn) {
   const conn = await pool.getConnection();
   const lockName = entityStateLockName(entityId);
   let locked = false;
-  let transactionStarted = false;
   try {
     const [rows] = await conn.query("SELECT GET_LOCK(?,?) AS acquired", [lockName, ENTITY_STATE_LOCK_TIMEOUT_SECONDS]);
     locked = Number(rows[0]?.acquired) === 1;
     if (!locked) {
       throw Object.assign(new Error("Entity state lock unavailable"), { code: "ENTITY_STATE_LOCK_UNAVAILABLE", entityId, lockName });
     }
-    await conn.beginTransaction();
-    transactionStarted = true;
-    const result = await fn(conn);
-    await conn.commit();
-    transactionStarted = false;
-    return result;
-  } catch (err) {
-    if (transactionStarted) {
-      try { await conn.rollback(); } catch {}
-    }
-    throw err;
+    return await withTransaction(fn, { connection: conn });
   } finally {
     try { if (locked) await conn.query("SELECT RELEASE_LOCK(?)", [lockName]); } catch {}
     conn.release();
