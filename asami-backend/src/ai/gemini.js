@@ -35,6 +35,8 @@ function classifyGeminiError(err) {
   const retryMs=retryAfterMs || (retryMatch ? Math.ceil(Number(retryMatch[1])*1000) : 0);
   const isTimeout=code==="AI_TIMEOUT" ||
     /TIMEOUT|TIMED OUT|DEADLINE EXCEEDED/.test(providerText);
+  const isInvalidOutput=code==="AI_INVALID_OUTPUT" ||
+    /UNTERMINATED STRING|UNEXPECTED END OF JSON|UNEXPECTED TOKEN/.test(providerText);
   const isTransientHttp=[408,500,502,503,504].includes(status) ||
     /\b503\b.*(?:UNAVAILABLE|SERVICE UNAVAILABLE)|\bUNAVAILABLE\b/.test(providerText);
   const isNetwork=TRANSIENT_NETWORK_CODES.has(code) ||
@@ -42,6 +44,7 @@ function classifyGeminiError(err) {
   if(isQuota)return{kind:"QUOTA",retryAfterMs:retryMs};
   if(isRateLimited)return{kind:"RATE_LIMIT",retryAfterMs:retryMs};
   if(isTimeout)return{kind:"TIMEOUT",retryAfterMs:Math.max(0,retryMs)};
+  if(isInvalidOutput)return{kind:"INVALID_OUTPUT",retryAfterMs:retryMs};
   if(isTransientHttp)return{kind:"TRANSIENT",retryAfterMs:retryMs,status};
   if(isNetwork)return{kind:"NETWORK",retryAfterMs:retryMs};
   return{kind:"ERROR",retryAfterMs:0};
@@ -225,9 +228,31 @@ class GeminiService {
           }
         });
         const raw=typeof response.text==="string"?response.text:"";
-        const parsed=schema.parse(JSON.parse(raw));
+        const finishReason=String(
+          response?.candidates?.[0]?.finishReason ||
+          response?.candidates?.[0]?.finish_reason ||
+          ""
+        ).toUpperCase();
+
+        // maxOutputTokens is a hard ceiling that can truncate JSON, so treat
+        // MAX_TOKENS/LENGTH as invalid structured output and fail over.
         await budget.finalize(reservation,response.usageMetadata);
         finalized=true;
+
+        let parsed;
+        try{
+          if(finishReason==="MAX_TOKENS"||finishReason==="LENGTH"){
+            throw new Error("Gemini structured output truncated");
+          }
+          parsed=schema.parse(JSON.parse(raw));
+        }catch(parseError){
+          throw Object.assign(parseError,{
+            code:"AI_INVALID_OUTPUT",
+            message:parseError?.message||"Gemini produced invalid structured output",
+            finishReason:finishReason||null
+          });
+        }
+
         this._resetModel(model);
         this.providerFailureStreak=0;
         this.lastRequestStatus={
@@ -280,6 +305,33 @@ class GeminiService {
           }catch(releaseErr){
             logger.error({err:releaseErr,kind,model},"Failed to release Gemini budget reservation");
           }
+        }
+
+        if(failure.kind==="INVALID_OUTPUT"){
+          const fallbackModel=models[modelIndex+1]||null;
+          lastTransientFailure={
+            reason:"AI_INVALID_OUTPUT",
+            retryAfterMs:0,
+            model
+          };
+          this.lastRequestStatus={
+            status:"FALLBACK",
+            source:"DETERMINISTIC_FALLBACK",
+            reason:"AI_INVALID_OUTPUT",
+            attempted:true,
+            retryAfterMs:0,
+            kind,
+            model,
+            fallbackDepth:modelIndex
+          };
+          logger.warn({
+            kind,
+            model,
+            finishReason:err?.finishReason||null,
+            fallbackTo:fallbackModel,
+            latencyMs:Date.now()-startedAt
+          },"Gemini produced invalid structured output; trying fallback model");
+          continue;
         }
 
         if(failure.kind==="RATE_LIMIT"||failure.kind==="QUOTA"){
