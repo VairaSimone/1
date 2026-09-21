@@ -23,7 +23,7 @@ async function reconcileCompletedActions(simulationId,{limit=100}={}) {
      LEFT JOIN decisions d ON d.id=a.decision_id
      LEFT JOIN intentions i ON i.id=a.source_intention_id
      WHERE a.simulation_id=UUID_TO_BIN(?)
-       AND a.status IN ('COMPLETED','INTERRUPTED','FAILED','CANCELLED')
+       AND a.status IN ('COMPLETED','INTERRUPTED')
        AND a.post_processing_status='PENDING'
      ORDER BY a.completed_simulation_at ASC
      LIMIT ?`,
