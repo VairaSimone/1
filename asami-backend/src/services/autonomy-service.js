@@ -270,7 +270,8 @@ async function actForEntity({simulationId,entityId,simulationTime,gemini,tickId=
   const currentLocationId=context.location?.locationId||await getEntityLocation(simulationId,entityId);
   let socialContext=batchContext?.socialContexts?.get(entityId)||null;
   if(!socialContext&&entity.entityType==="PERSON"){
-    const fallbackRemote=await buildRemoteSocialContexts(simulationId,[entityId],{worldLocations:batchContext?.worldLocations||[]});
+    const fallbackWorldLocations=await loadWorldLocations(simulationId);
+    const fallbackRemote=await buildRemoteSocialContexts(simulationId,[entityId],{worldLocations:fallbackWorldLocations});
     socialContext=fallbackRemote.get(entityId)||null;
   }
   socialContext=socialContext||{partner:null,candidates:[],remoteCandidates:[],traits:[]};
