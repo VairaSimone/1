@@ -213,7 +213,7 @@ async function deleteActorCognitiveArtifacts(conn,simulationId,simulationTime){
   const cutoff=cutoffDateTime(simulationTime,POLICY.cognitiveArtifactDays);
   const targets=[
     {table:"cognitive_expectations",max:POLICY.maxCognitiveExpectationsPerActor,timeColumn:"created_simulation_at",where:"status='RESOLVED'"},
-    {table:"counterfactuals",max:POLICY.maxCounterfactualsPerActor,timeColumn:"created_simulation_at",where:"1=1"},
+    {table:"counterfactuals",max:POLICY.maxCounterfactualsPerActor,timeColumn:"created_simulation_at",where:"EXISTS (SELECT 1 FROM decisions d WHERE d.id=counterfactuals.decision_id AND d.status IN (\'EXECUTED\',\'FAILED\',\'CANCELLED\'))"},
     {table:"counterfactual_worlds",max:POLICY.maxCounterfactualWorldsPerActor,timeColumn:"created_simulation_at",where:"status='RESOLVED'"}
   ];
   const totals={expectations:0,counterfactuals:0,counterfactualWorlds:0};
