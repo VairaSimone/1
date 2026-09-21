@@ -138,44 +138,65 @@ async function deleteSelectedRows(conn, {
   };
 }
 
+async function deleteHistoryDirectBatch(conn,table,simulationId,cutoff,remainingBudget,maxDeletes){
+  const safeTables=new Set(["entity_need_history","entity_emotion_history"]);
+  if(!safeTables.has(table))throw new Error("Unsupported history table");
+  let deleted=0;
+  while(deleted<maxDeletes&&retentionBudgetAvailable(simulationId)){
+    const limit=Math.min(POLICY.batchSize,maxDeletes-deleted);
+    const [result]=await conn.query(
+      "DELETE FROM "+table+" WHERE id IN (SELECT id FROM (SELECT h.id FROM "+table+" h JOIN entities e ON e.id=h.entity_id WHERE e.simulation_id=UUID_TO_BIN(?) AND h.simulation_time < ? ORDER BY h.simulation_time ASC LIMIT "+limit+") doomed)",
+      [simulationId,cutoff]
+    );
+    const affected=Number(result.affectedRows||0);
+    deleted+=affected;
+    if(affected<limit)break;
+  }
+  const [backlog]=await conn.query(
+    "SELECT COUNT(*) AS candidates FROM "+table+" h JOIN entities e ON e.id=h.entity_id WHERE e.simulation_id=UUID_TO_BIN(?) AND h.simulation_time < ?",
+    [simulationId,cutoff]
+  );
+  return {deleted,remainingCandidates:Number(backlog[0]?.candidates||0),budgetExhausted:retentionBudgetRemainingMs(simulationId)<=0};
+}
+
+async function backfillMemoryDedupeKeys(conn,simulationId){
+  if(!retentionBudgetAvailable(simulationId))return 0;
+  const limit=POLICY.batchSize;
+  const [result]=await conn.query(
+    "UPDATE memories SET memory_dedupe_key=SHA2(CONCAT_WS('|',entity_id,COALESCE(location_id,''),LOWER(COALESCE(JSON_UNQUOTE(JSON_EXTRACT(metadata,'$.actionType')),'')),LOWER(COALESCE(JSON_UNQUOTE(JSON_EXTRACT(metadata,'$.outcome')),'')),COALESCE(JSON_UNQUOTE(JSON_EXTRACT(metadata,'$.decision.goalId')),JSON_UNQUOTE(JSON_EXTRACT(metadata,'$.goalId')),'')),COALESCE(JSON_UNQUOTE(JSON_EXTRACT(metadata,'$.planId')),JSON_UNQUOTE(JSON_EXTRACT(metadata,'$.decision.planId')),''),content),256) WHERE simulation_id=UUID_TO_BIN(?) AND status='ACTIVE' AND memory_dedupe_key IS NULL AND JSON_UNQUOTE(JSON_EXTRACT(metadata,'$.kind'))='action_outcome' AND JSON_UNQUOTE(JSON_EXTRACT(metadata,'$.outcome'))='SUCCESS' AND LOWER(COALESCE(JSON_UNQUOTE(JSON_EXTRACT(metadata,'$.actionType')),''))<>'talking' AND importance<=0.55 AND emotional_intensity<=0.30 LIMIT "+limit,
+    [simulationId]
+  );
+  return Number(result.affectedRows||0);
+}
+
+async function compactDuplicateMemories(conn,simulationId,simulationTime){
+  const cutoff=cutoffDateTime(simulationTime,POLICY.memoryDeleteDays);
+  let deleted=0;
+  while(deleted<POLICY.maxDeletesPerTable&&retentionBudgetAvailable(simulationId)){
+    const limit=Math.min(POLICY.batchSize,POLICY.maxDeletesPerTable-deleted);
+    const [result]=await conn.query(
+      "DELETE FROM memories WHERE id IN (SELECT id FROM (SELECT m.id,ROW_NUMBER() OVER(PARTITION BY m.memory_dedupe_key ORDER BY m.importance DESC,m.strength DESC,m.created_simulation_at DESC) AS rn FROM memories m WHERE m.simulation_id=UUID_TO_BIN(?) AND m.status='ACTIVE' AND m.memory_dedupe_key IS NOT NULL AND m.created_simulation_at < ? AND m.importance<=0.55 AND m.emotional_intensity<=0.30) ranked WHERE ranked.rn>1 LIMIT "+limit+")",
+      [simulationId,cutoff]
+    );
+    const affected=Number(result.affectedRows||0);
+    deleted+=affected;
+    if(affected<limit)break;
+  }
+  const [backlog]=await conn.query(
+    "SELECT COUNT(*) AS candidates FROM memories WHERE simulation_id=UUID_TO_BIN(?) AND status='ACTIVE' AND memory_dedupe_key IS NOT NULL AND created_simulation_at < ? AND importance<=0.55 AND emotional_intensity<=0.30",
+    [simulationId,cutoff]
+  );
+  return {deleted,remainingCandidates:Number(backlog[0]?.candidates||0)};
+}
+
 async function deleteOldNeedHistory(conn, simulationId, simulationTime) {
-  const cutoff = cutoffDateTime(simulationTime, POLICY.needHistoryDays);
-  const selectSql =
-    "SELECT BIN_TO_UUID(h.id) AS id FROM entity_need_history h " +
-    "JOIN entities e ON e.id=h.entity_id " +
-    "WHERE e.simulation_id=UUID_TO_BIN(?) AND h.simulation_time < ? " +
-    "ORDER BY h.simulation_time ASC LIMIT " + POLICY.batchSize;
-  const countSql =
-    "SELECT COUNT(*) AS candidates FROM entity_need_history h " +
-    "JOIN entities e ON e.id=h.entity_id " +
-    "WHERE e.simulation_id=UUID_TO_BIN(?) AND h.simulation_time < ?";
-  return deleteSelectedRows(conn, {
-    selectSql,
-    selectParams: [simulationId, cutoff],
-    countSql,
-    deleteTable: "entity_need_history",
-    resultKey: "deleted"
-  });
+  const cutoff=cutoffDateTime(simulationTime,POLICY.needHistoryDays);
+  return deleteHistoryDirectBatch(conn,"entity_need_history",simulationId,cutoff,simulationId,POLICY.maxDeletesPerTable);
 }
 
 async function deleteOldEmotionHistory(conn, simulationId, simulationTime) {
-  const cutoff = cutoffDateTime(simulationTime, POLICY.emotionHistoryDays);
-  const selectSql =
-    "SELECT BIN_TO_UUID(h.id) AS id FROM entity_emotion_history h " +
-    "JOIN entities e ON e.id=h.entity_id " +
-    "WHERE e.simulation_id=UUID_TO_BIN(?) AND h.simulation_time < ? " +
-    "ORDER BY h.simulation_time ASC LIMIT " + POLICY.batchSize;
-  const countSql =
-    "SELECT COUNT(*) AS candidates FROM entity_emotion_history h " +
-    "JOIN entities e ON e.id=h.entity_id " +
-    "WHERE e.simulation_id=UUID_TO_BIN(?) AND h.simulation_time < ?";
-  return deleteSelectedRows(conn, {
-    selectSql,
-    selectParams: [simulationId, cutoff],
-    countSql,
-    deleteTable: "entity_emotion_history",
-    resultKey: "deleted"
-  });
+  const cutoff=cutoffDateTime(simulationTime,POLICY.emotionHistoryDays);
+  return deleteHistoryDirectBatch(conn,"entity_emotion_history",simulationId,cutoff,simulationId,POLICY.maxDeletesPerTable);
 }
 
 async function deleteOldEvents(conn, simulationId, simulationTime) {
@@ -591,6 +612,8 @@ async function runSafeRetention(simulationId, simulationTime) {
     );
     const actionSummaries = await compactOldActionDecisionSummaries(lock.conn, simulationId, mysqlSimulationTime);
     const actions = await deleteOldActions(lock.conn, simulationId, mysqlSimulationTime);
+    const memoryDedupeBackfilled = await backfillMemoryDedupeKeys(lock.conn, simulationId);
+    const duplicateMemories = await compactDuplicateMemories(lock.conn, simulationId, mysqlSimulationTime);
     const needs = await deleteOldNeedHistory(lock.conn, simulationId, mysqlSimulationTime);
     const emotions = await deleteOldEmotionHistory(lock.conn, simulationId, mysqlSimulationTime);
     const memoryArchive = await archiveStaleMemories(lock.conn, simulationId, mysqlSimulationTime);
@@ -611,6 +634,8 @@ async function runSafeRetention(simulationId, simulationTime) {
       actionsDeleted: Number(actions.deleted || 0),
       needHistoryDeleted: Number(needs.deleted || 0),
       emotionHistoryDeleted: Number(emotions.deleted || 0),
+      memoriesDeduped: Number(duplicateMemories.deleted || 0),
+      memoryDedupeBackfilled: Number(memoryDedupeBackfilled || 0),
       memoriesArchived: Number(memoryArchive.archived || 0),
       memoriesDeleted: Number(memories.deleted || 0),
       expectationsDeleted: Number(expectations.deleted || 0),
@@ -632,6 +657,7 @@ async function runSafeRetention(simulationId, simulationTime) {
       eventBacklog: Number(events.remainingCandidates || 0),
       actionBacklog: Number(actions.remainingCandidates || 0),
       memoryArchiveBacklog: Number(memoryArchive.remainingCandidates || 0),
+      memoryDedupeBacklog: Number(duplicateMemories.remainingCandidates || 0),
       memoryDeleteBacklog: Number(memories.remainingCandidates || 0),
       expectationBacklog: Number(expectations.remainingCandidates || 0),
       counterfactualBacklog: Number(counterfactuals.remainingCandidates || 0),
@@ -643,6 +669,7 @@ async function runSafeRetention(simulationId, simulationTime) {
         Number(actions.remainingCandidates || 0) +
         Number(actionSummaries.remainingCandidates || 0) +
         Number(memoryArchive.remainingCandidates || 0) +
+        Number(duplicateMemories.remainingCandidates || 0) +
         Number(memories.remainingCandidates || 0) +
         Number(expectations.remainingCandidates || 0) +
         Number(counterfactuals.remainingCandidates || 0) +
