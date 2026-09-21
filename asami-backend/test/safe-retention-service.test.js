@@ -165,3 +165,56 @@ test("retention keeps dedicated need and emotion history workers wired",()=>{
   assert.match(source,/deleteHistoryDirectBatch\(conn,"entity_need_history"/);
   assert.match(source,/deleteHistoryDirectBatch\(conn,"entity_emotion_history"/);
 });
+
+
+test("normal observability logs are compact while full metrics stay at debug",()=>{
+  const fs=require("node:fs");
+  const path=require("node:path");
+  const source=fs.readFileSync(path.join(__dirname,"../src/services/simulation-observability.js"),"utf8");
+  const observability=require("../src/services/simulation-observability");
+  const compact=observability.compactSnapshot({
+    counters:{
+      db_queries_total:123,
+      db_query_latency_ms_total:456,
+      db_slow_queries_total:2,
+      integrity_violation_total:1
+    },
+    gauges:{
+      db_queries_current_tick:9,
+      db_query_latency_ms_last:4,
+      db_query_latency_ms_max:80,
+      retention_backlog_rows:0,
+      action_backlog_rows:0,
+      action_decision_summary_backlog_rows:0,
+      event_backlog_rows:0,
+      need_history_backlog_rows:0,
+      emotion_history_backlog_rows:0
+    }
+  });
+  assert.equal(compact.dbQueries,123);
+  assert.equal(compact.dbQueryMs,456);
+  assert.equal(compact.tickQueries,9);
+  assert.equal(compact.alerts.integrityViolations,1);
+  assert.equal(Object.prototype.hasOwnProperty.call(compact,"counters"),false);
+  assert.match(source,/metrics:compactSnapshot\(metrics\)/);
+  assert.match(source,/"simulation observability detail"/);
+});
+
+test("retention info logs emit only changes and summary gauges",()=>{
+  const fs=require("node:fs");
+  const path=require("node:path");
+  const source=fs.readFileSync(path.join(__dirname,"../src/services/safe-retention-service.js"),"utf8");
+  assert.match(source,/const changes = \{\};/);
+  assert.match(source,/backlogRows:summary\.retentionBacklogTotal/);
+  assert.match(source,/logger\.debug\(summary,"retention cycle detail"\)/);
+  assert.doesNotMatch(source,/logger\.info\(summary,"safe retention cycle completed"\)/);
+});
+
+test("startup and successful-provider noise are suppressed at info level",()=>{
+  const fs=require("node:fs");
+  const path=require("node:path");
+  const envSource=fs.readFileSync(path.join(__dirname,"../src/config/env.js"),"utf8");
+  const geminiSource=fs.readFileSync(path.join(__dirname,"../src/ai/gemini.js"),"utf8");
+  assert.match(envSource,/dotenv"\)\.config\(\{ quiet: true \}\)/);
+  assert.match(geminiSource,/logger\.debug\(\{kind,model:this\.model/);
+});
