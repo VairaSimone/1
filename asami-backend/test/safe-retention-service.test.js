@@ -141,3 +141,12 @@ test("retention services continuous histories before slower cognitive cleanup",(
   assert.ok(run.indexOf("const needs = await deleteOldNeedHistory")<run.indexOf("const context = await compactOldDecisionContexts"));
   assert.ok(run.indexOf("const emotions = await deleteOldEmotionHistory")<run.indexOf("const context = await compactOldDecisionContexts"));
 });
+
+test("retention scheduling is based on simulation time during accelerated runs",()=>{
+  const fs=require("node:fs");
+  const path=require("node:path");
+  const source=fs.readFileSync(path.join(__dirname,"../src/services/safe-retention-service.js"),"utf8");
+  assert.match(source,/simulationIntervalHours/);
+  assert.match(source,/simulationMs-lastSimulationMs/);
+  assert.match(source,/RETENTION_CHECK_SIMULATION_HOURS/);
+});
