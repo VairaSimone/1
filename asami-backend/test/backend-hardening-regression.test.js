@@ -672,6 +672,26 @@ test('walking fallback avoids immediate backtracking when another edge exists',(
   assert.equal(nextHop(locations,'A',null,'B'),'C');
 });
 
+test('DB telemetry attributes query volume and latency to the current simulation phase',()=>{
+  const poolSource=read('db/pool.js');
+  const observabilitySource=read('services/simulation-observability.js');
+  const engineSource=read('simulation/engine.js');
+  assert.match(poolSource,/recordDbQuery/);
+  assert.match(observabilitySource,/db_queries_phase_\$\{phase\}_total/);
+  assert.match(observabilitySource,/db_query_latency_phase_\$\{phase\}_ms_total/);
+  assert.match(engineSource,/const setPhase = nextPhase =>/);
+  assert.match(engineSource,/runtimeContext\.phase = nextPhase/);
+});
+
+test('social batch context prepares remote candidates without per-actor fallback queries',()=>{
+  const social=read('services/social-relationship-service.js');
+  const autonomy=read('services/autonomy-service.js');
+  assert.match(social,/buildRemoteCandidatesForSource/);
+  assert.match(social,/remoteCandidates/);
+  assert.match(autonomy,/buildSocialContexts\(simulationId,ids,\{worldLocations\}\)/);
+  assert.match(autonomy,/remoteCandidates/);
+});
+
 test('autonomy builds the heavy decision context in batch for the whole tick',()=>{
   const decision=read('services/decision-service.js');
   const autonomy=read('services/autonomy-service.js');
