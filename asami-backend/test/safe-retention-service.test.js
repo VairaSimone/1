@@ -112,3 +112,11 @@ test("memory dedupe backfill uses valid MySQL SHA2 syntax",()=>{
   assert.match(source,/SHA2\(CONCAT_WS\([^;]+,256\)/);
   assert.doesNotMatch(source,/\)\),256\) WHERE simulation_id/);
 });
+
+test("duplicate memory cleanup avoids MySQL LIMIT inside IN subquery",()=>{
+  const fs=require("node:fs");
+  const path=require("node:path");
+  const source=fs.readFileSync(path.join(__dirname,"../src/services/safe-retention-service.js"),"utf8");
+  assert.match(source,/DELETE m FROM memories m JOIN \(SELECT id FROM \(SELECT m2\.id/);
+  assert.doesNotMatch(source,/WHERE id IN \(SELECT id FROM \(SELECT m\.id/);
+});
