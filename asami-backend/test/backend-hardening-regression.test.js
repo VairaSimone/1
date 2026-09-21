@@ -617,6 +617,61 @@ test('environmental scheduling has an overdue-vital-event path',()=>{
 });
 
 
+test('action relief remains effective at saturated pressure needs',()=>{
+  const source=read('services/state-service.js');
+  assert.match(source,/function saturatedActionDelta\(actionType,needCode,currentValue,hours\)/);
+  assert.match(source,/const pressureFactor=\.30\+\.70\*value/);
+  assert.doesNotMatch(source,/if\(rate<0\)return-amount\*value;/);
+});
+
+test('successful need relief actively releases negative emotional load',()=>{
+  const { emotionAppraisal } = require('../src/services/state-service');
+  const changes=[
+    {code:'FUN',old:1,new:.35,delta:-.65},
+    {code:'BELONGING',old:.9,new:.55,delta:-.35}
+  ];
+  const appraisal=emotionAppraisal('PLAYING',changes,{
+    event:true,
+    outcome:'SUCCESS',
+    meaning:'GOAL_PROGRESS',
+    traits:[
+      {code:'NEUROTICISM',value:.5},
+      {code:'EXTRAVERSION',value:.5},
+      {code:'SOCIABILITY',value:.5},
+      {code:'EMPATHY',value:.5},
+      {code:'OPENNESS',value:.5},
+      {code:'PATIENCE',value:.5},
+      {code:'IMPULSIVITY',value:.5}
+    ]
+  });
+  assert.ok(Number(appraisal.SADNESS)<0);
+  assert.ok(Number(appraisal.FRUSTRATION)<0);
+  assert.ok(Number(appraisal.ANXIETY)<0);
+  assert.ok(Number(appraisal.JOY)>0);
+});
+
+test('exploration strongly penalizes immediate and recent revisits',()=>{
+  const source=read('services/autonomy-service.js');
+  assert.match(source,/if\(elapsed<=\.5\)return 0/);
+  assert.match(source,/const immediateReturn=String\(location\.locationId\)===String\(previousLocationId\|\|'\) /);
+  assert.match(source,/recentVisitPenalty=immediateReturn\?\.95/);
+  assert.match(source,/score=novelty\*1\.55/);
+  const { explorationNoveltyScore } = require('../src/services/autonomy-service');
+  const now='2027-01-01T12:00:00.000Z';
+  assert.equal(explorationNoveltyScore('2027-01-01T11:45:00.000Z',now),0);
+  assert.ok(explorationNoveltyScore('2026-12-31T12:00:00.000Z',now) > explorationNoveltyScore('2027-01-01T10:30:00.000Z',now));
+});
+
+test('walking fallback avoids immediate backtracking when another edge exists',()=>{
+  const { nextHop } = require('../src/services/action-service');
+  const locations=[
+    {locationId:'A',data:{connections:['B','C']}},
+    {locationId:'B',data:{connections:['A']}},
+    {locationId:'C',data:{connections:['A']}}
+  ];
+  assert.equal(nextHop(locations,'A',null,'B'),'C');
+});
+
 test('autonomy builds the heavy decision context in batch for the whole tick',()=>{
   const decision=read('services/decision-service.js');
   const autonomy=read('services/autonomy-service.js');
