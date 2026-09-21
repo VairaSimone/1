@@ -36,8 +36,8 @@ const POLICY = Object.freeze({
   memoryDeleteDays: positiveInt(process.env.RETENTION_MEMORY_DELETE_DAYS, 7, 1),
   memoryArchiveImportanceMax: boundedNumber(process.env.RETENTION_MEMORY_ARCHIVE_IMPORTANCE_MAX, 0.75, 0, 1),
   eventImportanceKeepThreshold: boundedNumber(process.env.RETENTION_EVENT_IMPORTANCE_KEEP_THRESHOLD, 0.8, 0, 1),
-  batchSize: Math.min(2000, positiveInt(process.env.RETENTION_BATCH_SIZE, 500, 50)),
-  maxDeletesPerTable: Math.min(10000, positiveInt(process.env.RETENTION_MAX_DELETES_PER_TABLE, 2000, 100)),
+  batchSize: Math.min(5000, positiveInt(process.env.RETENTION_BATCH_SIZE, 2000, 250)),
+  maxDeletesPerTable: Math.min(20000, positiveInt(process.env.RETENTION_MAX_DELETES_PER_TABLE, 8000, 500)),
   timeBudgetMs: Math.min(30000, positiveInt(process.env.RETENTION_TIME_BUDGET_MS, 5000, 250)),
   dryRun: ["1", "true", "yes", "on"].includes(String(process.env.RETENTION_DRY_RUN || "false").trim().toLowerCase())
 });
