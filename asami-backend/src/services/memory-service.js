@@ -143,7 +143,7 @@ function buildMemoryDedupeKey({entityId,locationId,metadata,content}={}) {
   if(totalRelief>=.20||Number(metadata?.emotionalIntensity||0)>=.45)return null;
   return crypto.createHash("sha256").update([
     String(entityId||""),String(locationId||metadata?.locationId||metadata?.location?.id||""),
-    actionType,outcome,String(goalId||""),String(planId||""),String(content||"").trim()
+    actionType,outcome,String(goalId||""),String(planId||"")
   ].join("|")).digest("hex");
 }
 async function upsertDeduplicatedActionMemory({simulationId,entityId,locationId,simulationAt,content,importance,strength,confidence,emotionalIntensity,metadata,dedupeKey}){
