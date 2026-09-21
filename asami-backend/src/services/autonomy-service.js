@@ -168,6 +168,7 @@ async function prepareTickAutonomyContext({simulationId,entityIds=[],simulationT
   const decisionContexts=await decisionService.buildDecisionContexts(simulationId,ids,simulationTime,{worldLocations});
   const socialContexts=await buildSocialContexts(simulationId,ids);
   const visitedByEntity=await loadVisitedLocationsBatch(simulationId,ids);
+  const recentLocationsByEntity=await loadRecentLocationIdsBatch(ids);
   const recallBase=new Map();for(const id of ids){const base=decisionContexts.get(id);if(!base)continue;recallBase.set(id,{simulationTime,goalIds:(base.goals||[]).map(goal=>goal.id).filter(Boolean),locationId:base.location?.locationId||null,locationType:base.location?.locationType||null,candidateActionTypes:(base.candidates||[]).map(candidate=>candidate.action).filter(Boolean)});}
   const memoriesByEntity=await require('./memory-service').recallContexts(simulationId,ids,8,recallBase);
   for(const id of ids){
@@ -175,8 +176,9 @@ async function prepareTickAutonomyContext({simulationId,entityIds=[],simulationT
     const entity=entities.get(id);if(!entity)continue;
     const socialContext=socialContexts.get(id)||{partner:null,candidates:[],traits:[]};
     base.social={partner:socialContext.partner,candidates:(socialContext.candidates||[]).map(candidate=>({id:candidate.id,name:candidate.name,relationshipType:candidate.relationshipType,compatibility:Number(Number(candidate.compatibility||0).toFixed(3)),romanticScore:Number(Number(candidate.romanticScore||0).toFixed(3)),familiarity:Number(candidate.relationship?.familiarity||0),closeness:Number(candidate.relationship?.closeness||0),affection:Number(candidate.relationship?.affection||0),trust:Number(candidate.relationship?.trust||0)}))};
-    const currentLocationId=base.location?.locationId||null,visited=visitedByEntity.get(id)||new Map();
-    if(entity.entityType==='PERSON'&&currentLocationId){const target=await chooseSocialTarget(socialContext,simulationId,id,currentLocationId);if(target)base.social.travelTarget={entityId:target.entityId,name:target.name,locationId:target.locationId,remote:Boolean(target.remote),travelMinutes:Number(target.travelMinutes||0)};const destination=await chooseExplorationDestination(simulationId,id,currentLocationId,base.needs,simulationTime,worldLocations,visited);if(destination)base.explorationDestination=destination;}
+    const currentLocationId=base.location?.locationId||null,visited=visitedByEntity.get(id)||new Map(),recentLocations=recentLocationsByEntity.get(id)||{};
+    base.previousLocationId=recentLocations.previousLocationId||null;
+    if(entity.entityType==='PERSON'&&currentLocationId){const target=await chooseSocialTarget(socialContext,simulationId,id,currentLocationId);if(target)base.social.travelTarget={entityId:target.entityId,name:target.name,locationId:target.locationId,remote:Boolean(target.remote),travelMinutes:Number(target.travelMinutes||0)};const destination=await chooseExplorationDestination(simulationId,id,currentLocationId,base.needs,simulationTime,worldLocations,visited,recentLocations.previousLocationId);if(destination)base.explorationDestination=destination;}
     const goal=base.goals?.[0]||null,plan=(base.cognitiveProfile?.plans||[]).find(item=>String(item.goalId||'')===String(goal?.id||''));const activePlanStep=selectActiveStep(plan);if(activePlanStep)base.activePlanStep=activePlanStep;
     contexts.set(id,{...base,memories:memoriesByEntity.get(id)||[]});
   }
@@ -191,7 +193,19 @@ function markGeminiDecisionUsed(entityId,simulationTime){const now=new Date(simu
 async function loadWorldLocations(simulationId){const[rows]=await pool.query(`SELECT BIN_TO_UUID(e.id) AS locationId,l.location_type AS locationType,l.latitude,l.longitude,l.address_data AS addressData,e.attributes FROM locations l JOIN entities e ON e.id=l.entity_id WHERE l.simulation_id=UUID_TO_BIN(?) AND e.simulation_id=UUID_TO_BIN(?) AND e.status='ACTIVE'`,[simulationId,simulationId]);return rows.map(row=>{const attributes=parseJson(row.attributes,{});return{locationId:row.locationId,locationType:row.locationType,latitude:Number(row.latitude),longitude:Number(row.longitude),data:parseJson(row.addressData,{}),resources:attributes.resources&&typeof attributes.resources==='object'?attributes.resources:{}};});}
 async function loadVisitedLocations(simulationId,entityId){const[rows]=await pool.query(`SELECT BIN_TO_UUID(location_id) AS locationId,MAX(entered_simulation_at) AS lastVisitedAt FROM entity_location_history WHERE entity_id=UUID_TO_BIN(?) GROUP BY location_id`,[entityId]);return new Map(rows.map(row=>[row.locationId,row.lastVisitedAt]));}
 function locationInterestScore(location,needs){const weights=EXPLORATION_LOCATION_INTEREST[location.locationType]||{};return Object.entries(weights).reduce((sum,[needCode,weight])=>sum+clamp(needs.find(item=>item.code===needCode)?.value||0)*weight,0);}
-function explorationNoveltyScore(lastVisitedAt,simulationTime){if(!lastVisitedAt)return 1;const elapsed=(new Date(simulationTime).getTime()-new Date(lastVisitedAt).getTime())/3600000;if(!Number.isFinite(elapsed))return .5;if(elapsed>=72)return .95;if(elapsed>=24)return .75;if(elapsed>=8)return .5;if(elapsed>=2)return .3;return .1;}
+function explorationNoveltyScore(lastVisitedAt,simulationTime){
+  if(!lastVisitedAt)return 1;
+  const elapsed=(new Date(simulationTime).getTime()-new Date(lastVisitedAt).getTime())/3600000;
+  if(!Number.isFinite(elapsed))return .15;
+  if(elapsed<=.5)return 0;
+  if(elapsed<2)return .02;
+  if(elapsed<6)return .08;
+  if(elapsed<12)return .25;
+  if(elapsed<24)return .50;
+  if(elapsed<48)return .75;
+  if(elapsed<72)return .88;
+  return .98;
+}
 function routeTravelMinutes(route){if(!route||!Number.isFinite(Number(route.distanceMeters)))return Infinity;return Number(route.distanceMeters)/1000/4.8*60;}
 async function loadVisitedLocationsBatch(simulationId,entityIds=[]){
   const ids=[...new Set((entityIds||[]).filter(Boolean).map(String))],result=new Map();if(!ids.length)return result;
@@ -200,8 +214,16 @@ async function loadVisitedLocationsBatch(simulationId,entityIds=[]){
   for(const row of rows){if(!result.has(row.entityId))result.set(row.entityId,new Map());result.get(row.entityId).set(row.locationId,row.lastVisitedAt);}
   return result;
 }
+async function loadRecentLocationIdsBatch(entityIds=[]){
+  const ids=[...new Set((entityIds||[]).filter(Boolean).map(String))],result=new Map();if(!ids.length)return result;
+  const placeholders=ids.map(()=> 'UUID_TO_BIN(?)').join(',');
+  const [rows]=await pool.query(`SELECT entityId,locationId,rn FROM (SELECT BIN_TO_UUID(entity_id) AS entityId,BIN_TO_UUID(location_id) AS locationId,ROW_NUMBER() OVER(PARTITION BY entity_id ORDER BY entered_simulation_at DESC) AS rn FROM entity_location_history WHERE entity_id IN (${placeholders})) ranked WHERE rn<=2 ORDER BY entityId,rn`,ids);
+  for(const id of ids)result.set(id,{lastLocationId:null,previousLocationId:null});
+  for(const row of rows){const entry=result.get(row.entityId);if(!entry)continue;if(Number(row.rn)===1)entry.lastLocationId=row.locationId;if(Number(row.rn)===2)entry.previousLocationId=row.locationId;}
+  return result;
+}
 
-async function chooseExplorationDestination(simulationId,entityId,originId,needs,simulationTime,providedLocations=null,providedVisited=null){
+async function chooseExplorationDestination(simulationId,entityId,originId,needs,simulationTime,providedLocations=null,providedVisited=null,previousLocationId=null){
   if(!originId)return null;
   const locations=providedLocations||await loadWorldLocations(simulationId),visited=providedVisited||await loadVisitedLocations(simulationId,entityId),origin=locations.find(location=>location.locationId===originId);
   if(!origin)return null;
@@ -210,9 +232,11 @@ async function chooseExplorationDestination(simulationId,entityId,originId,needs
     if(location.locationId===originId)continue;
     const route=graphRoute(locations,originId,location.locationId);if(!route)continue;
     const travelMinutes=routeTravelMinutes(route);if(!Number.isFinite(travelMinutes))continue;
-    const novelty=explorationNoveltyScore(visited.get(location.locationId),simulationTime),interest=locationInterestScore(location,needs);
+    const lastVisitedAt=visited.get(location.locationId),novelty=explorationNoveltyScore(lastVisitedAt,simulationTime),interest=locationInterestScore(location,needs),elapsedSinceVisit=lastVisitedAt?(new Date(simulationTime).getTime()-new Date(lastVisitedAt).getTime())/3600000:Infinity;
+    const immediateReturn=String(location.locationId)===String(previousLocationId||'');
+    const recentVisitPenalty=immediateReturn?.95:elapsedSinceVisit<=1?.80:elapsedSinceVisit<3?.55:elapsedSinceVisit<8?.30:elapsedSinceVisit<16?.12:0;
     let resourceOpportunity=0;for(const[resource,needCode]of Object.entries(RESOURCE_NEED_CODES)){const amount=Number(location.resources?.[resource]||0),pressure=Number(needs.find(item=>item.code===needCode)?.value||0);if(amount>=1)resourceOpportunity+=Math.min(.35,pressure*.35);}
-    const distancePenalty=Math.min(.60,travelMinutes/60*.60),score=novelty*1.35+interest*1.15+resourceOpportunity-distancePenalty+Math.random()*.05;
+    const distancePenalty=Math.min(.60,travelMinutes/60*.60),score=novelty*1.55+interest*1.15+resourceOpportunity-distancePenalty-recentVisitPenalty+Math.random()*.05;
     candidates.push({locationId:location.locationId,locationType:location.locationType,travelMinutes,distanceMeters:route.distanceMeters,score,novelty,interest,resourceOpportunity});
   }
   candidates.sort((a,b)=>b.score-a.score);return candidates[0]||null;
@@ -251,7 +275,7 @@ if(geminiTrigger){
   }
 }
 context.geminiDecision=geminiDecision;
-const decision=await decisionService.makeDecision({simulationId,entityId,simulationTime,triggerType:geminiTrigger?.type||null,triggerEventId:null,context,aiChoice});const sourceType=aiChoice?"AI_ASSISTED":"AUTONOMOUS";const intentionId=await ensureIntention({simulationId,entityId,simulationTime,decision,sourceType,goalState,aiChoice,geminiDecision});const started=await require("./action-service").startAction({simulationId,entityId,decisionId:decision.decisionId,intentionId,actionType:decision.actionType,simulationTime,targetEntityId:decision.targetEntityId,targetLocationId:decision.targetLocationId,relationshipIntent:deriveSocialIntent({actionType:decision.actionType,targetId:decision.targetEntityId,partner:socialContext.partner,candidates:socialContext.candidates}),tickId});
+const decision=await decisionService.makeDecision({simulationId,entityId,simulationTime,triggerType:geminiTrigger?.type||null,triggerEventId:null,context,aiChoice});const sourceType=aiChoice?"AI_ASSISTED":"AUTONOMOUS";const intentionId=await ensureIntention({simulationId,entityId,simulationTime,decision,sourceType,goalState,aiChoice,geminiDecision});const started=await require("./action-service").startAction({simulationId,entityId,decisionId:decision.decisionId,intentionId,actionType:decision.actionType,simulationTime,targetEntityId:decision.targetEntityId,targetLocationId:decision.targetLocationId,movementAvoidLocationId:context.previousLocationId||null,relationshipIntent:deriveSocialIntent({actionType:decision.actionType,targetId:decision.targetEntityId,partner:socialContext.partner,candidates:socialContext.candidates}),tickId});
   if(goalState.goal){
     const stagnation=observability.recordGoalProgress(simulationId,entityId,simulationTime,{
       goalId:goalState.goal.id,
@@ -268,4 +292,4 @@ const decision=await decisionService.makeDecision({simulationId,entityId,simulat
 }
 async function ensureIntention({simulationId,entityId,simulationTime,decision,sourceType,goalState,aiChoice,geminiDecision}){const intentionId=require("../lib/ids").uuid(),decisionSource=decision?.decisionSource||sourceType||"DETERMINISTIC",reason=serializeReason({source:decisionSource,status:geminiDecision?.status||"NOT_CONSULTED",geminiReason:geminiDecision?.reason||null,decision:aiChoice?.strategy||decision.reason||"autonomous decision"}),goalId=goalState.goal?.id||null,planId=goalState.plan?.id||null,mysqlTime=mysqlSimulationDateTime(simulationTime);await pool.query(`INSERT INTO intentions(id,simulation_id,entity_id,goal_id,plan_id,action_type,target_entity_id,target_location_id,scheduled_simulation_at,priority,status,reason,created_simulation_at,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,UUID_TO_BIN(?),UUID_TO_BIN(?),NULL,?,'ACTIVE',?,?,1)`,[intentionId,simulationId,entityId,goalId,planId,decision.actionType,decision.targetEntityId,decision.targetLocationId,goalState.goal?.priority||.5,reason,mysqlTime]);return intentionId;}
 async function completeGoalForAction(goalId,actionType,simulationTime,outcome,actionResult={}){if(!goalId)return null;let simulationId=actionResult?.simulationId||null,entityId=actionResult?.entityId||null;if(!simulationId||!entityId){const[rows]=await pool.query(`SELECT BIN_TO_UUID(simulation_id) AS simulationId,BIN_TO_UUID(entity_id) AS entityId FROM goals WHERE id=UUID_TO_BIN(?) LIMIT 1`,[goalId]);simulationId=simulationId||rows[0]?.simulationId||null;entityId=entityId||rows[0]?.entityId||null;}if(!simulationId||!entityId)return null;return advancePlanForAction({simulationId,entityId,goalId,actionType,outcome,simulationTime,actionResult});}
-module.exports={findAutonomousActors,prepareTickAutonomyContext,shouldAskGemini,getGeminiTrigger,actForEntity,completeGoalForAction,canUseGeminiDecision,markGeminiDecisionUsed,sanitizeGeminiChoice,chooseExplorationDestination,goalActionSatisfiesNeed,buildGeminiDecisionContext};
+module.exports={findAutonomousActors,prepareTickAutonomyContext,shouldAskGemini,getGeminiTrigger,actForEntity,completeGoalForAction,canUseGeminiDecision,markGeminiDecisionUsed,sanitizeGeminiChoice,chooseExplorationDestination,explorationNoveltyScore,goalActionSatisfiesNeed,buildGeminiDecisionContext};
