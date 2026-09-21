@@ -56,8 +56,7 @@ async function reconcileCompletedActions(simulationId,{limit=100}={}) {
             [row.intentionId]
           );
         }
-        await markActionPostProcessingComplete(row.actionId);
-        reconciled+=1;
+        if(await markActionPostProcessingComplete(row.actionId)) reconciled+=1;
         continue;
       }
       if(row.decisionId && ["CREATED","EVALUATED"].includes(String(row.decisionStatus||"").toUpperCase())){
@@ -93,8 +92,7 @@ async function reconcileCompletedActions(simulationId,{limit=100}={}) {
           actionResult:{...result,actionId:row.actionId,simulationId,entityId:row.entityId}
         });
       }
-      await markActionPostProcessingComplete(row.actionId);
-      reconciled+=1;
+      if(await markActionPostProcessingComplete(row.actionId)) reconciled+=1;
     }catch(err){
       logger.error({
         simulationId,
