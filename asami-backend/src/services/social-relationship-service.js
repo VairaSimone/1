@@ -300,6 +300,9 @@ async function processSocialInteraction({simulationId,sourceEntityId,targetEntit
   if(!relationshipId)return{relationshipId:null,conversationId:null,interactionOutcome,compatibility,receptiveness,relationshipFormed:false};
 
   const updatedRelationship=await matureRelationship(simulationId,sourceEntityId,targetEntityId,simulationAt,eventId);
+  if(updatedRelationship && (Number(updatedRelationship.conflict||0)>=.78 || Number(updatedRelationship.trust||0)<=.12)){
+    await endRelationship(updatedRelationship.id,simulationAt,"SOCIAL_CONFLICT");
+  }
   const conversationId=await ensureSocialConversation(simulationId,sourceEntityId,targetEntityId,simulationAt);
   const [sourceRows,targetRows]=await Promise.all([
     pool.query(`SELECT display_name AS name FROM entities WHERE id=UUID_TO_BIN(?) LIMIT 1`,[sourceEntityId]),
