@@ -17,3 +17,10 @@ test("non-provider failures remain separate from rate/quota fallback",()=>{
   assert.equal(classifyGeminiError(Object.assign(new Error("Gemini timeout"),{code:"AI_TIMEOUT"})).kind,"TIMEOUT");
   assert.equal(classifyGeminiError(new Error("invalid JSON")).kind,"ERROR");
 });
+
+test("autonomy skips Gemini while the provider circuit breaker is active",()=>{
+  const fs=require("node:fs");
+  const path=require("node:path");
+  const source=fs.readFileSync(path.join(__dirname,"../src/services/autonomy-service.js"),"utf8");
+  assert.match(source,/geminiBudget\.providerBlockRemainingMs\(\)>0/);
+});
