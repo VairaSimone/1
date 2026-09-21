@@ -76,7 +76,7 @@ async function addEffect({simulationId,eventId,effectType,targetEntityId=null,ta
              ?,?,?,?)
     `,[effectId,simulationId,eventId,effectType,resolvedTargetEntityId,targetRelationshipId,targetActivityId,targetMemoryId,targetGoalId,targetActionId,
        beforeState?JSON.stringify(beforeState):null,afterState?JSON.stringify(afterState):null,magnitude,createdSimulationAt]);
-  }));
+  }, { connection: conn }));
   return effectId;
 }
 async function listEvents(simulationId,{from,to,limit=100}={}) {
