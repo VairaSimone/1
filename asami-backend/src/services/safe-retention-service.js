@@ -686,10 +686,13 @@ async function runSafeRetention(simulationId, simulationTime) {
   if (!lock) return { skipped: true, reason: "lock_busy" };
   retentionDeadlineAt.set(simulationId, Date.now() + POLICY.timeBudgetMs);
   try {
+    // Prioritize the two unbounded histories first. Their producers are continuous,
+    // so leaving them to the end of the cycle lets slower cognitive cleanup consume
+    // the whole retention budget and the backlog never catches up.
+    const needs = await deleteOldNeedHistory(lock.conn, simulationId, mysqlSimulationTime);
+    const emotions = await deleteOldEmotionHistory(lock.conn, simulationId, mysqlSimulationTime);
     const context = await compactOldDecisionContexts(lock.conn, simulationId, mysqlSimulationTime);
     const options = await deleteUnselectedDecisionOptions(lock.conn, simulationId, mysqlSimulationTime);
-    // Events must be removed before actions because event_effects.target_action_id
-    // deliberately uses ON DELETE RESTRICT.
     const events = await withEventWriteLock(
       simulationId,
       conn => deleteOldEvents(conn, simulationId, mysqlSimulationTime),
@@ -700,8 +703,6 @@ async function runSafeRetention(simulationId, simulationTime) {
     const memoryDedupeBackfilled = await backfillMemoryDedupeKeys(lock.conn, simulationId);
     const episodicMemoryCap = await archiveExcessEpisodicMemories(lock.conn, simulationId, mysqlSimulationTime);
     const duplicateMemories = await compactDuplicateMemories(lock.conn, simulationId, mysqlSimulationTime);
-    const needs = await deleteOldNeedHistory(lock.conn, simulationId, mysqlSimulationTime);
-    const emotions = await deleteOldEmotionHistory(lock.conn, simulationId, mysqlSimulationTime);
     const memoryArchive = await archiveStaleMemories(lock.conn, simulationId, mysqlSimulationTime);
     const memories = await deleteOldMemories(lock.conn, simulationId, mysqlSimulationTime);
     const expectations = await deleteResolvedExpectations(lock.conn, simulationId, mysqlSimulationTime);
