@@ -31,14 +31,14 @@ function socialChemistry(sourceTraits,targetTraits,compatibility,receptiveness){
   const tension=clamp(extraversionGap*.22+patienceGap*.22+impulsivityDisciplineGap*.28+empathyGap*.16);
   return clamp(Number(compatibility)*.58+Number(receptiveness)*.27+(1-tension)*.15);
 }
-function relationshipFormationAccepted({compatibility,receptiveness,simulationAt,sourceEntityId,targetEntityId}){
-  const chemistry=socialChemistry([],[],compatibility,receptiveness);
+function relationshipFormationAccepted({compatibility,receptiveness,simulationAt,sourceEntityId,targetEntityId,sourceTraits=[],targetTraits=[]}){
+  const chemistry=socialChemistry(sourceTraits,targetTraits,compatibility,receptiveness);
   const noise=stableInteractionNoise(sourceEntityId,targetEntityId,simulationAt);
   return chemistry + noise*.20 >= .66;
 }
-function socialInteractionOutcome({compatibility,receptiveness,simulationAt,sourceEntityId,targetEntityId}){
+function socialInteractionOutcome({compatibility,receptiveness,simulationAt,sourceEntityId,targetEntityId,sourceTraits=[],targetTraits=[]}){
   const noise=stableInteractionNoise(sourceEntityId,targetEntityId,simulationAt);
-  const chemistry=socialChemistry([],[],compatibility,receptiveness);
+  const chemistry=socialChemistry(sourceTraits,targetTraits,compatibility,receptiveness);
   if(chemistry<=.40 || (chemistry<.52 && noise<-.08))return "NEGATIVE";
   if(chemistry>=.67 && noise>-.28)return "POSITIVE";
   return "NEUTRAL";
@@ -278,8 +278,8 @@ async function processSocialInteraction({simulationId,sourceEntityId,targetEntit
   const receptiveness=clamp(targetExtra*.40+targetEmpathy*.35+targetPatience*.25);
   const chemistry=socialChemistry(sourceTraits,targetTraits,compatibility,receptiveness);
   const existingRelationship=await relationshipBetween(simulationId,sourceEntityId,targetEntityId,"ACTIVE");
-  const formationAccepted=Boolean(existingRelationship)||relationshipFormationAccepted({compatibility,receptiveness,simulationAt,sourceEntityId,targetEntityId});
-  const interactionOutcome=socialInteractionOutcome({compatibility,receptiveness,simulationAt,sourceEntityId,targetEntityId});
+  const formationAccepted=Boolean(existingRelationship)||relationshipFormationAccepted({compatibility,receptiveness,simulationAt,sourceEntityId,targetEntityId,sourceTraits,targetTraits});
+  const interactionOutcome=socialInteractionOutcome({compatibility,receptiveness,simulationAt,sourceEntityId,targetEntityId,sourceTraits,targetTraits});
   if(!formationAccepted&&!existingRelationship){
     await recordSocialMemory({
       simulationId,entityId:sourceEntityId,targetEntityId,targetName:targetEntityId,locationId,simulationAt,eventId,
