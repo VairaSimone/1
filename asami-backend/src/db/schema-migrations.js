@@ -46,6 +46,48 @@ const ACTION_EXECUTION_MIGRATION = {
   uniqueIndex: "uq_actions_idempotency_key"
 };
 
+const MEMORY_RETENTION_MIGRATION = {
+  memoryDedupeColumn: "memory_dedupe_key",
+  memoryDedupeIndex: "idx_memories_dedupe",
+  memoryRetentionIndex: "idx_memories_retention",
+  needHistoryIndex: "idx_need_history_entity_time",
+  emotionHistoryIndex: "idx_emotion_history_entity_time",
+  locationHistoryIndex: "idx_location_history_entity_time"
+};
+
+async function ensureIndex(table,indexName,definition,db) {
+  const [rows]=await db.query(
+    "SELECT COUNT(*) AS count FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=? AND INDEX_NAME=?",
+    [table,indexName]
+  );
+  if(Number(rows[0]?.count||0)===0){
+    await db.query("ALTER TABLE " + table + " ADD KEY " + indexName + " (" + definition + ")");
+    return true;
+  }
+  return false;
+}
+
+async function ensureMemoryRetentionMigration(db) {
+  const [columns]=await db.query(
+    "SELECT COUNT(*) AS count FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='memories' AND COLUMN_NAME=?",
+    [MEMORY_RETENTION_MIGRATION.memoryDedupeColumn]
+  );
+  if(Number(columns[0]?.count||0)===0){
+    await db.query("ALTER TABLE memories ADD COLUMN memory_dedupe_key VARCHAR(64) NULL AFTER metadata");
+  }
+  const changed=[];
+  for(const [table,indexName,definition] of [
+    ["memories",MEMORY_RETENTION_MIGRATION.memoryDedupeIndex,"simulation_id,entity_id,status,memory_dedupe_key,created_simulation_at"],
+    ["memories",MEMORY_RETENTION_MIGRATION.memoryRetentionIndex,"simulation_id,status,created_simulation_at"],
+    ["entity_need_history",MEMORY_RETENTION_MIGRATION.needHistoryIndex,"entity_id,simulation_time"],
+    ["entity_emotion_history",MEMORY_RETENTION_MIGRATION.emotionHistoryIndex,"entity_id,simulation_time"],
+    ["entity_location_history",MEMORY_RETENTION_MIGRATION.locationHistoryIndex,"entity_id,entered_simulation_at"]
+  ]){
+    if(await ensureIndex(table,indexName,definition,db))changed.push(indexName);
+  }
+  return {changed};
+}
+
 async function ensureActionLifecycleMigration(db) {
   const [columns] = await db.query(
     `SELECT COUNT(*) AS count
@@ -114,7 +156,8 @@ async function ensurePlanningStatusMigrations() {
     }
     await ensureActionIdempotencyMigration(conn);
     await ensureActionLifecycleMigration(conn);
-    return { changed, actionIdempotency: true, actionLifecycle: true };
+    const memoryRetention=await ensureMemoryRetentionMigration(conn);
+    return { changed, actionIdempotency: true, actionLifecycle: true, memoryRetention };
   } finally {
     if (acquired) {
       try { await conn.query("SELECT RELEASE_LOCK(?)", [lockName]); } catch {}
@@ -123,5 +166,5 @@ async function ensurePlanningStatusMigrations() {
   }
 }
 
-module.exports = { ensurePlanningStatusMigrations };
+module.exports = { ensurePlanningStatusMigrations, ensureMemoryRetentionMigration };
 
