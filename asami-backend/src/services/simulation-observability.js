@@ -184,13 +184,48 @@ function snapshot(simulationId) {
   return { counters, gauges };
 }
 
+
+function compactSnapshot(metrics={}) {
+  const counters=metrics?.counters||{};
+  const gauges=metrics?.gauges||{};
+  return {
+    dbQueries:Number(counters.db_queries_total||0),
+    dbQueryMs:Number(counters.db_query_latency_ms_total||0),
+    dbSlowQueries:Number(counters.db_slow_queries_total||0),
+    tickQueries:Number(gauges.db_queries_current_tick||0),
+    dbLastMs:Number(gauges.db_query_latency_ms_last||0),
+    dbMaxMs:Number(gauges.db_query_latency_ms_max||0),
+    backlogs:{
+      retention:Number(gauges.retention_backlog_rows||0),
+      actions:Number(gauges.action_backlog_rows||0),
+      actionSummaries:Number(gauges.action_decision_summary_backlog_rows||0),
+      events:Number(gauges.event_backlog_rows||0),
+      needs:Number(gauges.need_history_backlog_rows||0),
+      emotions:Number(gauges.emotion_history_backlog_rows||0)
+    },
+    alerts:{
+      resourceEmergency:Number(counters.resource_emergency_total||0),
+      recoveryFailed:Number(counters.recovery_failed_total||0),
+      goalBlocked:Number(counters.goal_blocked_total||0),
+      goalStagnation:Number(counters.goal_stagnation_total||0),
+      actorInactivity:Number(counters.actor_inactivity_total||0),
+      integrityViolations:Number(counters.integrity_violation_total||0)
+    }
+  };
+}
+
 function logSnapshot(simulationId,simulationTime) {
   const metrics=snapshot(simulationId);
   logger.info({
     simulationId,
     simulationTime,
+    metrics:compactSnapshot(metrics)
+  },"simulation observability");
+  logger.debug({
+    simulationId,
+    simulationTime,
     metrics
-  },"simulation observability snapshot");
+  },"simulation observability detail");
   return metrics;
 }
 
@@ -207,5 +242,6 @@ module.exports={
   recordGoalProgress,
   recordActorTick,
   snapshot,
+  compactSnapshot,
   logSnapshot
 };
