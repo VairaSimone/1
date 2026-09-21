@@ -36,3 +36,18 @@ test("Autonomy availability ignores a single blocked model",()=>{
   assert.match(geminiSource,/if\(budget\.providerBlockRemainingMs\(\)>0\|\|!this\._hasAvailableModel\(\)\)return false/);
   assert.match(geminiSource,/\._availableModels\(\)/);
 });
+
+
+test("Autonomy output ceiling cannot be configured below the safe structured-output floor",()=>{
+  assert.match(envSource,/GEMINI_AUTONOMY_OUTPUT_TOKEN_CEILING: z\.preprocess/);
+  assert.match(envSource,/Math\.max\(2048,n\)/);
+  assert.match(envSource,/\.int\(\)\.min\(2048\)/);
+});
+
+test("Malformed or truncated Gemini structured output fails over to the next model",()=>{
+  assert.match(geminiSource,/code==="AI_INVALID_OUTPUT"/);
+  assert.match(geminiSource,/finishReason==="MAX_TOKENS"\|\|finishReason==="LENGTH"/);
+  assert.match(geminiSource,/schema\.parse\(JSON\.parse\(raw\)\)/);
+  assert.match(geminiSource,/failure\.kind==="INVALID_OUTPUT"/);
+  assert.match(geminiSource,/Gemini produced invalid structured output; trying fallback model/);
+});
