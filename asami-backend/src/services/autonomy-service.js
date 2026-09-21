@@ -167,7 +167,7 @@ async function prepareTickAutonomyContext({simulationId,entityIds=[],simulationT
   for(const row of entityRows)entities.set(row.id,row);
   const worldLocations=await loadWorldLocations(simulationId);
   const decisionContexts=await decisionService.buildDecisionContexts(simulationId,ids,simulationTime,{worldLocations});
-  const socialContexts=await buildSocialContexts(simulationId,ids,{worldLocations});
+  const socialContexts=await buildSocialContexts(simulationId,ids,{worldLocations,simulationTime});
   const visitedByEntity=await loadVisitedLocationsBatch(simulationId,ids);
   const recentLocationsByEntity=await loadRecentLocationIdsBatch(simulationId,ids);
   const recallBase=new Map();for(const id of ids){const base=decisionContexts.get(id);if(!base)continue;recallBase.set(id,{simulationTime,goalIds:(base.goals||[]).map(goal=>goal.id).filter(Boolean),locationId:base.location?.locationId||null,locationType:base.location?.locationType||null,candidateActionTypes:(base.candidates||[]).map(candidate=>candidate.action).filter(Boolean)});}
@@ -270,7 +270,7 @@ async function actForEntity({simulationId,entityId,simulationTime,gemini,tickId=
   let socialContext=batchContext?.socialContexts?.get(entityId)||null;
   if(!socialContext&&entity.entityType==="PERSON"){
     const fallbackWorldLocations=await loadWorldLocations(simulationId);
-    const fallbackRemote=await buildRemoteSocialContexts(simulationId,[entityId],{worldLocations:fallbackWorldLocations});
+    const fallbackRemote=await buildRemoteSocialContexts(simulationId,[entityId],{worldLocations:fallbackWorldLocations,simulationTime});
     socialContext=fallbackRemote.get(entityId)||null;
   }
   socialContext=socialContext||{partner:null,candidates:[],remoteCandidates:[],traits:[]};
