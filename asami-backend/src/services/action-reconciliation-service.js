@@ -13,6 +13,7 @@ async function reconcileCompletedActions(simulationId,{limit=100}={}) {
             BIN_TO_UUID(a.source_intention_id) AS intentionId,
             BIN_TO_UUID(a.source_goal_id) AS goalId,
             a.action_type AS actionType,
+            a.status AS status,
             a.completed_simulation_at AS completedSimulationAt,
             a.result,
             a.version,
