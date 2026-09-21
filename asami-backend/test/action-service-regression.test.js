@@ -48,3 +48,17 @@ test("action lifecycle completion marks interrupted actions as post-processed",(
   assert.match(source,/calibrateDecisionOutcome\(active\.decisionId,"PARTIAL"\)/);
   assert.match(source,/markActionPostProcessingComplete\(actionId\)/);
 });
+
+test("post-processing finalizer accepts interrupted terminal actions",()=>{
+  const fs=require("node:fs");
+  const path=require("node:path");
+  const source=fs.readFileSync(path.join(__dirname,"../src/services/action-service.js"),"utf8");
+  assert.match(source,/status IN \('COMPLETED','INTERRUPTED'\) AND post_processing_status='PENDING'/);
+});
+
+test("reconciler increments its counter only after post-processing is actually finalized",()=>{
+  const fs=require("node:fs");
+  const path=require("node:path");
+  const source=fs.readFileSync(path.join(__dirname,"../src/services/action-reconciliation-service.js"),"utf8");
+  assert.match(source,/if\(await markActionPostProcessingComplete\(row\.actionId\)\) reconciled\+=1/);
+});
