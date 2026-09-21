@@ -81,7 +81,12 @@ async function ensureMemoryRetentionMigration(db) {
     ["memories",MEMORY_RETENTION_MIGRATION.memoryRetentionIndex,"simulation_id,status,created_simulation_at"],
     ["entity_need_history",MEMORY_RETENTION_MIGRATION.needHistoryIndex,"entity_id,simulation_time"],
     ["entity_emotion_history",MEMORY_RETENTION_MIGRATION.emotionHistoryIndex,"entity_id,simulation_time"],
-    ["entity_location_history",MEMORY_RETENTION_MIGRATION.locationHistoryIndex,"entity_id,entered_simulation_at"]
+    ["entity_location_history",MEMORY_RETENTION_MIGRATION.locationHistoryIndex,"entity_id,entered_simulation_at"],
+    ["memories","idx_memories_actor_retention","simulation_id,entity_id,memory_type,status,created_simulation_at,importance"],
+    ["cognitive_expectations","idx_cognitive_expectations_retention","simulation_id,entity_id,status,created_simulation_at"],
+    ["counterfactuals","idx_counterfactuals_retention","simulation_id,entity_id,created_simulation_at"],
+    ["counterfactual_worlds","idx_counterfactual_worlds_retention","simulation_id,entity_id,status,created_simulation_at"],
+    ["relationship_history","idx_relationship_history_retention","simulation_id,relationship_id,simulation_time"]
   ]){
     if(await ensureIndex(table,indexName,definition,db))changed.push(indexName);
   }
