@@ -22,3 +22,11 @@ test("high curiosity creates exploratory emotional pressure",()=>{
   assert.equal(low.EXCITEMENT,0);
   assert.ok(high.EXCITEMENT>0.04);
 });
+
+test("entity state lock delegates through transaction retry support for deadlocks",()=>{
+  const fs=require("node:fs");
+  const path=require("node:path");
+  const source=fs.readFileSync(path.join(__dirname,"../src/services/state-service.js"),"utf8");
+  assert.match(source,/const \{ pool, withTransaction \} = require\("\.\.\/db\/pool"\)/);
+  assert.match(source,/withTransaction\(fn, \{ connection: conn \}\)/);
+});
