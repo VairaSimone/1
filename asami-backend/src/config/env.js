@@ -70,7 +70,7 @@ const Env = z.object({
   RETENTION_IMPORTANT_EVENT_DAYS: z.coerce.number().int().min(7).default(30),
   RETENTION_MEMORY_ARCHIVE_DAYS: z.coerce.number().int().min(7).default(21),
   RETENTION_MEMORY_DELETE_DAYS: z.coerce.number().int().min(1).default(14),
-  RETENTION_MEMORY_ARCHIVE_IMPORTANCE_MAX: z.coerce.number().min(0).max(1).default(0.75),
+  RETENTION_MEMORY_ARCHIVE_IMPORTANCE_MAX: z.coerce.number().min(0).max(1).default(0.82),
   RETENTION_EVENT_IMPORTANCE_KEEP_THRESHOLD: z.coerce.number().min(0).max(1).default(0.8),
   RETENTION_MEMORY_PERMANENT_IMPORTANCE: z.coerce.number().min(0).max(1).default(0.82),
   RETENTION_MAX_EPISODIC_MEMORIES_PER_ACTOR: z.coerce.number().int().min(100).max(10000).default(1200),
