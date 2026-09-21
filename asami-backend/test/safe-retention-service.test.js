@@ -218,3 +218,20 @@ test("startup and successful-provider noise are suppressed at info level",()=>{
   assert.match(envSource,/dotenv"\)\.config\(\{ quiet: true \}\)/);
   assert.match(geminiSource,/logger\.debug\(\{kind,model:this\.model/);
 });
+
+
+test("bounded retention workers expose remaining candidate backlogs",()=>{
+  const fs=require("node:fs");
+  const path=require("node:path");
+  const source=fs.readFileSync(path.join(__dirname,"../src/services/safe-retention-service.js"),"utf8");
+  for(const [start,end] of [
+    ["async function deleteUnselectedDecisionOptions","async function deleteResolvedExpectations"],
+    ["async function deleteResolvedExpectations","async function deleteResolvedCounterfactuals"],
+    ["async function deleteResolvedCounterfactuals","async function deleteResolvedCounterfactualWorlds"],
+    ["async function deleteResolvedCounterfactualWorlds","async function deleteOldEvents"]
+  ]) {
+    const block=source.slice(source.indexOf(start),source.indexOf(end));
+    assert.match(block,/const \[backlog\] = await conn\.query\(countSql/);
+    assert.match(block,/remainingCandidates/);
+  }
+});
