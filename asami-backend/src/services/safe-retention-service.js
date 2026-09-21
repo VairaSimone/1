@@ -529,6 +529,149 @@ async function deleteResolvedCounterfactualWorlds(conn, simulationId, simulation
   return { deleted };
 }
 
+async function deleteOldEvents(conn, simulationId, simulationTime) {
+  const cutoff = cutoffDateTime(simulationTime, POLICY.eventDays);
+  const importantCutoff = cutoffDateTime(simulationTime, POLICY.importantEventDays);
+  const importanceThreshold = POLICY.eventImportanceKeepThreshold;
+  const selectSql =
+    "SELECT BIN_TO_UUID(e.id) AS id FROM events e " +
+    "WHERE e.simulation_id=UUID_TO_BIN(?) " +
+    "AND ((e.importance < ? AND e.simulation_at < ?) OR e.simulation_at < ?) " +
+    "ORDER BY e.simulation_at ASC LIMIT " + POLICY.batchSize;
+  const countSql =
+    "SELECT COUNT(*) AS candidates FROM events e " +
+    "WHERE e.simulation_id=UUID_TO_BIN(?) " +
+    "AND ((e.importance < ? AND e.simulation_at < ?) OR e.simulation_at < ?)";
+  return deleteSelectedRows(conn, {
+    selectSql,
+    selectParams: [simulationId, importanceThreshold, cutoff, importantCutoff],
+    countSql,
+    countParams: [simulationId, importanceThreshold, cutoff, importantCutoff],
+    deleteTable: "events",
+    resultKey: "deleted"
+  });
+}
+
+async function compactOldActionDecisionSummaries(conn, simulationId, simulationTime) {
+  const cutoff = cutoffDateTime(simulationTime, POLICY.actionDays);
+  const limit = POLICY.batchSize;
+  const maxUpdates = POLICY.maxDeletesPerTable;
+  const selectSql =
+    `SELECT BIN_TO_UUID(a.id) AS actionId, BIN_TO_UUID(d.id) AS decisionId,
+            a.action_type AS actionType, a.source_type AS sourceType,
+            a.status, a.started_simulation_at AS startedAt,
+            a.completed_simulation_at AS completedAt,
+            a.target, a.parameters, a.result
+     FROM actions a
+     JOIN decisions d ON d.id=a.decision_id
+     WHERE a.simulation_id=UUID_TO_BIN(?)
+       AND a.decision_id IS NOT NULL
+       AND a.status IN ('COMPLETED','CANCELLED','INTERRUPTED','FAILED')
+       AND a.completed_simulation_at IS NOT NULL
+       AND a.completed_simulation_at < ?
+       AND JSON_EXTRACT(d.actual_outcome,'$.actionSummary') IS NULL
+     ORDER BY a.completed_simulation_at ASC
+     LIMIT ${limit}`;
+  if (POLICY.dryRun) {
+    const [rows] = await conn.query(
+      `SELECT COUNT(*) AS candidates
+       FROM actions a
+       JOIN decisions d ON d.id=a.decision_id
+       WHERE a.simulation_id=UUID_TO_BIN(?)
+         AND a.decision_id IS NOT NULL
+         AND a.status IN ('COMPLETED','CANCELLED','INTERRUPTED','FAILED')
+         AND a.completed_simulation_at IS NOT NULL
+         AND a.completed_simulation_at < ?
+         AND JSON_EXTRACT(d.actual_outcome,'$.actionSummary') IS NULL`,
+      [simulationId, cutoff]
+    );
+    return { candidates: Number(rows[0]?.candidates || 0), updated: 0, dryRun: true };
+  }
+  let updated = 0;
+  while (updated < maxUpdates && retentionBudgetAvailable(simulationId)) {
+    const [rows] = await conn.query(selectSql, [simulationId, cutoff]);
+    if (!rows.length) break;
+    for (const row of rows) {
+      if (!retentionBudgetAvailable(simulationId) || updated >= maxUpdates) break;
+      const actionSummary = {
+        schemaVersion: 1,
+        actionId: row.actionId,
+        decisionId: row.decisionId,
+        actionType: row.actionType,
+        sourceType: row.sourceType,
+        status: row.status,
+        startedSimulationAt: row.startedAt || null,
+        completedSimulationAt: row.completedAt || null,
+        target: parseJson(row.target, null),
+        parameters: parseJson(row.parameters, null),
+        result: parseJson(row.result, null)
+      };
+      const [result] = await conn.query(
+        `UPDATE decisions
+         SET actual_outcome=JSON_SET(
+           COALESCE(actual_outcome,JSON_OBJECT()),
+           '$.actionSummary',CAST(? AS JSON)
+         )
+         WHERE id=UUID_TO_BIN(?)
+           AND simulation_id=UUID_TO_BIN(?)
+           AND JSON_EXTRACT(actual_outcome,'$.actionSummary') IS NULL`,
+        [JSON.stringify(actionSummary), row.decisionId, simulationId]
+      );
+      updated += Number(result.affectedRows || 0);
+    }
+    if (rows.length < limit) break;
+  }
+  const [backlog] = await conn.query(
+    `SELECT COUNT(*) AS candidates
+     FROM actions a
+     JOIN decisions d ON d.id=a.decision_id
+     WHERE a.simulation_id=UUID_TO_BIN(?)
+       AND a.decision_id IS NOT NULL
+       AND a.status IN ('COMPLETED','CANCELLED','INTERRUPTED','FAILED')
+       AND a.completed_simulation_at IS NOT NULL
+       AND a.completed_simulation_at < ?
+       AND JSON_EXTRACT(d.actual_outcome,'$.actionSummary') IS NULL`,
+    [simulationId, cutoff]
+  );
+  return {
+    candidates: Number(backlog[0]?.candidates || 0) + updated,
+    updated,
+    remainingCandidates: Number(backlog[0]?.candidates || 0)
+  };
+}
+
+async function deleteOldActions(conn, simulationId, simulationTime) {
+  const cutoff = cutoffDateTime(simulationTime, POLICY.actionDays);
+  const selectSql =
+    "SELECT BIN_TO_UUID(a.id) AS id FROM actions a " +
+    "WHERE a.simulation_id=UUID_TO_BIN(?) " +
+    "AND a.status IN ('COMPLETED','CANCELLED','INTERRUPTED','FAILED') " +
+    "AND a.completed_simulation_at IS NOT NULL " +
+    "AND a.completed_simulation_at < ? " +
+    "AND (a.decision_id IS NULL OR EXISTS (" +
+      "SELECT 1 FROM decisions d WHERE d.id=a.decision_id " +
+      "AND JSON_EXTRACT(d.actual_outcome,'$.actionSummary') IS NOT NULL)) " +
+    "AND NOT EXISTS (SELECT 1 FROM event_effects ee WHERE ee.target_action_id=a.id) " +
+    "ORDER BY a.completed_simulation_at ASC LIMIT " + POLICY.batchSize;
+  const countSql =
+    "SELECT COUNT(*) AS candidates FROM actions a " +
+    "WHERE a.simulation_id=UUID_TO_BIN(?) " +
+    "AND a.status IN ('COMPLETED','CANCELLED','INTERRUPTED','FAILED') " +
+    "AND a.completed_simulation_at IS NOT NULL " +
+    "AND a.completed_simulation_at < ? " +
+    "AND (a.decision_id IS NULL OR EXISTS (" +
+      "SELECT 1 FROM decisions d WHERE d.id=a.decision_id " +
+      "AND JSON_EXTRACT(d.actual_outcome,'$.actionSummary') IS NOT NULL)) " +
+    "AND NOT EXISTS (SELECT 1 FROM event_effects ee WHERE ee.target_action_id=a.id)";
+  return deleteSelectedRows(conn, {
+    selectSql,
+    selectParams: [simulationId, cutoff],
+    countSql,
+    deleteTable: "actions",
+    resultKey: "deleted"
+  });
+}
+
 async function runSafeRetention(simulationId, simulationTime) {
   if (!POLICY.enabled || !simulationId || !simulationTime) return { skipped: true, reason: "disabled" };
   const mysqlSimulationTime = normalizeSimulationTimestamp(simulationTime);
