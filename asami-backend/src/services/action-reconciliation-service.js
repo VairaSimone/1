@@ -22,7 +22,7 @@ async function reconcileCompletedActions(simulationId,{limit=100}={}) {
      LEFT JOIN decisions d ON d.id=a.decision_id
      LEFT JOIN intentions i ON i.id=a.source_intention_id
      WHERE a.simulation_id=UUID_TO_BIN(?)
-       AND a.status='COMPLETED'
+       AND a.status IN ('COMPLETED','INTERRUPTED','FAILED','CANCELLED')
        AND a.post_processing_status='PENDING'
      ORDER BY a.completed_simulation_at ASC
      LIMIT ?`,
@@ -32,6 +32,33 @@ async function reconcileCompletedActions(simulationId,{limit=100}={}) {
   for(const row of rows){
     try{
       const result=typeof row.result==="string" ? (()=>{try{return JSON.parse(row.result||"{}");}catch{return{};}})() : row.result||{};
+      const terminalStatus=String(row.status||"COMPLETED").toUpperCase();
+      if(terminalStatus==="INTERRUPTED"){
+        if(row.decisionId && ["CREATED","EVALUATED"].includes(String(row.decisionStatus||"").toUpperCase())){
+          await pool.query(
+            `UPDATE decisions SET status='EXECUTED',actual_outcome=COALESCE(actual_outcome,?)
+             WHERE id=UUID_TO_BIN(?) AND status IN ('CREATED','EVALUATED')`,
+            [JSON.stringify({
+              actionId:row.actionId,
+              outcome:result.outcome||"PARTIAL",
+              success:false,
+              failureReason:result.failureReason||"ACTION_INTERRUPTED",
+              interrupted:true,
+              recoveredBy:"ACTION_RECONCILER"
+            }),row.decisionId]
+          );
+        }
+        if(row.intentionId && String(row.intentionStatus||"").toUpperCase()==="ACTIVE"){
+          await pool.query(
+            `UPDATE intentions SET status='CANCELLED',version=version+1
+             WHERE id=UUID_TO_BIN(?) AND status='ACTIVE'`,
+            [row.intentionId]
+          );
+        }
+        await markActionPostProcessingComplete(row.actionId);
+        reconciled+=1;
+        continue;
+      }
       if(row.decisionId && ["CREATED","EVALUATED"].includes(String(row.decisionStatus||"").toUpperCase())){
         await pool.query(
           `UPDATE decisions
