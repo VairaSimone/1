@@ -51,3 +51,15 @@ test("Malformed or truncated Gemini structured output fails over to the next mod
   assert.match(geminiSource,/failure\.kind==="INVALID_OUTPUT"/);
   assert.match(geminiSource,/Gemini produced invalid structured output; trying fallback model/);
 });
+
+
+test("Gemini provider rate and quota limits are isolated per model",()=>{
+  assert.doesNotMatch(geminiSource,/budget\.blockProvider\(failure\.retryAfterMs/);
+  assert.match(geminiSource,/this\._blockModel\(model,modelCooldown,fallbackReason\)/);
+  assert.match(geminiSource,/Gemini model limit reached; trying fallback model/);
+  assert.match(geminiSource,/if\(!this\._hasAvailableModel\(\)\)return false/);
+});
+
+test("Gemini startup exposes the effective autonomy output ceiling",()=>{
+  assert.match(geminiSource,/autonomyOutputTokenCeiling:env\.GEMINI_AUTONOMY_OUTPUT_TOKEN_CEILING/);
+});
