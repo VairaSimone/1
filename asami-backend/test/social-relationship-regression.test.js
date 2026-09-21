@@ -41,3 +41,20 @@ test("social interaction can produce deterioration instead of only positive outc
   assert.ok(outcomes.has("NEGATIVE"));
   assert.ok(outcomes.has("NEUTRAL"));
 });
+
+test("remote social contexts are batched and autonomy has no per-actor remote SQL fallback",()=>{
+  const source=fs.readFileSync(path.join(__dirname,"../src/services/social-relationship-service.js"),"utf8");
+  const autonomy=fs.readFileSync(path.join(__dirname,"../src/services/autonomy-service.js"),"utf8");
+  assert.match(source,/async function buildRemoteSocialContexts/);
+  assert.match(source,/allPersonIds\.length\?await pool\.query/);
+  assert.match(autonomy,/buildRemoteSocialContexts\(simulationId,\[entityId\]/);
+  assert.doesNotMatch(autonomy,/function chooseRemoteSocialTarget/);
+  assert.doesNotMatch(autonomy,/return chooseRemoteSocialTarget\(/);
+});
+
+test("social starvation requires no locally or remotely valid target",()=>{
+  const source=fs.readFileSync(path.join(__dirname,"../src/services/autonomy-service.js"),"utf8");
+  assert.match(source,/validLocalCandidates/);
+  assert.match(source,/validRemoteCandidates/);
+  assert.match(source,/!validLocalCandidates\.length&&!validRemoteCandidates\.length/);
+});
