@@ -8,6 +8,7 @@ function parseJson(value,fallback={}){if(value===null||value===undefined)return 
 const TERMINAL_DECISION_STATUSES = new Set(["EXECUTED", "FAILED", "CANCELLED"]);
 const TERMINAL_ACTION_STATUSES = new Set(["COMPLETED", "CANCELLED", "INTERRUPTED", "FAILED"]);
 const lastRunAt = new Map();
+const lastRunSimulationAt = new Map();
 const running = new Set();
 const retentionDeadlineAt = new Map();
 
@@ -24,6 +25,7 @@ function boundedNumber(value, fallback, minimum, maximum) {
 const POLICY = Object.freeze({
   enabled: !["0", "false", "no", "off"].includes(String(process.env.RETENTION_ENABLED || "true").trim().toLowerCase()),
   intervalMs: positiveInt(process.env.RETENTION_CHECK_INTERVAL_MS, 15 * 60 * 1000, 60 * 1000),
+  simulationIntervalHours: positiveInt(process.env.RETENTION_CHECK_SIMULATION_HOURS, 3, 1),
   decisionContextDays: positiveInt(process.env.RETENTION_DECISION_CONTEXT_DAYS, 2, 1),
   decisionOptionsDays: positiveInt(process.env.RETENTION_DECISION_OPTIONS_DAYS, 3, 2),
   cognitiveArtifactDays: positiveInt(process.env.RETENTION_COGNITIVE_ARTIFACT_DAYS, 14, 7),
@@ -821,11 +823,17 @@ async function runSafeRetention(simulationId, simulationTime) {
 async function maybeRunSafeRetention(simulationId, simulationTime) {
   if (!POLICY.enabled || !simulationId || !simulationTime) return { skipped: true, reason: "disabled" };
   const now = Date.now();
-  const last = lastRunAt.get(simulationId);
-  if (last !== undefined && now - last < POLICY.intervalMs) return { skipped: true, reason: "interval" };
+  const lastWall = lastRunAt.get(simulationId);
+  if (lastWall !== undefined && now - lastWall < Math.min(POLICY.intervalMs, 5000)) return { skipped: true, reason: "wall_interval" };
   if (running.has(simulationId)) return { skipped: true, reason: "running" };
+  const simulationMs = new Date(simulationTime).getTime();
+  const lastSimulationMs = lastRunSimulationAt.get(simulationId);
+  if (Number.isFinite(simulationMs) && lastSimulationMs !== undefined && simulationMs - lastSimulationMs < POLICY.simulationIntervalHours * 3600000) {
+    return { skipped: true, reason: "simulation_interval" };
+  }
   running.add(simulationId);
   lastRunAt.set(simulationId, now);
+  if (Number.isFinite(simulationMs)) lastRunSimulationAt.set(simulationId, simulationMs);
   try {
     return await runSafeRetention(simulationId, simulationTime);
   } catch (err) {
