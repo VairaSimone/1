@@ -1,5 +1,5 @@
 const { z } = require("zod");
-require("dotenv").config();
+require("dotenv").config({ quiet: true });
 
 const Env = z.object({
   NODE_ENV: z.string().default("development"),
