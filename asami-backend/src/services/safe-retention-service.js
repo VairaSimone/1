@@ -167,6 +167,16 @@ async function deleteHistoryDirectBatch(conn,table,simulationId,cutoff,maxDelete
   return {deleted,remainingCandidates:Number(backlog[0]?.candidates||0),budgetExhausted:retentionBudgetRemainingMs(simulationId)<=0};
 }
 
+async function deleteOldNeedHistory(conn,simulationId,simulationTime){
+  const cutoff=cutoffDateTime(simulationTime,POLICY.needHistoryDays);
+  return deleteHistoryDirectBatch(conn,"entity_need_history",simulationId,cutoff,POLICY.maxDeletesPerTable);
+}
+
+async function deleteOldEmotionHistory(conn,simulationId,simulationTime){
+  const cutoff=cutoffDateTime(simulationTime,POLICY.emotionHistoryDays);
+  return deleteHistoryDirectBatch(conn,"entity_emotion_history",simulationId,cutoff,POLICY.maxDeletesPerTable);
+}
+
 async function archiveExcessEpisodicMemories(conn,simulationId,simulationTime){
   const cutoff=cutoffDateTime(simulationTime,POLICY.memoryArchiveDays);
   const permanentImportance=POLICY.memoryPermanentImportance;
