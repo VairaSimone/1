@@ -653,7 +653,7 @@ test('successful need relief actively releases negative emotional load',()=>{
 test('exploration strongly penalizes immediate and recent revisits',()=>{
   const source=read('services/autonomy-service.js');
   assert.match(source,/if\(elapsed<=\.5\)return 0/);
-  assert.match(source,/const immediateReturn=String\(location\.locationId\)===String\(previousLocationId\|\|'\) /);
+  assert.match(source,/const immediateReturn=String\(location\.locationId\)===String\(previousLocationId\|\|''\);/);
   assert.match(source,/recentVisitPenalty=immediateReturn\?\.95/);
   assert.match(source,/score=novelty\*1\.55/);
   const { explorationNoveltyScore } = require('../src/services/autonomy-service');
