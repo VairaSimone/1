@@ -670,10 +670,13 @@ async function maybeRunSafeRetention(simulationId, simulationTime) {
     return { skipped: true, reason: "simulation_interval" };
   }
   running.add(simulationId);
-  lastRunAt.set(simulationId, now);
-  if (Number.isFinite(simulationMs)) lastRunSimulationAt.set(simulationId, simulationMs);
   try {
-    return await runSafeRetention(simulationId, simulationTime);
+    const result=await runSafeRetention(simulationId, simulationTime);
+    if(!result?.skipped){
+      lastRunAt.set(simulationId, now);
+      if(Number.isFinite(simulationMs)) lastRunSimulationAt.set(simulationId, simulationMs);
+    }
+    return result;
   } catch (err) {
     logger.error({ simulationId, simulationTime, err }, "safe retention cycle failed");
     return { skipped: true, reason: "error" };
