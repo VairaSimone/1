@@ -215,7 +215,7 @@ async function upsertRoutineActionMemory({ simulationId, entityId, locationId, i
 async function createMemory({ simulationId, entityId, eventId = null, activityId = null, locationId = null, type = "EPISODIC", content, importance = 0.5, strength = 1, confidence = 0.8, emotionalIntensity = 0.2, simulationAt, metadata = null }) {
   metadata = compactMemoryMetadata(metadata);
   const memoryKind = metadata?.kind || null;
-  const dedupeKey = buildMemoryDedupeKey({entityId,locationId,metadata,content});
+  let dedupeKey = buildMemoryDedupeKey({entityId,locationId,metadata,content});
   if (memoryKind === "action_outcome" && !isSalientActionOutcome({ metadata, importance, emotionalIntensity })) {
     const routine = await upsertRoutineActionMemory({ simulationId, entityId, locationId, importance, strength, confidence, emotionalIntensity, simulationAt, metadata });
     if (routine && routine.isNew) {
