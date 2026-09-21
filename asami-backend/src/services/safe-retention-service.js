@@ -413,7 +413,12 @@ async function deleteUnselectedDecisionOptions(conn, simulationId, simulationTim
     deleted += affected;
     if (affected < rows.length) break;
   }
-  return { deleted };
+  const [backlog] = await conn.query(countSql, [simulationId, cutoff]);
+  return {
+    deleted,
+    remainingCandidates: Number(backlog[0]?.candidates || 0),
+    budgetExhausted: retentionBudgetRemainingMs(simulationId) <= 0
+  };
 }
 
 async function deleteResolvedExpectations(conn, simulationId, simulationTime) {
@@ -452,7 +457,12 @@ async function deleteResolvedExpectations(conn, simulationId, simulationTime) {
     deleted += affected;
     if (affected < rows.length) break;
   }
-  return { deleted };
+  const [backlog] = await conn.query(countSql, [simulationId, cutoff, cutoff]);
+  return {
+    deleted,
+    remainingCandidates: Number(backlog[0]?.candidates || 0),
+    budgetExhausted: retentionBudgetRemainingMs(simulationId) <= 0
+  };
 }
 
 async function deleteResolvedCounterfactuals(conn, simulationId, simulationTime) {
@@ -487,7 +497,12 @@ async function deleteResolvedCounterfactuals(conn, simulationId, simulationTime)
     deleted += affected;
     if (affected < rows.length) break;
   }
-  return { deleted };
+  const [backlog] = await conn.query(countSql, [simulationId, cutoff]);
+  return {
+    deleted,
+    remainingCandidates: Number(backlog[0]?.candidates || 0),
+    budgetExhausted: retentionBudgetRemainingMs(simulationId) <= 0
+  };
 }
 
 async function deleteResolvedCounterfactualWorlds(conn, simulationId, simulationTime) {
@@ -526,7 +541,12 @@ async function deleteResolvedCounterfactualWorlds(conn, simulationId, simulation
     deleted += affected;
     if (affected < rows.length) break;
   }
-  return { deleted };
+  const [backlog] = await conn.query(countSql, [simulationId, cutoff, cutoff]);
+  return {
+    deleted,
+    remainingCandidates: Number(backlog[0]?.candidates || 0),
+    budgetExhausted: retentionBudgetRemainingMs(simulationId) <= 0
+  };
 }
 
 async function deleteOldEvents(conn, simulationId, simulationTime) {
