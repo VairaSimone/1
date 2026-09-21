@@ -688,7 +688,7 @@ test('social batch context prepares remote candidates without per-actor fallback
   const autonomy=read('services/autonomy-service.js');
   assert.match(social,/buildRemoteCandidatesForSource/);
   assert.match(social,/remoteCandidates/);
-  assert.match(autonomy,/buildSocialContexts\(simulationId,ids,\{worldLocations\}\)/);
+  assert.match(autonomy,/buildSocialContexts\(simulationId,ids,\{worldLocations,simulationTime\}\)/);
   assert.match(autonomy,/remoteCandidates/);
 });
 
