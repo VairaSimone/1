@@ -257,7 +257,7 @@ async function compactDuplicateMemories(conn,simulationId,simulationTime){
   while(deleted<POLICY.maxDeletesPerTable&&retentionBudgetAvailable(simulationId)){
     const limit=Math.min(POLICY.batchSize,POLICY.maxDeletesPerTable-deleted);
     const [result]=await conn.query(
-      "DELETE FROM memories WHERE id IN (SELECT id FROM (SELECT m.id,ROW_NUMBER() OVER(PARTITION BY m.memory_dedupe_key ORDER BY m.importance DESC,m.strength DESC,m.created_simulation_at DESC) AS rn FROM memories m WHERE m.simulation_id=UUID_TO_BIN(?) AND m.status='ACTIVE' AND m.memory_dedupe_key IS NOT NULL AND m.created_simulation_at < ? AND m.importance<=0.55 AND m.emotional_intensity<=0.30) ranked WHERE ranked.rn>1 LIMIT "+limit+")",
+      "DELETE m FROM memories m JOIN (SELECT id FROM (SELECT m2.id,ROW_NUMBER() OVER(PARTITION BY m2.memory_dedupe_key ORDER BY m2.importance DESC,m2.strength DESC,m2.created_simulation_at DESC) AS rn FROM memories m2 WHERE m2.simulation_id=UUID_TO_BIN(?) AND m2.status='ACTIVE' AND m2.memory_dedupe_key IS NOT NULL AND m2.created_simulation_at < ? AND m2.importance<=0.55 AND m2.emotional_intensity<=0.30) ranked WHERE ranked.rn>1 LIMIT "+limit+") doomed ON doomed.id=m.id",
       [simulationId,cutoff]
     );
     const affected=Number(result.affectedRows||0);
