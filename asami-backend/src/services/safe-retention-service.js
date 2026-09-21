@@ -138,7 +138,7 @@ async function deleteSelectedRows(conn, {
   };
 }
 
-async function deleteHistoryDirectBatch(conn,table,simulationId,cutoff,remainingBudget,maxDeletes){
+async function deleteHistoryDirectBatch(conn,table,simulationId,cutoff,maxDeletes){
   const safeTables=new Set(["entity_need_history","entity_emotion_history"]);
   if(!safeTables.has(table))throw new Error("Unsupported history table");
   let deleted=0;
@@ -183,7 +183,7 @@ async function compactDuplicateMemories(conn,simulationId,simulationTime){
     if(affected<limit)break;
   }
   const [backlog]=await conn.query(
-    "SELECT COUNT(*) AS candidates FROM memories WHERE simulation_id=UUID_TO_BIN(?) AND status='ACTIVE' AND memory_dedupe_key IS NOT NULL AND created_simulation_at < ? AND importance<=0.55 AND emotional_intensity<=0.30",
+    "SELECT COALESCE(SUM(cnt-1),0) AS candidates FROM (SELECT COUNT(*) AS cnt FROM memories WHERE simulation_id=UUID_TO_BIN(?) AND status='ACTIVE' AND memory_dedupe_key IS NOT NULL AND created_simulation_at < ? AND importance<=0.55 AND emotional_intensity<=0.30 GROUP BY memory_dedupe_key HAVING COUNT(*)>1) duplicate_groups",
     [simulationId,cutoff]
   );
   return {deleted,remainingCandidates:Number(backlog[0]?.candidates||0)};
@@ -191,12 +191,12 @@ async function compactDuplicateMemories(conn,simulationId,simulationTime){
 
 async function deleteOldNeedHistory(conn, simulationId, simulationTime) {
   const cutoff=cutoffDateTime(simulationTime,POLICY.needHistoryDays);
-  return deleteHistoryDirectBatch(conn,"entity_need_history",simulationId,cutoff,simulationId,POLICY.maxDeletesPerTable);
+  return deleteHistoryDirectBatch(conn,"entity_need_history",simulationId,cutoff,POLICY.maxDeletesPerTable);
 }
 
 async function deleteOldEmotionHistory(conn, simulationId, simulationTime) {
   const cutoff=cutoffDateTime(simulationTime,POLICY.emotionHistoryDays);
-  return deleteHistoryDirectBatch(conn,"entity_emotion_history",simulationId,cutoff,simulationId,POLICY.maxDeletesPerTable);
+  return deleteHistoryDirectBatch(conn,"entity_emotion_history",simulationId,cutoff,POLICY.maxDeletesPerTable);
 }
 
 async function deleteOldEvents(conn, simulationId, simulationTime) {
