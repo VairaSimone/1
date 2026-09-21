@@ -91,6 +91,7 @@ test("retention exposes actor caps and differentiated history policy",()=>{
   assert.ok(policy.maxCounterfactualWorldsPerActor>=100);
   assert.ok(policy.relationshipHistoryDays>=7);
   assert.ok(policy.memoryPermanentImportance>=0.75);
+  assert.equal(policy.memoryArchiveImportanceMax,policy.memoryPermanentImportance);
 });
 
 test("retention contains actor-level caps and preserves open counterfactuals",()=>{
