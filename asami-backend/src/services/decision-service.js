@@ -1,6 +1,6 @@
 const {pool}=require("../db/pool");
 const {uuid}=require("../lib/ids");
-const {ACTIONS,scoreAction,RESOURCE_REQUIREMENTS,needPriorityState,CRITICAL_NEED_ACTIONS}=require("./decision-rules");
+const {ACTIONS,scoreAction,RESOURCE_REQUIREMENTS,needPriorityState,CRITICAL_NEED_ACTIONS,activityDiversityBonus}=require("./decision-rules");
 const {getCognitiveProfile,getCognitiveProfiles,cognitiveDecisionModifier}=require("./personality-service");
 const {cognitiveExperienceModifier}=require("./experience-learning-service");
 const {assertTransition}=require("./state-machine");
@@ -230,7 +230,7 @@ async function buildDecisionContexts(simulationId,entityIds=[],simulationTime=nu
     resourceContext.emergencyResources=resourceEmergencyCandidates;for(const resource of ['water','food']){const required=resource==='water'?1:1,localAvailable=Number(currentWorldLocation?.resources?.[resource]??0),emergency=resourceEmergencyCandidates.find(item=>item.resource===resource);resourceContext.actions[resource==='water'?'DRINKING':'EATING']={resource,required,localAvailable,locallyAvailable:localAvailable>=required,recentlyBlocked:Boolean(blockedResources[resource]),nearestLocation:resourceContext.nearestResources[resource]||null,emergency:emergency||null};}
     resourceContext.resourceEmergency=resourceEmergencyCandidates.find(item=>item.resource==='water')||resourceEmergencyCandidates.find(item=>item.resource==='food')||null;
     let candidates=ACTIONS.map(action=>({action,score:scoreAction(action,needsList,resourceContext)}));
-    candidates=candidates.map(c=>({...c,score:Number(c.score||0)+cognitiveDecisionModifier(profile,c.action)+Math.max(-MAX_EXPERIENCE_SCORE_EFFECT,Math.min(MAX_EXPERIENCE_SCORE_EFFECT,cognitiveExperienceModifier(profile,c.action,{locationType:currentLocation?.locationType,locationId:currentLocation?.locationId,simulationTime:effectiveSimulationTime})))}));
+    candidates=candidates.map(c=>({...c,score:Number(c.score||0)+cognitiveDecisionModifier(profile,c.action)+Math.max(-MAX_EXPERIENCE_SCORE_EFFECT,Math.min(MAX_EXPERIENCE_SCORE_EFFECT,cognitiveExperienceModifier(profile,c.action,{locationType:currentLocation?.locationType,locationId:currentLocation?.locationId,simulationTime:effectiveSimulationTime})))+activityDiversityBonus(c.action,(actionsByEntity.get(id)||[]).map(row=>row.actionType))}));
     candidates=applyIndividualityBias(candidates,id);candidates=applyPlanBias(candidates,profile.plans);candidates=applyRecentActionPenalty(candidates,(actionsByEntity.get(id)||[]).map(row=>row.actionType));candidates=applyLocationBias(candidates,currentLocation);candidates=applyResourceRoutingBias(candidates,resourceContext,needsList);candidates=applyRecoveryBlocks(candidates,recoveryBlocks,criticalProtectedActions(needsList,resourceContext));
     contexts.set(id,{needs:needsList,traits:traitsByEntity.get(id)||[],goals:goalsByEntity.get(id)||[],location:currentLocation,recentActions:(actionsByEntity.get(id)||[]).map(row=>row.actionType),recentInterruptions:interruptionsByEntity.get(id)||[],recentSocialTargets,recentSocialTargetCounts,recoveryBlocks,resourceContext,cognitiveProfile:profile,needPriority:needPriorityState(needsList),allowedActionTypes:ACTIONS,candidates});
   }
@@ -240,10 +240,54 @@ async function buildDecisionContext(simulationId,entityId,simulationTime=null){l
 function rebuildDecisionCandidates(context={},entityId,needs=context?.needs||[]){
   const traits=context.traits||[],profile=context.cognitiveProfile||{},resourceContext=context.resourceContext||{};
   let candidates=ACTIONS.map(action=>({action,score:scoreAction(action,needs,traits,resourceContext)}));
-  candidates=candidates.map(c=>({...c,score:Number(c.score||0)+cognitiveDecisionModifier(profile,c.action)+Math.max(-MAX_EXPERIENCE_SCORE_EFFECT,Math.min(MAX_EXPERIENCE_SCORE_EFFECT,cognitiveExperienceModifier(profile,c.action,{locationType:context.location?.locationType,locationId:context.location?.locationId,simulationTime:context.simulationTime})))}));
+  candidates=candidates.map(c=>({...c,score:Number(c.score||0)+cognitiveDecisionModifier(profile,c.action)+Math.max(-MAX_EXPERIENCE_SCORE_EFFECT,Math.min(MAX_EXPERIENCE_SCORE_EFFECT,cognitiveExperienceModifier(profile,c.action,{locationType:context.location?.locationType,locationId:context.location?.locationId,simulationTime:context.simulationTime})))+activityDiversityBonus(c.action,context.recentActions||[])}));
   candidates=applyIndividualityBias(candidates,entityId);candidates=applyPlanBias(candidates,profile.plans);candidates=applyRecentActionPenalty(candidates,context.recentActions||[]);candidates=applyLocationBias(candidates,context.location);candidates=applyResourceRoutingBias(candidates,resourceContext,needs);
   const recoveryBlocks=Array.isArray(context.recoveryBlocks)?context.recoveryBlocks:activeRecoveryBlocks(context.recentInterruptions||[],needs);
   return applyRecoveryBlocks(candidates,recoveryBlocks,criticalProtectedActions(needs,resourceContext));
+}
+function calibratedSuccessProbability({action,candidates=[],context={}}={}){
+  const normalized=normalizeAction(action);
+  const recent=Array.isArray(context.recentActions)?context.recentActions.map(normalizeAction):[];
+  const repetition=recent.filter(item=>item===normalized).length;
+  const resourceSafe=!["EATING","DRINKING"].includes(normalized)||Boolean(context.resourceContext?.actions?.[normalized]?.locallyAvailable);
+  const candidate=Array.isArray(candidates)?candidates.find(item=>normalizeAction(item.action)===normalized):null;
+  let probability=.72;
+  probability+=Math.min(.12,repetition*.025);
+  if(resourceSafe)probability+=.05;
+  if(["WALKING","EXPLORING"].includes(normalized)&&candidate?.targetLocationId)probability+=.04;
+  if(normalized==="TALKING"&&candidate?.targetEntityId)probability+=.03;
+  const recentFailures=Number(context.cognitiveProfile?.beliefs?.filter(b=>normalizeAction(b.predicate)===`ACTION_OUTCOME_${normalized}`&&normalizeAction(b.objectValue?.outcome)==="FAILURE").length||0);
+  probability-=Math.min(.18,recentFailures*.045);
+  return Math.max(.45,Math.min(.94,Number(probability.toFixed(4))));
+}
+async function calibrateDecisionOutcome(decisionId,outcome){
+  if(!decisionId)return false;
+  const normalized=String(outcome||"").toUpperCase(),target=normalized==="SUCCESS"?1:normalized==="PARTIAL"?.5:0;
+  const [rows]=await pool.query(
+    `SELECT BIN_TO_UUID(selected_option_id) AS optionId,expected_outcome AS expectedOutcome FROM decisions WHERE id=UUID_TO_BIN(?) LIMIT 1`,
+    [decisionId]
+  );
+  if(!rows.length)return false;
+  const decisionExpected=parseJson(rows[0].expectedOutcome,{})||{};
+  const samples=Math.max(0,Number(decisionExpected.calibrationSamples||0));
+  const prior=Number(decisionExpected.predictedSuccessProbability);
+  const probability=Number.isFinite(prior)?Math.max(.05,Math.min(.98,prior)):.72;
+  const learningRate=samples<3?.35:samples<8?.25:.15;
+  const calibrated=Number((probability+learningRate*(target-probability)).toFixed(4));
+  const nextSamples=samples+1;
+  const errorEma=Number((Number(decisionExpected.calibrationErrorEma||0)*.75+Math.abs(probability-target)*.25).toFixed(4));
+  const next={...decisionExpected,predictedSuccessProbability:calibrated,calibrationSamples:nextSamples,lastObservedOutcome:normalized,lastCalibrationError:errorEma,calibrationErrorEma:errorEma};
+  if(rows[0].optionId){
+    await pool.query(
+      `UPDATE decision_options SET expected_outcome=? WHERE id=UUID_TO_BIN(?)`,
+      [JSON.stringify(next),rows[0].optionId]
+    );
+  }
+  await pool.query(
+    `UPDATE decisions SET expected_outcome=? WHERE id=UUID_TO_BIN(?)`,
+    [JSON.stringify(next),decisionId]
+  );
+  return true;
 }
 function chooseStochasticCandidate(candidates,{temperature=BASE_TEMPERATURE,random=Math.random}={}){const usable=candidates.filter(c=>Number(c.score||0)>0).slice(0,STOCHASTIC_TOP_K);if(!usable.length)return candidates[0]||{action:"RESTING",score:0};if(usable.length===1)return usable[0];const top=Number(usable[0].score||0),second=Number(usable[1].score||0);if(top-second>=.85)return usable[0];const t=Math.max(.12,Math.min(.48,Number(temperature||BASE_TEMPERATURE))),weights=usable.map(c=>Math.exp((Number(c.score||0)-top)/t)),total=weights.reduce((s,v)=>s+v,0);if(!Number.isFinite(total)||total<=0)return usable[0];let cursor=random()*total;for(let i=0;i<usable.length;i++){cursor-=weights[i];if(cursor<=0)return usable[i];}return usable[usable.length-1];}
 function resolvePlanCommitment(context){
@@ -922,6 +966,8 @@ async function makeDecision({
     ]
   );
 
+  const predictedSuccessProbability=calibratedSuccessProbability({action:chosen,candidates,context});
+  const expectedOutcome={actionType:chosen,targetEntityId:selectedTargetEntityId,targetLocationId:selectedTargetLocationId,strategy:selectedStrategy,planProposal:selectedPlanProposal,predictedSuccessProbability,calibrationSamples:0,lastObservedOutcome:null,calibrationErrorEma:0};
   const optionId = uuid();
   await pool.query(
     `INSERT INTO decision_options(id,decision_id,option_code,description,action_definition,evaluation,expected_outcome) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?, ?,?)`,
@@ -962,13 +1008,7 @@ async function makeDecision({
             ? chosenCandidate.targetName || null
             : null
       }),
-      JSON.stringify({
-        actionType: chosen,
-        targetEntityId: selectedTargetEntityId,
-        targetLocationId: selectedTargetLocationId,
-        strategy: selectedStrategy,
-        planProposal: selectedPlanProposal
-      })
+      JSON.stringify(expectedOutcome)
     ]
   );
 
@@ -977,13 +1017,7 @@ async function makeDecision({
     `UPDATE decisions SET selected_option_id=UUID_TO_BIN(?),status='EVALUATED',expected_outcome=? WHERE id=UUID_TO_BIN(?)`,
     [
       optionId,
-      JSON.stringify({
-        actionType: chosen,
-        targetEntityId: selectedTargetEntityId,
-        targetLocationId: selectedTargetLocationId,
-        strategy: selectedStrategy,
-        planProposal: selectedPlanProposal
-      }),
+      JSON.stringify(expectedOutcome),
       decisionId
     ]
   );
@@ -1039,4 +1073,4 @@ async function makeDecision({
 }
 
 function effectiveSimulationTimeString(value){const date=value instanceof Date?value:new Date(value);if(!Number.isFinite(date.getTime()))throw Object.assign(new Error("Invalid simulation time"),{code:"INVALID_SIMULATION_TIME"});const pad=n=>String(n).padStart(2,"0"),ms=String(date.getUTCMilliseconds()).padStart(3,"0");return `${date.getUTCFullYear()}-${pad(date.getUTCMonth()+1)}-${pad(date.getUTCDate())} ${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}:${pad(date.getUTCSeconds())}.${ms}`;}
-module.exports={ACTIONS,RESOURCE_REQUIREMENTS,scoreAction,buildDecisionContext,buildDecisionContexts,rebuildDecisionCandidates,makeDecision,applyLocationBias,LOCATION_ACTION_BIAS,loadResourceContext,findNearestResourceLocation,shortestRoute,deriveProactivity,applyProactiveOpportunityBias,applyPlanCommitment,applyExplorationCommitment,applyRecoveryBlocks,criticalProtectedActions,recoveryBlockForInterruption,activeRecoveryBlocks,criticalNeedState,criticalNeedAction,criticalResourceNeedState,resolveCriticalResourceRecovery,resolveCriticalDecisionRequirement,validateCriticalDecision,applyRecentActionPenalty,individualityBias,chooseStochasticCandidate,resolvePlanCommitment,chooseSocialTargetCandidate,applySocialFeasibility,applySocialIsolationFallback,compactDecisionContext,needPriorityState};
+module.exports={ACTIONS,RESOURCE_REQUIREMENTS,scoreAction,buildDecisionContext,buildDecisionContexts,rebuildDecisionCandidates,makeDecision,applyLocationBias,LOCATION_ACTION_BIAS,loadResourceContext,findNearestResourceLocation,shortestRoute,deriveProactivity,applyProactiveOpportunityBias,applyPlanCommitment,applyExplorationCommitment,applyRecoveryBlocks,criticalProtectedActions,recoveryBlockForInterruption,activeRecoveryBlocks,criticalNeedState,criticalNeedAction,criticalResourceNeedState,resolveCriticalResourceRecovery,resolveCriticalDecisionRequirement,validateCriticalDecision,applyRecentActionPenalty,individualityBias,chooseStochasticCandidate,resolvePlanCommitment,chooseSocialTargetCandidate,applySocialFeasibility,applySocialIsolationFallback,compactDecisionContext,needPriorityState,calibratedSuccessProbability,calibrateDecisionOutcome};
