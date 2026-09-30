@@ -24,6 +24,8 @@ const Env = z.object({
     if(value===undefined||value===null||String(value).trim()==="")return ["gemini-3.7-flash","gemini-3.6-flash"];
     return String(value).split(",").map(item=>item.trim()).filter(Boolean);
   },z.array(z.string().min(1).max(100)).max(5).default(["gemini-3.7-flash","gemini-3.6-flash"])),
+  GEMINI_DIALOGUE_TIMEOUT_MS: z.coerce.number().int().min(1000).max(30000).default(6000),
+  GEMINI_DIALOGUE_MAX_MODELS: z.coerce.number().int().min(1).max(3).default(2),
   GEMINI_TIMEOUT_MS: z.preprocess((value)=>{
     if(value===undefined||value===null||String(value).trim()==="")return 30000;
     const n=Number(value);
