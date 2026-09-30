@@ -5,6 +5,7 @@ const path=require("node:path");
 
 const geminiSource=fs.readFileSync(path.join(__dirname,"../src/ai/gemini.js"),"utf8");
 const envSource=fs.readFileSync(path.join(__dirname,"../src/config/env.js"),"utf8");
+const chatSource=fs.readFileSync(path.join(__dirname,"../src/services/chat-service.js"),"utf8");
 
 test("Gemini uses a stable multi-model fallback chain",()=>{
   assert.match(envSource,/GEMINI_MODEL[\s\S]*default\("gemini-3\.8-flash"\)/);
@@ -32,9 +33,9 @@ test("Gemini request accounting identifies the model that answered",()=>{
   assert.match(geminiSource,/logger\.debug\(\{[\s\S]*?model,[\s\S]*?fallbackDepth:modelIndex,[\s\S]*?\},"Gemini request succeeded"\)/);
 });
 
-test("Autonomy availability ignores a single blocked model",()=>{
-  assert.match(geminiSource,/if\(budget\.providerBlockRemainingMs\(\)>0\|\|!this\._hasAvailableModel\(\)\)return false/);
-  assert.match(geminiSource,/\._availableModels\(\)/);
+test("Autonomy availability depends on model availability",()=>{
+  assert.match(geminiSource,/if\\(!this\\._hasAvailableModel\\(\\)\\)return false/);
+  assert.match(geminiSource,/\\._availableModels\\(\\)/);
 });
 
 
@@ -62,4 +63,19 @@ test("Gemini provider rate and quota limits are isolated per model",()=>{
 
 test("Gemini startup exposes the effective autonomy output ceiling",()=>{
   assert.match(geminiSource,/autonomyOutputTokenCeiling:env\.GEMINI_AUTONOMY_OUTPUT_TOKEN_CEILING/);
+});
+
+
+test("Dialogue uses a bounded latency and model fallback policy",()=>{
+  assert.match(envSource,/GEMINI_DIALOGUE_TIMEOUT_MS: z\\.coerce\\.number\\(\\)\\.int\\(\\)\\.min\\(1000\\)/);
+  assert.match(envSource,/GEMINI_DIALOGUE_MAX_MODELS: z\\.coerce\\.number\\(\\)\\.int\\(\\)\\.min\\(1\\)/);
+  assert.match(geminiSource,/maxModels=null,timeoutMsOverride=null/);
+  assert.match(geminiSource,/kind==="dialogue"\\?Math\\.max\\(1000,Math\\.min\\(30000,configuredTimeoutMs\\))/);
+  assert.match(geminiSource,/maxModels:env\\.GEMINI_DIALOGUE_MAX_MODELS,timeoutMsOverride:env\\.GEMINI_DIALOGUE_TIMEOUT_MS/);
+});
+
+test("Chat isolates Gemini failures so deterministic delivery can still complete",()=>{
+  assert.match(chatSource,/generated=await gemini\\.dialogue\\(context\\)/);
+  assert.match(chatSource,/Gemini dialogue failed; deterministic reply will be used/);
+  assert.match(chatSource,/const reply=generated\\?\\.reply\\|\\|deterministicReply\\(context,content\\)/);
 });
