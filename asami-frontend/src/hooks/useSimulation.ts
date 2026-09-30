@@ -1,10 +1,65 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../lib/api'
-import type { ChatMessage, ConversationState, Dashboard, Development, DevelopmentHistoryItem, EventItem, Memory, Simulation, TimelineItem, WorldSnapshot, WsMessage } from '../types'
+import type { ChatMessage, ConversationState, Dashboard, Development, DevelopmentHistoryItem, EventItem, Memory, Simulation, TimelineItem, WorldActivity, WorldAction, WorldMovement, WorldSnapshot, WsMessage } from '../types'
 
 const ACTIVE_SIM_KEY = 'asami.activeSimulationId'
 const ASAMI_ENTITY_KEY = 'asami.entityId'
 const CHAT_SENDER_KEY = 'asami.chatSenderId'
+
+function realtimeLabel(value: unknown) {
+  return String(value || 'azione').toLowerCase().replaceAll('_', ' ')
+}
+
+function normalizeRealtimeAction(value: unknown, fallbackAt: string, status = 'ACTIVE'): WorldAction | null {
+  if (!value || typeof value !== 'object') return null
+  const action = value as Record<string, unknown>
+  const startedAt = String(action.startedAt || action.startedSimulationAt || fallbackAt)
+  return {
+    id: String(action.id || action.actionId || ''),
+    actionType: String(action.actionType || 'ACTION'),
+    status: String(action.status || status),
+    startedAt,
+    completedAt: action.completedAt || action.completedSimulationAt ? String(action.completedAt || action.completedSimulationAt) : null,
+    targetLocationId: action.targetLocationId ? String(action.targetLocationId) : null,
+    targetEntityId: action.targetEntityId ? String(action.targetEntityId) : null,
+  }
+}
+
+function normalizeRealtimeMovement(value: unknown, world: WorldSnapshot, atIso: string): WorldMovement | null {
+  if (!value || typeof value !== 'object') return null
+  const movement = value as Record<string, unknown>
+  const originLocationId = String(movement.originLocationId || movement.origin || '')
+  const destinationLocationId = String(movement.destinationLocationId || movement.destination || '')
+  if (!originLocationId || !destinationLocationId) return null
+  const startedSimulationAt = String(movement.startedSimulationAt || atIso)
+  const expectedArrivalSimulationAt = String(movement.expectedArrivalSimulationAt || movement.expectedArrival || atIso)
+  const startMs = new Date(startedSimulationAt).getTime()
+  const arrivalMs = new Date(expectedArrivalSimulationAt).getTime()
+  const atMs = new Date(atIso).getTime()
+  const progress = Number.isFinite(startMs) && Number.isFinite(arrivalMs) && arrivalMs > startMs
+    ? Math.max(0, Math.min(1, (atMs - startMs) / (arrivalMs - startMs)))
+    : 0
+  const origin = world.locations.find((location) => location.locationId === originLocationId)
+  const destination = world.locations.find((location) => location.locationId === destinationLocationId)
+  return {
+    id: String(movement.id || movement.movementId || (originLocationId + ':' + destinationLocationId + ':' + startedSimulationAt)),
+    originLocationId,
+    destinationLocationId,
+    startedSimulationAt,
+    expectedArrivalSimulationAt,
+    actualArrivalSimulationAt: movement.actualArrivalSimulationAt ? String(movement.actualArrivalSimulationAt) : null,
+    arrivalSimulationAt: expectedArrivalSimulationAt,
+    status: String(movement.status || 'ACTIVE'),
+    reason: movement.reason ? String(movement.reason) : null,
+    originName: origin?.name,
+    destinationName: destination?.name,
+    progress: Number(progress.toFixed(4)),
+  }
+}
+
+function appendUnique<T extends { id: string }>(items: T[], item: T, limit: number) {
+  return [item, ...items.filter((current) => current.id !== item.id)].slice(0, limit)
+}
 
 export function useSimulation() {
   const [simulations, setSimulations] = useState<Simulation[]>([])
@@ -16,6 +71,7 @@ export function useSimulation() {
   const [memories, setMemories] = useState<Memory[]>([])
   const [development, setDevelopment] = useState<{ current: Development | null; history: DevelopmentHistoryItem[] }>({ current: null, history: [] })
   const [world, setWorld] = useState<WorldSnapshot | null>(null)
+  const [worldActivities, setWorldActivities] = useState<WorldActivity[]>([])
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [conversationState, setConversationState] = useState<ConversationState | null>(null)
   const [clockSpeed, setClockSpeed] = useState(1)
@@ -29,13 +85,16 @@ export function useSimulation() {
   const refreshTimer = useRef<number | null>(null)
   const worldLastFetchAt = useRef(0)
   const worldRequestInFlight = useRef<Promise<WorldSnapshot | null> | null>(null)
+  const worldRef = useRef<WorldSnapshot | null>(null)
 
   const simulation = useMemo(() => simulations.find((s) => s.id === simulationId) || null, [simulations, simulationId])
+
+  useEffect(() => { worldRef.current = world }, [world])
 
   const setSimulationId = useCallback((id: string) => {
     setSimulationIdState(id)
     localStorage.setItem(ACTIVE_SIM_KEY, id)
-    setDashboard(null); setTimeline([]); setEvents([]); setMemories([]); setDevelopment({ current: null, history: [] }); setWorld(null); setMessages([]); setConversationId(''); setConversationState(null)
+    setDashboard(null); setTimeline([]); setEvents([]); setMemories([]); setDevelopment({ current: null, history: [] }); setWorld(null); setWorldActivities([]); setMessages([]); setConversationId(''); setConversationState(null)
     localStorage.removeItem('asami.conversationId')
   }, [])
 
@@ -46,6 +105,19 @@ export function useSimulation() {
     return list
   }, [simulationId, setSimulationId])
 
+  const refreshWorldOnly = useCallback(async () => {
+    if (!simulationId || worldRequestInFlight.current) return null
+    worldRequestInFlight.current = api.world(simulationId)
+      .then((nextWorld) => {
+        worldLastFetchAt.current = Date.now()
+        setWorld(nextWorld)
+        return nextWorld
+      })
+      .catch(() => null)
+      .finally(() => { worldRequestInFlight.current = null })
+    return worldRequestInFlight.current
+  }, [simulationId])
+
   const refresh = useCallback(async (soft = false) => {
     if (!simulationId) return
     if (soft) setRefreshing(true); else setLoading(true)
@@ -54,7 +126,7 @@ export function useSimulation() {
       const simPromise = api.simulation(simulationId); const clockPromise = api.clock(simulationId); const asamiPromise = api.asami(simulationId)
       const worldDue = Date.now() - worldLastFetchAt.current >= 750 && !worldRequestInFlight.current
       const worldPromise = worldDue
-        ? (worldLastFetchAt.current = Date.now(), worldRequestInFlight.current = api.world(simulationId).catch(() => null).finally(() => { worldRequestInFlight.current = null }))
+        ? refreshWorldOnly()
         : Promise.resolve(null)
       const [sim, clockData, entity, nextDashboard, nextWorld] = await Promise.all([simPromise, clockPromise, asamiPromise, asamiPromise.then((e) => api.dashboard(simulationId, e.id)), worldPromise])
       if (clockData.clock) setClockSpeed(Number(clockData.clock.speed))
@@ -68,7 +140,7 @@ export function useSimulation() {
       setTimeline(nextTimeline); setEvents(nextEvents); setMemories(nextMemories); setDevelopment(nextDevelopment)
     } catch (e) { setError(e instanceof Error ? e.message : 'Errore durante il caricamento della simulazione.') }
     finally { setLoading(false); setRefreshing(false) }
-  }, [simulationId])
+  }, [simulationId, refreshWorldOnly])
 
   useEffect(() => { loadSimulations().catch((e) => setError(e instanceof Error ? e.message : 'Backend non raggiungibile.')).finally(() => setLoading(false)) }, [loadSimulations])
   useEffect(() => { if (simulationId) refresh().catch(() => undefined) }, [simulationId, refresh])
