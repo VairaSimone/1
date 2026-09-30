@@ -29,6 +29,11 @@ const Env = z.object({
     if(value===undefined||value===null||String(value).trim()==="")return ["gemini-3.5-flash-lite","gemini-3.7-flash"];
     return String(value).split(",").map(item=>item.trim()).filter(Boolean);
   },z.array(z.string().min(1).max(100)).max(5).default(["gemini-3.5-flash-lite","gemini-3.7-flash"])),
+  GEMINI_DIALOGUE_MAX_LATENCY_MS: z.preprocess((value)=>{
+    if(value===undefined||value===null||String(value).trim()==="")return 12000;
+    const n=Number(value);
+    return Number.isFinite(n)?Math.max(5000,Math.min(30000,n)):value;
+  },z.coerce.number().int().min(5000).max(30000).default(12000)),
   GEMINI_DIALOGUE_TIMEOUT_MS: z.preprocess((value)=>{
     if(value===undefined||value===null||String(value).trim()==="")return 15000;
     const n=Number(value);
@@ -36,6 +41,11 @@ const Env = z.object({
   },z.coerce.number().int().min(10000).max(30000).default(15000)),
   GEMINI_DIALOGUE_MAX_MODELS: z.coerce.number().int().min(1).max(3).default(2),
   GEMINI_DIALOGUE_COMPACT_OUTPUT_TOKEN_CEILING: z.coerce.number().int().min(256).max(4096).default(768),
+  GEMINI_AUTONOMY_MAX_LATENCY_MS: z.preprocess((value)=>{
+    if(value===undefined||value===null||String(value).trim()==="")return 12000;
+    const n=Number(value);
+    return Number.isFinite(n)?Math.max(5000,Math.min(30000,n)):value;
+  },z.coerce.number().int().min(5000).max(30000).default(12000)),
   GEMINI_TIMEOUT_MS: z.preprocess((value)=>{
     if(value===undefined||value===null||String(value).trim()==="")return 30000;
     const n=Number(value);
