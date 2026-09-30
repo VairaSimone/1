@@ -185,6 +185,7 @@ async function sendMessage({
 }) {
   await ensureEntityState(asamiEntityId,simulationTime);
   const cid=await ensureConversation(simulationId,senderEntityId,asamiEntityId,conversationId,simulationTime);
+  const turnSequence=await reserveConversationTurn(simulationId,cid);
   const stateBefore=await getConversationState(simulationId,cid);
 
   const intentId=uuid();
@@ -433,6 +434,7 @@ async function sendMessage({
     conversationId:cid,
     userMessageId,
     assistantMessageId:assistantId,
+    turnSequence,
     reply,
     aiUsed:Boolean(generated),
     asamiEffects:{
