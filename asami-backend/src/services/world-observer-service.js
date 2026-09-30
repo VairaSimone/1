@@ -1,0 +1,349 @@
+const { pool } = require("../db/pool");
+
+const DEFAULT_EVENT_LIMIT = 12;
+const MAX_ACTORS = 100;
+
+function parseJson(value, fallback = {}) {
+  if (value === null || value === undefined) return fallback;
+  if (typeof value === "object") return value;
+  try { return JSON.parse(value); } catch { return fallback; }
+}
+
+function clamp(value, min = 0, max = 1) {
+  return Math.max(min, Math.min(max, Number(value) || 0));
+}
+
+function normalizeCode(value) {
+  return String(value || "").trim().toUpperCase();
+}
+
+function iso(value) {
+  if (value instanceof Date) return value.toISOString();
+  return String(value);
+}
+
+function validateAndClampSimulationTime(requestedAt, simulation) {
+  const start = new Date(simulation.started_simulation_at).getTime();
+  const current = new Date(simulation.current_simulation_at).getTime();
+  if (!Number.isFinite(start) || !Number.isFinite(current)) {
+    throw Object.assign(new Error("Simulation clock contains an invalid timestamp"), { code: "INVALID_SIMULATION_CLOCK", statusCode: 500 });
+  }
+
+  if (!requestedAt) return new Date(current);
+  const parsed = new Date(requestedAt);
+  if (!Number.isFinite(parsed.getTime())) {
+    throw Object.assign(new Error("Query parameter 'at' must be a valid ISO timestamp"), { code: "INVALID_WORLD_TIME", statusCode: 400 });
+  }
+
+  const clamped = Math.max(start, Math.min(current, parsed.getTime()));
+  return new Date(clamped);
+}
+
+function actorPosition(actor, locationsById, atMs) {
+  const location = actor.locationId ? locationsById.get(String(actor.locationId)) : null;
+  const movement = actor.movement;
+
+  if (!movement) {
+    return {
+      locationId: location?.locationId || null,
+      x: location?.longitude ?? null,
+      y: location?.latitude ?? null,
+      moving: false,
+      movement: null
+    };
+  }
+
+  const origin = locationsById.get(String(movement.originLocationId));
+  const destination = locationsById.get(String(movement.destinationLocationId));
+  if (!origin || !destination) {
+    return {
+      locationId: location?.locationId || movement.originLocationId || null,
+      x: location?.longitude ?? null,
+      y: location?.latitude ?? null,
+      moving: true,
+      movement: { ...movement, progress: 0, degraded: true }
+    };
+  }
+
+  const startMs = new Date(movement.startedSimulationAt).getTime();
+  const endMs = new Date(movement.arrivalSimulationAt).getTime();
+  const durationMs = endMs - startMs;
+  const progress = durationMs > 0 ? clamp((atMs - startMs) / durationMs) : 1;
+
+  return {
+    locationId: origin.locationId,
+    x: Number(origin.longitude) + (Number(destination.longitude) - Number(origin.longitude)) * progress,
+    y: Number(origin.latitude) + (Number(destination.latitude) - Number(origin.latitude)) * progress,
+    moving: true,
+    movement: {
+      ...movement,
+      progress: Number(progress.toFixed(4)),
+      originName: origin.name,
+      destinationName: destination.name
+    }
+  };
+}
+
+async function getWorldSnapshot(simulationId, requestedAt = null) {
+  const [simulationRows] = await pool.query(
+    `SELECT started_simulation_at,current_simulation_at,status,version
+     FROM simulations
+     WHERE id=UUID_TO_BIN(?)
+     LIMIT 1`,
+    [simulationId]
+  );
+  const simulation = simulationRows[0];
+  if (!simulation) return null;
+
+  const at = validateAndClampSimulationTime(requestedAt, simulation);
+  const atIso = at.toISOString();
+
+  const [locationRows, actorRows, actionRows, movementRows, eventRows] = await Promise.all([
+    pool.query(
+      `SELECT BIN_TO_UUID(e.id) AS locationId,
+              e.display_name AS name,
+              e.description,
+              e.attributes,
+              l.location_type AS locationType,
+              l.latitude,
+              l.longitude,
+              l.address_data AS addressData
+       FROM entities e
+       JOIN locations l ON l.entity_id=e.id AND l.simulation_id=e.simulation_id
+       WHERE e.simulation_id=UUID_TO_BIN(?)
+         AND e.status='ACTIVE'
+         AND l.simulation_id=UUID_TO_BIN(?)
+       ORDER BY e.created_simulation_at ASC`,
+      [simulationId, simulationId]
+    ),
+    pool.query(
+      `SELECT BIN_TO_UUID(e.id) AS id,
+              e.display_name AS displayName,
+              e.description,
+              e.status,
+              e.attributes,
+              et.code AS entityType,
+              (
+                SELECT BIN_TO_UUID(h.location_id)
+                FROM entity_location_history h
+                WHERE h.simulation_id=e.simulation_id
+                  AND h.entity_id=e.id
+                  AND h.entered_simulation_at <= ?
+                  AND (h.exited_simulation_at IS NULL OR h.exited_simulation_at > ?)
+                ORDER BY h.entered_simulation_at DESC
+                LIMIT 1
+              ) AS locationId
+       FROM entities e
+       JOIN entity_types et ON et.id=e.entity_type_id
+       WHERE e.simulation_id=UUID_TO_BIN(?)
+         AND et.category='ACTOR'
+         AND et.code='PERSON'
+         AND e.status NOT IN ('INACTIVE','DEAD')
+         AND e.display_name<>'Observer'
+       ORDER BY CASE WHEN LOWER(e.display_name)='asami' THEN 0 ELSE 1 END,
+                e.created_simulation_at
+       LIMIT ?`,
+      [atIso, atIso, simulationId, MAX_ACTORS]
+    ),
+    pool.query(
+      `SELECT BIN_TO_UUID(a.id) AS id,
+              BIN_TO_UUID(a.entity_id) AS entityId,
+              a.action_type AS actionType,
+              a.status,
+              a.started_simulation_at AS startedAt,
+              a.completed_simulation_at AS completedAt,
+              a.target,
+              a.parameters,
+              a.result
+       FROM actions a
+       WHERE a.simulation_id=UUID_TO_BIN(?)
+         AND a.started_simulation_at <= ?
+         AND (a.completed_simulation_at IS NULL OR a.completed_simulation_at > ?)
+       ORDER BY a.started_simulation_at DESC`,
+      [simulationId, atIso, atIso]
+    ),
+    pool.query(
+      `SELECT BIN_TO_UUID(m.id) AS id,
+              BIN_TO_UUID(m.entity_id) AS entityId,
+              BIN_TO_UUID(m.origin_location_id) AS originLocationId,
+              BIN_TO_UUID(m.destination_location_id) AS destinationLocationId,
+              m.started_simulation_at AS startedSimulationAt,
+              m.expected_arrival_simulation_at AS expectedArrivalSimulationAt,
+              m.actual_arrival_simulation_at AS actualArrivalSimulationAt,
+              m.status,
+              m.reason
+       FROM movements m
+       WHERE m.simulation_id=UUID_TO_BIN(?)
+         AND m.started_simulation_at <= ?
+         AND COALESCE(m.actual_arrival_simulation_at,m.expected_arrival_simulation_at) > ?
+       ORDER BY m.started_simulation_at DESC`,
+      [simulationId, atIso, atIso]
+    ),
+    pool.query(
+      `SELECT BIN_TO_UUID(e.id) AS id,
+              et.code AS type,
+              et.category,
+              e.title,
+              e.description,
+              e.simulation_at AS simulationAt,
+              e.importance,
+              e.status,
+              e.metadata
+       FROM events e
+       JOIN event_types et ON et.id=e.event_type_id
+       WHERE e.simulation_id=UUID_TO_BIN(?)
+         AND e.simulation_at <= ?
+         AND e.status<>'CANCELLED'
+       ORDER BY e.simulation_at DESC
+       LIMIT ?`,
+      [simulationId, atIso, DEFAULT_EVENT_LIMIT]
+    )
+  ]);
+
+  const [locations] = locationRows;
+  const [actors] = actorRows;
+  const [actions] = actionRows;
+  const [movements] = movementRows;
+  const [events] = eventRows;
+
+  const locationsById = new Map();
+  const locationsByCode = new Map();
+
+  for (const row of locations) {
+    const attributes = parseJson(row.attributes, {});
+    const addressData = parseJson(row.addressData, {});
+    const code = normalizeCode(attributes.worldCode || addressData.worldCode || row.locationType);
+    const location = {
+      locationId: row.locationId,
+      code,
+      name: row.name,
+      description: row.description || null,
+      locationType: row.locationType,
+      latitude: Number(row.latitude),
+      longitude: Number(row.longitude),
+      addressData,
+      objects: Array.isArray(attributes.objects) ? attributes.objects : [],
+      resources: attributes.resources && typeof attributes.resources === "object" ? attributes.resources : {},
+      environment: attributes.environment && typeof attributes.environment === "object" ? attributes.environment : {},
+      connections: Array.isArray(attributes.connections)
+        ? attributes.connections.map((value) => String(value))
+        : Array.isArray(addressData.connections) ? addressData.connections.map((value) => String(value)) : []
+    };
+    locationsById.set(String(location.locationId), location);
+    if (code) locationsByCode.set(code, location);
+  }
+
+  for (const location of locationsById.values()) {
+    location.connectionIds = location.connections
+      .map((value) => locationsById.get(String(value)) || locationsByCode.get(normalizeCode(value)))
+      .filter(Boolean)
+      .map((target) => target.locationId);
+    delete location.connections;
+  }
+
+  const actionByEntity = new Map();
+  for (const row of actions) {
+    if (!actionByEntity.has(String(row.entityId))) {
+      actionByEntity.set(String(row.entityId), row);
+    }
+  }
+
+  const movementByEntity = new Map();
+  for (const row of movements) {
+    if (!movementByEntity.has(String(row.entityId))) {
+      const arrival = row.actualArrivalSimulationAt || row.expectedArrivalSimulationAt;
+      movementByEntity.set(String(row.entityId), {
+        id: row.id,
+        originLocationId: row.originLocationId,
+        destinationLocationId: row.destinationLocationId,
+        startedSimulationAt: iso(row.startedSimulationAt),
+        expectedArrivalSimulationAt: iso(row.expectedArrivalSimulationAt),
+        actualArrivalSimulationAt: row.actualArrivalSimulationAt ? iso(row.actualArrivalSimulationAt) : null,
+        arrivalSimulationAt: iso(arrival),
+        status: row.status,
+        reason: row.reason || null
+      });
+    }
+  }
+
+  const actorPayload = actors.map((row) => {
+    const actionRow = actionByEntity.get(String(row.id));
+    const movement = movementByEntity.get(String(row.id)) || null;
+    const position = actorPosition(
+      { locationId: row.locationId, movement },
+      locationsById,
+      at.getTime()
+    );
+
+    let targetLocationId = null;
+    let targetEntityId = null;
+    let actionParameters = parseJson(actionRow?.parameters, {});
+    let actionTarget = parseJson(actionRow?.target, null);
+    if (!actionTarget && actionRow?.target) actionTarget = actionRow.target;
+    targetLocationId = actionParameters.targetLocationId || actionTarget?.locationId || null;
+    targetEntityId = actionParameters.targetEntityId || null;
+
+    return {
+      id: row.id,
+      displayName: row.displayName,
+      description: row.description || null,
+      status: row.status,
+      entityType: row.entityType,
+      isAsami: normalizeCode(row.displayName) === "ASAMI",
+      locationId: position.locationId,
+      latitude: position.y,
+      longitude: position.x,
+      moving: position.moving,
+      movement: position.movement,
+      action: actionRow ? {
+        id: actionRow.id,
+        actionType: actionRow.actionType,
+        status: actionRow.status,
+        startedAt: iso(actionRow.startedAt),
+        completedAt: actionRow.completedAt ? iso(actionRow.completedAt) : null,
+        targetLocationId,
+        targetEntityId
+      } : null
+    };
+  });
+
+  const recentEvents = events.map((row) => {
+    const metadata = parseJson(row.metadata, {});
+    return {
+      id: row.id,
+      type: row.type,
+      category: row.category,
+      title: row.title,
+      description: row.description || null,
+      simulationAt: iso(row.simulationAt),
+      importance: Number(row.importance || 0),
+      status: row.status,
+      locationId: metadata.locationId ? String(metadata.locationId) : null,
+      eventCode: metadata.eventCode ? String(metadata.eventCode) : null,
+      environmental: Boolean(metadata.environmental),
+      metadata
+    };
+  });
+
+  return {
+    simulationAt: atIso,
+    requestedAt: requestedAt || null,
+    isLive: at.getTime() === new Date(simulation.current_simulation_at).getTime(),
+    simulation: {
+      status: simulation.status,
+      startedSimulationAt: iso(simulation.started_simulation_at),
+      currentSimulationAt: iso(simulation.current_simulation_at),
+      version: Number(simulation.version || 0)
+    },
+    locations: [...locationsById.values()],
+    actors: actorPayload,
+    recentEvents,
+    meta: {
+      locationCount: locationsById.size,
+      actorCount: actorPayload.length,
+      eventCount: recentEvents.length
+    }
+  };
+}
+
+module.exports = { getWorldSnapshot };
