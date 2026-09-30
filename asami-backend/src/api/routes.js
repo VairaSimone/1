@@ -13,6 +13,7 @@ const { getWorldSnapshot } = require("../services/world-observer-service");
 const { simulationCreate, speed, message, uuid, queryLimit } = require("./validation");
 const { runIdempotent } = require("../services/idempotency-service");
 const { env } = require("../config/env");
+const logger = require("../lib/logger");
 
 function buildRouter({hub,gemini}){
   const router=express.Router();
@@ -179,12 +180,30 @@ function buildRouter({hub,gemini}){
     const sender=await entityRepo.getEntity(simulationId,body.senderEntityId);
     if(!sender)return res.status(400).json({error:"senderEntityId is not an entity in this simulation"});
     if(sender.id===asami.id)return res.status(400).json({error:"senderEntityId must be different from Asami"});
-    const result=await sendMessage({
-      simulationId,senderEntityId:sender.id,asamiEntityId:asami.id,
-      conversationId:body.conversationId,content:body.content,
-      simulationTime:sim.currentSimulationAt,gemini,hub
-    });
-    res.status(201).json(result);
+    const startedAt=Date.now();
+    try{
+      const result=await sendMessage({
+        simulationId,senderEntityId:sender.id,asamiEntityId:asami.id,
+        conversationId:body.conversationId,content:body.content,
+        simulationTime:sim.currentSimulationAt,gemini,hub
+      });
+      logger.info({
+        requestId:req.id,
+        simulationId,
+        conversationId:result.conversationId,
+        aiUsed:result.aiUsed,
+        latencyMs:Date.now()-startedAt
+      },"chat message completed");
+      res.status(201).json(result);
+    }catch(err){
+      logger.error(logger.contextError({
+        requestId:req.id,
+        simulationId,
+        latencyMs:Date.now()-startedAt,
+        phase:"chat_message"
+      },err,"chat message failed"));
+      throw err;
+    }
   });
 
   router.post("/simulations/:simulationId/observer", async (req, res) => {
