@@ -75,7 +75,7 @@ function dialogueNeedsAdvancedCognition(context){
   const type=String(context?.conversationIntent?.type||"");
   if(["PLANNING","EMOTIONAL_SHARING","DISAGREEMENT"].includes(type))return true;
   const text=String(context?.userMessage||"");
-  return /\\b(mi piace|non mi piace|preferisco|adoro|odio|amo|mi preoccupa|credo|penso che|so che|sai che|di solito|sempre|mai|vorrei|voglio|prometto|futuro|i like|i dislike|i prefer|i love|i hate|i think|i believe|i know|usually|always|never|plan|promise)\\b/i.test(text);
+  return /\b(mi piace|non mi piace|preferisco|adoro|odio|amo|mi preoccupa|credo|penso che|so che|sai che|di solito|sempre|mai|vorrei|voglio|prometto|futuro|i like|i dislike|i prefer|i love|i hate|i think|i believe|i know|usually|always|never|plan|promise)\b/i.test(text);
 }
 
 function compactDialogueContext(context,{advanced=false}={}){
