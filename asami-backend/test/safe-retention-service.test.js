@@ -260,5 +260,5 @@ test("normal Gemini autonomy uses low reasoning and escalates only high-priority
     source,
     /const thinkingLevel=advanced\s*\n\s*\?\(context\?\.geminiTrigger\?\.priority==="HIGH"\?"medium":"low"\)\s*\n\s*:"low";/
   );
-  assert.match(source,/DecisionSchema,\{kind:"autonomy",thinkingLevel\}\)/);
+  assert.match(source,/return this\.generateJson\(prompt,schema,\{[\s\S]*kind:"autonomy"[\s\S]*thinkingLevel/);
 });
