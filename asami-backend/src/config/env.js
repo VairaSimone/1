@@ -50,9 +50,17 @@ const Env = z.object({
   GEMINI_INPUT_PRICE_USD_PER_1M: z.coerce.number().nonnegative().default(0.75),
   GEMINI_OUTPUT_PRICE_USD_PER_1M: z.coerce.number().nonnegative().default(3.75),
   GEMINI_DAILY_BUDGET_USD: z.coerce.number().positive().default(0.35),
+  GEMINI_AUTONOMY_DAILY_BUDGET_USD: z.coerce.number().positive().default(0.25),
+  GEMINI_DIALOGUE_DAILY_BUDGET_USD: z.coerce.number().positive().default(0.10),
   GEMINI_MONTHLY_BUDGET_USD: z.coerce.number().positive().default(10),
+  GEMINI_AUTONOMY_MONTHLY_BUDGET_USD: z.coerce.number().positive().default(7),
+  GEMINI_DIALOGUE_MONTHLY_BUDGET_USD: z.coerce.number().positive().default(3),
   GEMINI_DAILY_MAX_REQUESTS: z.coerce.number().int().positive().default(100),
+  GEMINI_AUTONOMY_DAILY_MAX_REQUESTS: z.coerce.number().int().positive().default(70),
+  GEMINI_DIALOGUE_DAILY_MAX_REQUESTS: z.coerce.number().int().positive().default(30),
   GEMINI_MONTHLY_MAX_REQUESTS: z.coerce.number().int().positive().default(2500),
+  GEMINI_AUTONOMY_MONTHLY_MAX_REQUESTS: z.coerce.number().int().positive().default(1750),
+  GEMINI_DIALOGUE_MONTHLY_MAX_REQUESTS: z.coerce.number().int().positive().default(750),
   GEMINI_AUTONOMY_MIN_INTERVAL_MINUTES: z.preprocess((value)=>{
     if(value===undefined||value===null||String(value).trim()==="")return 60;
     const n=Number(value);
