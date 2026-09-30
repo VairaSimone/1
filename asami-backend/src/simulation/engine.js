@@ -5,7 +5,7 @@ const simRepo = require("../repositories/simulation-repo");
 const { getAsamiCandidate } = require("../repositories/entity-repo");
 const { ensureEntityState, updateNeeds, applyEmotions, developTraits, readNeeds, flushPendingNeedHistory } = require("../services/state-service");
 const autonomyService = require("../services/autonomy-service");
-const { perceive } = require("../services/perception-service");
+const { perceive, perceiveBatch } = require("../services/perception-service");
 const actionService = require("../services/action-service");
 const { createMemory, decayMemories, buildActionMemory, buildFailureMemory } = require("../services/memory-service");
 const { generateWorldEvents } = require("../services/world-service");
@@ -344,6 +344,19 @@ class SimulationEngine {
         }
         const actors = await autonomyService.findAutonomousActors(sim.id, env.MAX_ENTITIES_PER_TICK);
         let autonomyBatchContext=null;
+        let activeActionsByEntity=new Map();
+        let perceptionByEntity=new Map();
+        try{
+          setPhase("entity.context.batch");
+          [activeActionsByEntity,perceptionByEntity]=await Promise.all([
+            actionService.getActiveActions(sim.id,actors),
+            perceiveBatch(sim.id,actors,nextTime)
+          ]);
+        }catch(batchStateError){
+          activeActionsByEntity=new Map();
+          perceptionByEntity=new Map();
+          logger.warn(logger.contextError({simulationId:sim.id,phase:"entity.context.batch"},batchStateError,"batched entity context unavailable; falling back to per-actor reads"));
+        }
         try {
           setPhase("autonomy.context.batch");
           autonomyBatchContext=await autonomyService.prepareTickAutonomyContext({simulationId:sim.id,entityIds:actors,simulationTime:nextTime.toISOString()});
@@ -356,7 +369,7 @@ class SimulationEngine {
           let actorHadActivity=false;
           try {
           entityId = id; actionType = null; setPhase("entity.state"); await ensureEntityState(entityId, nextTime);
-          const elapsedHours = Math.min(168, Math.max(0, (nextTime - previousTime) / 3600000)); const active = await actionService.getActiveAction(entityId, sim.id);
+          const elapsedHours = Math.min(168, Math.max(0, (nextTime - previousTime) / 3600000)); const active = activeActionsByEntity.get(entityId)||await actionService.getActiveAction(entityId, sim.id);
           if (active) {
             actorHadActivity=true;
             actionType = active.actionType; const actionStart = new Date(active.startedSimulationAt); const durationMinutes = Number(active.metadata?.durationMinutes || 30); const completionAt = new Date(actionStart.getTime() + durationMinutes * 60000);
@@ -366,7 +379,7 @@ class SimulationEngine {
             let outcomeEmotionChanges=[]; let developmentUpdate=null; let traitChanges=[]; let memoryId=null;
             let completion=null; let outcome="SUCCESS"; let successful=false; let memoryPayload=null;
             const wasCompleted = nextTime >= completionAt; const updateTime = wasCompleted ? completionAt : nextTime; const updateHours = Math.min(168, Math.max(0, (updateTime - previousTime) / 3600000));
-            setPhase("entity.perception"); const perception = await perceive(sim.id, entityId, nextTime); worldLocationId=perception?.location?.locationId || activeMovement?.originLocationId || null;
+            setPhase("entity.perception"); const perception = perceptionByEntity.get(entityId)||await perceive(sim.id, entityId, nextTime); worldLocationId=perception?.location?.locationId || activeMovement?.originLocationId || null;
             setPhase("entity.needs"); const needChanges = await updateNeeds(entityId, updateTime, updateHours, null, active.id, active.actionType, { significant: wasCompleted, perception });
             setPhase("entity.emotions"); await applyEmotions(entityId, updateTime, needChanges, null, active.id, active.actionType, updateHours, { perception, traits: batchTraits, significant: wasCompleted });
             setPhase("entity.interruption");
