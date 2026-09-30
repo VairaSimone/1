@@ -27,6 +27,8 @@ export function useSimulation() {
   const [wsConnected, setWsConnected] = useState(false)
   const wsRef = useRef<WebSocket | null>(null)
   const refreshTimer = useRef<number | null>(null)
+  const worldLastFetchAt = useRef(0)
+  const worldRequestInFlight = useRef<Promise<WorldSnapshot | null> | null>(null)
 
   const simulation = useMemo(() => simulations.find((s) => s.id === simulationId) || null, [simulations, simulationId])
 
@@ -49,13 +51,17 @@ export function useSimulation() {
     if (soft) setRefreshing(true); else setLoading(true)
     setError(null)
     try {
-      const simPromise = api.simulation(simulationId); const clockPromise = api.clock(simulationId); const asamiPromise = api.asami(simulationId); const worldPromise = api.world(simulationId).catch(() => null)
+      const simPromise = api.simulation(simulationId); const clockPromise = api.clock(simulationId); const asamiPromise = api.asami(simulationId)
+      const worldDue = Date.now() - worldLastFetchAt.current >= 750 && !worldRequestInFlight.current
+      const worldPromise = worldDue
+        ? (worldLastFetchAt.current = Date.now(), worldRequestInFlight.current = api.world(simulationId).catch(() => null).finally(() => { worldRequestInFlight.current = null }))
+        : Promise.resolve(null)
       const [sim, clockData, entity, nextDashboard, nextWorld] = await Promise.all([simPromise, clockPromise, asamiPromise, asamiPromise.then((e) => api.dashboard(simulationId, e.id)), worldPromise])
       if (clockData.clock) setClockSpeed(Number(clockData.clock.speed))
       setSimulations((prev) => prev.some((x) => x.id === sim.id) ? prev.map((x) => x.id === sim.id ? sim : x) : [sim, ...prev])
       const observer = await api.observer(simulationId)
       setChatSenderIdState(observer.id); localStorage.setItem(CHAT_SENDER_KEY, observer.id)
-      setAsamiIdState(entity.id); localStorage.setItem(ASAMI_ENTITY_KEY, entity.id); setDashboard(nextDashboard); setWorld(nextWorld)
+      setAsamiIdState(entity.id); localStorage.setItem(ASAMI_ENTITY_KEY, entity.id); setDashboard(nextDashboard); if (nextWorld) setWorld(nextWorld)
       const [nextTimeline, nextEvents, nextMemories, nextDevelopment] = await Promise.all([
         api.timeline(simulationId, entity.id, 200), api.events(simulationId, 100), api.memories(simulationId, entity.id, 100), api.development(simulationId, entity.id),
       ])
