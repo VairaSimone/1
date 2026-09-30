@@ -298,7 +298,17 @@ async function recallContext(simulationId, entityId, limit = 8, context = {}) {
   const effectiveContext = await deriveRecallContext(simulationId, entityId, context);
   const memories = await listMemories(simulationId, entityId, limit, { includeForgotten: false, context: effectiveContext });
   const recallAt = effectiveContext?.simulationTime || null;
-  if (recallAt && memories.length) for (const memory of memories.slice(0, Math.min(8, memories.length))) await pool.query(`UPDATE memories SET last_recalled_simulation_at=?,version=version+1 WHERE id=UUID_TO_BIN(?) AND status='ACTIVE'`, [recallAt, memory.id]);
+  if (recallAt && memories.length) {
+    const ids=memories.slice(0,Math.min(8,memories.length)).map(memory=>memory.id).filter(Boolean);
+    if(ids.length){
+      const placeholders=ids.map(()=>"UUID_TO_BIN(?)").join(",");
+      await pool.query(`UPDATE memories
+        SET last_recalled_simulation_at=?,version=version+1
+        WHERE simulation_id=UUID_TO_BIN(?) AND id IN (${placeholders}) AND status='ACTIVE'`,
+        [recallAt,simulationId,...ids]
+      );
+    }
+  }
   return memories;
 }
 
