@@ -30,10 +30,10 @@ const Env = z.object({
     return String(value).split(",").map(item=>item.trim()).filter(Boolean);
   },z.array(z.string().min(1).max(100)).max(5).default(["gemini-3.5-flash-lite","gemini-3.7-flash"])),
   GEMINI_DIALOGUE_TIMEOUT_MS: z.preprocess((value)=>{
-    if(value===undefined||value===null||String(value).trim()==="")return 12000;
+    if(value===undefined||value===null||String(value).trim()==="")return 15000;
     const n=Number(value);
     return Number.isFinite(n)?Math.max(10000,Math.min(30000,n)):value;
-  },z.coerce.number().int().min(10000).max(30000).default(12000)),
+  },z.coerce.number().int().min(10000).max(30000).default(15000)),
   GEMINI_DIALOGUE_MAX_MODELS: z.coerce.number().int().min(1).max(3).default(2),
   GEMINI_DIALOGUE_COMPACT_OUTPUT_TOKEN_CEILING: z.coerce.number().int().min(256).max(4096).default(768),
   GEMINI_TIMEOUT_MS: z.preprocess((value)=>{
@@ -47,6 +47,7 @@ const Env = z.object({
     const n=Number(value);
     return Number.isFinite(n)?Math.max(2048,n):value;
   },z.coerce.number().int().min(2048).max(20000).default(2048)),
+  GEMINI_AUTONOMY_COMPACT_OUTPUT_TOKEN_CEILING: z.coerce.number().int().min(512).max(4096).default(768),
   GEMINI_DIALOGUE_OUTPUT_TOKEN_CEILING: z.coerce.number().int().min(256).max(20000).default(1536),
   GEMINI_INPUT_PRICE_USD_PER_1M: z.coerce.number().nonnegative().default(0.75),
   GEMINI_OUTPUT_PRICE_USD_PER_1M: z.coerce.number().nonnegative().default(3.75),
