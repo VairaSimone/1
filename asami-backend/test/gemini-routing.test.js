@@ -22,7 +22,7 @@ test("Gemini uses a stable multi-model fallback chain",()=>{
 test("Gemini transient failures are isolated per model",()=>{
   assert.match(geminiSource,/this\.modelStates=new Map\(\)/);
   assert.match(geminiSource,/failureStreak:0,blockedUntil:0,reason:null/);
-  assert.match(geminiSource,/_blockModel\(model,transientCooldown,fallbackReason\)/);
+  assert.match(geminiSource,/_blockModel\(model,transientCooldown,fallbackReason,kind\)/);
   assert.match(geminiSource,/const fallbackModel=models\[modelIndex\+1\]\|\|null/);
   assert.match(geminiSource,/Gemini model unavailable; trying fallback model/);
   assert.doesNotMatch(geminiSource,/budget\.blockProvider\(transientCooldown,transientReason\)/);
@@ -41,7 +41,7 @@ test("Gemini request accounting identifies the model that answered",()=>{
 
 test("Autonomy availability depends on model availability",()=>{
   assert.match(geminiSource,/if\(!this\._hasAvailableModel\("autonomy"\)\)return false/);
-  assert.match(geminiSource,/_availableModels\("autonomy"\)/);
+  assert.match(geminiSource,/_availableModels\(kind="autonomy"\)/);
 });
 
 
@@ -84,7 +84,7 @@ test("Dialogue uses a bounded latency and model fallback policy",()=>{
   assert.match(geminiSource,/this\._availableModels\(kind\)/);
   assert.match(geminiSource,/kind==="dialogue"/);
   assert.match(geminiSource,/Math\.max\(10000,Math\.min\(30000,configuredTimeoutMs\)\)/);
-  assert.match(geminiSource,/kind:"dialogue",thinkingLevel:"low"/);
+  assert.match(geminiSource,/thinkingLevel:advanced\?"low":"minimal"/);
   assert.match(geminiSource,/dialogueCompactOutputTokenCeiling:env\.GEMINI_DIALOGUE_COMPACT_OUTPUT_TOKEN_CEILING/);
   assert.match(geminiSource,/configuredTimeoutMs/);
   assert.match(geminiSource,/maxModels:env\.GEMINI_DIALOGUE_MAX_MODELS,timeoutMsOverride:env\.GEMINI_DIALOGUE_TIMEOUT_MS/);
