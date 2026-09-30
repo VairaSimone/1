@@ -1,4 +1,5 @@
 const { pool } = require("../db/pool");
+const { WEATHER, WEATHER_DURATIONS_HOURS, BASE_BY_TYPE } = require("./environment-service");
 
 const DEFAULT_EVENT_LIMIT = 12;
 const MAX_ACTORS = 100;
@@ -98,7 +99,7 @@ async function getWorldSnapshot(simulationId, requestedAt = null) {
   const at = validateAndClampSimulationTime(requestedAt, simulation);
   const atIso = at.toISOString();
 
-  const [locationRows, actorRows, actionRows, movementRows, eventRows] = await Promise.all([
+  const [locationRows, actorRows, actionRows, movementRows, eventRows, weatherRows] = await Promise.all([
     pool.query(
       `SELECT BIN_TO_UUID(e.id) AS locationId,
               e.display_name AS name,
@@ -197,22 +198,84 @@ async function getWorldSnapshot(simulationId, requestedAt = null) {
        ORDER BY e.simulation_at DESC
        LIMIT ?`,
       [simulationId, atIso, DEFAULT_EVENT_LIMIT]
+    ),
+    pool.query(
+      `SELECT
+          JSON_UNQUOTE(JSON_EXTRACT(e.metadata,'$.locationId')) AS locationId,
+          JSON_UNQUOTE(JSON_EXTRACT(e.metadata,'$.eventCode')) AS eventCode,
+          e.simulation_at AS simulationAt
+       FROM events e
+       WHERE e.simulation_id=UUID_TO_BIN(?)
+         AND e.simulation_at <= ?
+         AND e.status<>'CANCELLED'
+         AND JSON_UNQUOTE(JSON_EXTRACT(e.metadata,'$.environmental'))='true'
+         AND JSON_UNQUOTE(JSON_EXTRACT(e.metadata,'$.eventCode')) IN ('RAIN','STORM')
+         AND JSON_EXTRACT(e.metadata,'$.locationId') IS NOT NULL
+         AND NOT EXISTS (
+           SELECT 1
+           FROM events newer
+           WHERE newer.simulation_id=e.simulation_id
+             AND newer.status<>'CANCELLED'
+             AND JSON_UNQUOTE(JSON_EXTRACT(newer.metadata,'$.environmental'))='true'
+             AND JSON_UNQUOTE(JSON_EXTRACT(newer.metadata,'$.eventCode')) IN ('RAIN','STORM')
+             AND JSON_UNQUOTE(JSON_EXTRACT(newer.metadata,'$.locationId'))=JSON_UNQUOTE(JSON_EXTRACT(e.metadata,'$.locationId'))
+             AND (
+               newer.simulation_at > e.simulation_at
+               OR (newer.simulation_at=e.simulation_at AND newer.real_created_at > e.real_created_at)
+             )
+         )
+       ORDER BY e.simulation_at DESC`,
+      [simulationId, atIso]
     )
   ]);
 
   const [locations] = locationRows;
   const [actors] = actorRows;
+  const [weatherEvents] = weatherRows;
   const [actions] = actionRows;
   const [movements] = movementRows;
   const [events] = eventRows;
 
   const locationsById = new Map();
   const locationsByCode = new Map();
+  const latestWeatherByLocation = new Map();
+
+  for (const row of weatherEvents) {
+    const locationId = String(row.locationId || "");
+    const eventCode = normalizeCode(row.eventCode);
+    const simulationMs = new Date(row.simulationAt).getTime();
+    if (!locationId || !WEATHER[eventCode] || !Number.isFinite(simulationMs)) continue;
+    latestWeatherByLocation.set(locationId, { eventCode, simulationAt: simulationMs });
+  }
+
+  const replayHour = at.getUTCHours();
+  const daylight = replayHour < 6 ? .08 : replayHour < 8 ? .35 : replayHour < 18 ? 1 : replayHour < 21 ? .45 : .12;
+  const clampEnvironment = (value) => Math.max(0, Math.min(1, Number(value) || 0));
 
   for (const row of locations) {
     const attributes = parseJson(row.attributes, {});
     const addressData = parseJson(row.addressData, {});
     const code = normalizeCode(attributes.worldCode || addressData.worldCode || row.locationType);
+    const currentEnvironment = attributes.environment && typeof attributes.environment === "object" ? attributes.environment : {};
+    const weatherEvent = latestWeatherByLocation.get(String(row.locationId));
+    const weatherAgeHours = weatherEvent ? Math.max(0, (at.getTime() - weatherEvent.simulationAt) / 3600000) : Infinity;
+    const durationHours = weatherEvent ? WEATHER_DURATIONS_HOURS[weatherEvent.eventCode] : null;
+    const weatherCode = weatherEvent && durationHours !== undefined && weatherAgeHours < durationHours ? weatherEvent.eventCode : "CLEAR";
+    const weatherPreset = WEATHER[weatherCode] || WEATHER.CLEAR;
+    const baseEnvironment = BASE_BY_TYPE[row.locationType] || BASE_BY_TYPE.SQUARE;
+    const replayEnvironment = {
+      ...currentEnvironment,
+      weather: weatherCode,
+      temperature: weatherPreset.temperature,
+      humidity: weatherPreset.humidity,
+      visibility: weatherPreset.visibility,
+      noise: clampEnvironment(baseEnvironment.noise + (weatherCode === "RAIN" ? .08 : weatherCode === "STORM" ? .2 : 0)),
+      activity: clampEnvironment(baseEnvironment.activity * (.45 + daylight * .55) - (replayHour < 6 || replayHour > 21 ? .12 : 0)),
+      daylight,
+      updatedAt: atIso,
+      replaySource: "environmental-events"
+    };
+
     const location = {
       locationId: row.locationId,
       code,
@@ -224,7 +287,7 @@ async function getWorldSnapshot(simulationId, requestedAt = null) {
       addressData,
       objects: Array.isArray(attributes.objects) ? attributes.objects : [],
       resources: attributes.resources && typeof attributes.resources === "object" ? attributes.resources : {},
-      environment: attributes.environment && typeof attributes.environment === "object" ? attributes.environment : {},
+      environment: replayEnvironment,
       connections: Array.isArray(attributes.connections)
         ? attributes.connections.map((value) => String(value))
         : Array.isArray(addressData.connections) ? addressData.connections.map((value) => String(value)) : []
