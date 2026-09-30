@@ -6,6 +6,12 @@ const path=require("node:path");
 const geminiSource=fs.readFileSync(path.join(__dirname,"../src/ai/gemini.js"),"utf8");
 const envSource=fs.readFileSync(path.join(__dirname,"../src/config/env.js"),"utf8");
 const chatSource=fs.readFileSync(path.join(__dirname,"../src/services/chat-service.js"),"utf8");
+const stateSource=fs.readFileSync(path.join(__dirname,"../src/services/state-service.js"),"utf8");
+const memorySource=fs.readFileSync(path.join(__dirname,"../src/services/memory-service.js"),"utf8");
+const engineSource=fs.readFileSync(path.join(__dirname,"../src/simulation/engine.js"),"utf8");
+const actionSource=fs.readFileSync(path.join(__dirname,"../src/services/action-service.js"),"utf8");
+const perceptionSource=fs.readFileSync(path.join(__dirname,"../src/services/perception-service.js"),"utf8");
+const entityRepoSource=fs.readFileSync(path.join(__dirname,"../src/repositories/entity-repo.js"),"utf8");
 
 test("Gemini uses a stable multi-model fallback chain",()=>{
   assert.match(envSource,/GEMINI_MODEL[\s\S]*default\("gemini-3\.8-flash"\)/);
@@ -120,4 +126,49 @@ test("Gemini autonomy budget gate backs off after a local daily-budget block",()
   assert.match(budgetSource,/const budgetBlockedUntil = new Map\(\)/);
   assert.match(budgetSource,/budgetBlockedUntil\.set\(budgetKind/);
   assert.match(budgetSource,/retryAfterMs/);
+});
+
+
+test("Conversation context is grounded in authoritative identity and durable timeline",()=>{
+  assert.match(entityRepoSource,/LEFT JOIN persons p ON p\.entity_id=e\.id/);
+  assert.match(entityRepoSource,/birth_simulation_at AS birthSimulationAt/);
+  assert.match(chatSource,/function buildIdentity\(entity, simulationTime\)/);
+  assert.match(chatSource,/identity:buildIdentity\(entity,effectiveTime\)/);
+  assert.match(chatSource,/authoritativeFacts/);
+  assert.match(chatSource,/earlier Asami replies are NOT proof|previous reply conflicts with authoritative state/);
+  assert.match(chatSource,/rn<=3 OR rn>GREATEST\(3,total-12\)/);
+});
+
+test("Routine dialogue uses minimal thinking and compact structured output",()=>{
+  assert.match(geminiSource,/thinkingLevel:advanced\?"low":"minimal"/);
+  assert.match(geminiSource,/GEMINI_AUTONOMY_COMPACT_OUTPUT_TOKEN_CEILING/);
+  assert.match(envSource,/GEMINI_AUTONOMY_COMPACT_OUTPUT_TOKEN_CEILING: z\.coerce\.number/);
+  assert.match(envSource,/\.min\(512\)\.max\(4096\)/);
+});
+
+test("Autonomy uses advanced output only for high-value decisions",()=>{
+  assert.match(geminiSource,/function decisionNeedsAdvancedCognition\(context\)/);
+  assert.match(geminiSource,/const schema=advanced\?AdvancedDecisionSchema:DecisionSchema/);
+  assert.match(geminiSource,/maxModels:advanced\?null:1/);
+  assert.match(geminiSource,/Do not output strategy or planProposal/);
+});
+
+test("Entity state writes are batched per state family",()=>{
+  assert.match(stateSource,/UPDATE entity_needs_current[\s\S]*CASE need_id/);
+  assert.match(stateSource,/UPDATE entity_emotions_current[\s\S]*CASE emotion_id/);
+  assert.match(stateSource,/const initializedEntityState = new Set\(\)/);
+  assert.match(stateSource,/initializedEntityState\.has\(key\)/);
+});
+
+test("Tick actor reads are batched",()=>{
+  assert.match(actionSource,/async function getActiveActions\(simulationId,entityIds=\[\]\)/);
+  assert.match(perceptionSource,/async function perceiveBatch\(simulationId,entityIds=\[\],simulationTime\)/);
+  assert.match(engineSource,/actionService\.getActiveActions\(sim\.id,actors\)/);
+  assert.match(engineSource,/perceiveBatch\(sim\.id,actors,nextTime\)/);
+  assert.match(engineSource,/needsOverride: latestNeeds/);
+});
+
+test("Memory recall updates are performed in one query",()=>{
+  assert.match(memorySource,/UPDATE memories[\s\S]*id IN \(\$\{placeholders\}\)/);
+  assert.doesNotMatch(memorySource,/for \(const memory of memories\.slice\(0, Math\.min\(8, memories\.length\)\)\) await pool\.query/);
 });
