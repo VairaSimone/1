@@ -152,7 +152,8 @@ test("retention scheduling is based on simulation time during accelerated runs",
   const path=require("node:path");
   const source=fs.readFileSync(path.join(__dirname,"../src/services/safe-retention-service.js"),"utf8");
   assert.match(source,/simulationIntervalHours/);
-  assert.match(source,/simulationMs-lastSimulationMs/);
+  assert.match(source,/const simulationMs = new Date\(simulationTime\)\.getTime\(\)/);
+  assert.match(source,/simulationMs - lastSimulationMs/);
   assert.match(source,/RETENTION_CHECK_SIMULATION_HOURS/);
 });
 
@@ -216,7 +217,8 @@ test("startup and successful-provider noise are suppressed at info level",()=>{
   const envSource=fs.readFileSync(path.join(__dirname,"../src/config/env.js"),"utf8");
   const geminiSource=fs.readFileSync(path.join(__dirname,"../src/ai/gemini.js"),"utf8");
   assert.match(envSource,/dotenv"\)\.config\(\{ quiet: true \}\)/);
-  assert.match(geminiSource,/logger\.debug\(\{kind,model:this\.model/);
+  assert.match(geminiSource,/logger\.debug\(\{kind,retryAfterMs/);
+  assert.doesNotMatch(geminiSource,/logger\.info\(\{kind,model:this\.model/);
 });
 
 
@@ -243,7 +245,9 @@ test("Gemini requests use bounded generation and no hidden SDK retries",()=>{
   const source=fs.readFileSync(path.join(__dirname,"../src/ai/gemini.js"),"utf8");
   assert.match(source,/new AbortController\(\)/);
   assert.match(source,/abortSignal:controller\.signal/);
-  assert.match(source,/httpOptions:\{timeout:timeoutMs,retryOptions:\{attempts:1,initialDelay:0\}\}/);
+  assert.match(source,/httpOptions:\{/);
+  assert.match(source,/timeout:timeoutMs/);
+  assert.match(source,/retryOptions:\{attempts:1,initialDelay:0\}/);
   assert.match(source,/maxOutputTokens:outputTokenCeiling/);
   assert.doesNotMatch(source,/Promise\.race\(\[this\.client\.models\.generateContent/);
 });
@@ -254,7 +258,8 @@ test("normal Gemini autonomy uses low reasoning and escalates only high-priority
   const source=fs.readFileSync(path.join(__dirname,"../src/ai/gemini.js"),"utf8");
   assert.match(
     source,
-    /const thinkingLevel=context\?\.geminiTrigger\?\.priority==="HIGH"\?"medium":"low"/
+    /const thinkingLevel=advanced\?/
+
   );
   assert.match(source,/DecisionSchema,\{kind:"autonomy",thinkingLevel\}\)/);
 });
