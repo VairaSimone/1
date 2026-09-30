@@ -90,6 +90,16 @@ export interface WorldSnapshot {
   recentEvents: WorldEvent[]
   meta: { locationCount: number; actorCount: number; eventCount: number }
 }
+export interface WorldActivity {
+  id: string
+  kind: 'movement' | 'social' | 'action' | 'world' | 'consequence' | string
+  simulationAt: string
+  title: string
+  detail: string
+  entityId?: string | null
+  targetEntityId?: string | null
+  steps: string[]
+}
 
 export interface Relationship { id: string; type: string; sourceEntityId: string; targetEntityId: string; trustScore: number; affectionScore: number; respectScore: number; familiarityScore: number; attractionScore: number; conflictScore: number; fearScore: number; admirationScore: number; jealousyScore: number; dependenceScore: number; closenessScore: number; irritationScore: number }
 export interface Goal { id: string; title: string; description?: string | null; goalType: string; priority: number; status: string; progress: number; deadline?: string | null; motivation?: unknown; result?: unknown; version: number }
