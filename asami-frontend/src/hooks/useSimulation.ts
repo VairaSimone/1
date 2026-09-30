@@ -706,7 +706,7 @@ export function useSimulation() {
       )
       const existingAssistant = prev.find((message) => message.id === result.assistantMessageId)
       const assistant = existingAssistant
-        ? { ...existingAssistant, ...persistedAssistant, metadata: { ...(existingAssistant.metadata || {}), ...persistedAssistant.metadata } }
+        ? { ...existingAssistant, ...persistedAssistant, metadata: persistedAssistant.metadata }
         : persistedAssistant
       return sortChatMessages([...withoutThisTurn, persistedUser, assistant])
     })
