@@ -77,49 +77,62 @@ class GeminiService {
       .map(model=>String(model||"").trim())
       .filter(Boolean)
       .filter((model,index,self)=>self.indexOf(model)===index);
+    this.dialogueModels=[env.GEMINI_DIALOGUE_MODEL,...(Array.isArray(env.GEMINI_DIALOGUE_FALLBACK_MODELS)?env.GEMINI_DIALOGUE_FALLBACK_MODELS:[])]
+      .map(model=>String(model||"").trim())
+      .filter(Boolean)
+      .filter((model,index,self)=>self.indexOf(model)===index);
     this.modelStates=new Map();
+    this.dialogueModelStates=new Map();
     for(const model of this.models)this.modelStates.set(model,{failureStreak:0,blockedUntil:0,reason:null});
+    for(const model of this.dialogueModels)this.dialogueModelStates.set(model,{failureStreak:0,blockedUntil:0,reason:null});
     this.lastAutonomyDecisionAt=new Map();
     this.lastRequestStatus={status:"IDLE",source:"NONE"};
     this.providerFailureStreak=0;
   }
-  _modelState(model){
-    let state=this.modelStates.get(model);
+  _stateMap(kind="autonomy"){
+    return kind==="dialogue"?this.dialogueModelStates:this.modelStates;
+  }
+  _modelState(model,kind="autonomy"){
+    const states=this._stateMap(kind);
+    let state=states.get(model);
     if(!state){
       state={failureStreak:0,blockedUntil:0,reason:null};
-      this.modelStates.set(model,state);
+      states.set(model,state);
     }
     return state;
   }
-  _modelBlockRemainingMs(model){
-    return Math.max(0,Number(this._modelState(model).blockedUntil||0)-Date.now());
+  _modelBlockRemainingMs(model,kind="autonomy"){
+    return Math.max(0,Number(this._modelState(model,kind).blockedUntil||0)-Date.now());
   }
-  _availableModels(){
-    return this.models.filter(model=>this._modelBlockRemainingMs(model)<=0);
+  _availableModels(kind="autonomy"){
+    const configured=kind==="dialogue"?this.dialogueModels:this.models;
+    return configured.filter(model=>this._modelBlockRemainingMs(model,kind)<=0);
   }
-  _hasAvailableModel(){
-    return this._availableModels().length>0;
+  _hasAvailableModel(kind="autonomy"){
+    return this._availableModels(kind).length>0;
   }
-  _blockModel(model,delayMs,reason){
-    const state=this._modelState(model);
+  _blockModel(model,delayMs,reason,kind="autonomy"){
+    const state=this._modelState(model,kind);
     const delay=Math.max(10000,Number(delayMs)||10000);
     state.blockedUntil=Date.now()+delay;
     state.reason=reason||"PROVIDER_TRANSIENT_FAILURE";
     return state;
   }
-  _resetModel(model){
-    const state=this._modelState(model);
+  _resetModel(model,kind="autonomy"){
+    const state=this._modelState(model,kind);
     state.failureStreak=0;
     state.blockedUntil=0;
     state.reason=null;
   }
-  modelStatus(){
-    return this.models.map(model=>{
-      const state=this._modelState(model);
+  modelStatus(kind="autonomy"){
+    const configured=kind==="dialogue"?this.dialogueModels:this.models;
+    return configured.map(model=>{
+      const state=this._modelState(model,kind);
+      const blockedForMs=this._modelBlockRemainingMs(model,kind);
       return {
         model,
-        available:this._modelBlockRemainingMs(model)<=0,
-        blockedForMs:this._modelBlockRemainingMs(model),
+        available:blockedForMs<=0,
+        blockedForMs,
         failureStreak:state.failureStreak,
         reason:state.reason
       };
@@ -141,13 +154,15 @@ class GeminiService {
       timeoutMs:env.GEMINI_TIMEOUT_MS,
       autonomyOutputTokenCeiling:env.GEMINI_AUTONOMY_OUTPUT_TOKEN_CEILING,
       autonomyIntervalMinutes:env.GEMINI_AUTONOMY_MIN_INTERVAL_MINUTES,
+      dialogueModel:env.GEMINI_DIALOGUE_MODEL,
+      dialogueFallbacks:this.dialogueModels.slice(1),
       dialogueTimeoutMs:env.GEMINI_DIALOGUE_TIMEOUT_MS,
       dialogueMaxModels:env.GEMINI_DIALOGUE_MAX_MODELS
     },"Gemini cognitive budget enabled");
     return true;
   }
   canUseAutonomyDecision(entityId,simulationTime,{highValue=false}={}){
-    if(!this._hasAvailableModel())return false;
+    if(!this._hasAvailableModel("autonomy"))return false;
     const previous=this.lastAutonomyDecisionAt.get(entityId);
     if(!previous){
       this.lastAutonomyDecisionAt.set(entityId,new Date(simulationTime).getTime());
@@ -170,14 +185,15 @@ class GeminiService {
     const outputTokenCeiling=kind==="dialogue"
       ?Number(env.GEMINI_DIALOGUE_OUTPUT_TOKEN_CEILING)
       :Number(env.GEMINI_AUTONOMY_OUTPUT_TOKEN_CEILING);
-    const availableModels=this._availableModels();
+    const configuredModels=kind==="dialogue"?this.dialogueModels:this.models;
+    const availableModels=this._availableModels(kind);
     const requestedMaxModels=Number(maxModels);
     const models=Number.isFinite(requestedMaxModels)&&requestedMaxModels>0
       ?availableModels.slice(0,Math.floor(requestedMaxModels))
       :availableModels;
     if(!models.length){
-      const blocked=this.models
-        .map(model=>this._modelBlockRemainingMs(model))
+      const blocked=configuredModels
+        .map(model=>this._modelBlockRemainingMs(model,kind))
         .filter(value=>value>0);
       const retryAfterMs=blocked.length?Math.min(...blocked):0;
       this.lastRequestStatus={
@@ -263,7 +279,7 @@ class GeminiService {
           });
         }
 
-        this._resetModel(model);
+        this._resetModel(model,kind);
         this.providerFailureStreak=0;
         this.lastRequestStatus={
           status:"SUCCESS",
@@ -345,13 +361,13 @@ class GeminiService {
         }
 
         if(failure.kind==="RATE_LIMIT"||failure.kind==="QUOTA"){
-          const state=this._modelState(model);
+          const state=this._modelState(model,kind);
           state.failureStreak=0;
           const configuredCooldown=failure.kind==="QUOTA"
             ?Number(env.GEMINI_PROVIDER_QUOTA_COOLDOWN_MS)
             :Number(env.GEMINI_PROVIDER_RATE_LIMIT_COOLDOWN_MS);
           const modelCooldown=Math.max(failure.retryAfterMs||0,configuredCooldown||0);
-          this._blockModel(model,modelCooldown,fallbackReason);
+          this._blockModel(model,modelCooldown,fallbackReason,kind);
           this.lastRequestStatus={
             status:"FALLBACK",
             source:"DETERMINISTIC_FALLBACK",
@@ -380,7 +396,7 @@ class GeminiService {
             failureStreak:state.failureStreak,
             retryAfterMs:failure.retryAfterMs
           });
-          this._blockModel(model,transientCooldown,fallbackReason);
+          this._blockModel(model,transientCooldown,fallbackReason,kind);
           this.providerFailureStreak=state.failureStreak;
           lastTransientFailure={
             reason:fallbackReason,
