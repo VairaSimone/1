@@ -79,19 +79,22 @@ function chatOrder(message: ChatMessage) {
 
 function sortChatMessages(items: ChatMessage[]) {
   return [...items].sort((a, b) => {
+    const aTime = new Date(a.simulationAt).getTime()
+    const bTime = new Date(b.simulationAt).getTime()
+    if (Number.isFinite(aTime) && Number.isFinite(bTime) && aTime !== bTime) return aTime - bTime
+    if (Number.isFinite(aTime) && !Number.isFinite(bTime)) return -1
+    if (!Number.isFinite(aTime) && Number.isFinite(bTime)) return 1
+
     const aSequence = chatSequence(a)
     const bSequence = chatSequence(b)
     if (aSequence !== null && bSequence !== null && aSequence !== bSequence) return aSequence - bSequence
-    if (aSequence !== null && bSequence === null) return -1
-    if (aSequence === null && bSequence !== null) return 1
+    if (aSequence === null && bSequence !== null) return -1
+    if (aSequence !== null && bSequence === null) return 1
 
     const aOrder = chatOrder(a)
     const bOrder = chatOrder(b)
     if (aOrder !== bOrder) return aOrder - bOrder
 
-    const aTime = new Date(a.simulationAt).getTime()
-    const bTime = new Date(b.simulationAt).getTime()
-    if (Number.isFinite(aTime) && Number.isFinite(bTime) && aTime !== bTime) return aTime - bTime
     return a.id.localeCompare(b.id)
   })
 }
