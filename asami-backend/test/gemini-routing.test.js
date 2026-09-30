@@ -68,7 +68,7 @@ test("Gemini startup exposes the effective autonomy output ceiling",()=>{
 
 test("Dialogue uses a bounded latency and model fallback policy",()=>{
   assert.match(envSource,/GEMINI_DIALOGUE_TIMEOUT_MS: z\.coerce\.number\(\)\.int\(\)\.min\(1000\)/);
-  assert.match(envSource,/GEMINI_DIALOGUE_MAX_MODELS: z\\.coerce\\.number\\(\\)\\.int\\(\\)\\.min\\(1\\)/);
+  assert.match(envSource,/GEMINI_DIALOGUE_MAX_MODELS: z\.coerce\.number\(\)\.int\(\)\.min\(1\)/);
   assert.match(geminiSource,/maxModels=null,timeoutMsOverride=null/);
   assert.match(geminiSource,/kind==="dialogue"/);
   assert.match(geminiSource,/configuredTimeoutMs/);
