@@ -71,7 +71,7 @@ test("Dialogue uses a bounded latency and model fallback policy",()=>{
   assert.match(envSource,/GEMINI_DIALOGUE_FALLBACK_MODELS: z\.preprocess/);
   assert.match(envSource,/GEMINI_DIALOGUE_FALLBACK_MODELS: z\.preprocess/);
   assert.match(envSource,/GEMINI_DIALOGUE_TIMEOUT_MS: z\.preprocess/);
-  assert.match(envSource,/GEMINI_DIALOGUE_MAX_MODELS: z\.coerce\.number\(\)\.int\(\)\.min\(1\)/);
+  assert.match(envSource,/GEMINI_DIALOGUE_MAX_MODELS: z\.coerce\.number\(\)\.int\(\)\.min\(1\)/);\n  assert.match(envSource,/GEMINI_DIALOGUE_COMPACT_OUTPUT_TOKEN_CEILING: z\.coerce\.number/);
   assert.match(geminiSource,/maxModels=null,timeoutMsOverride=null/);
   assert.match(geminiSource,/kind==="dialogue"\?this\.dialogueModels:this\.models/);
   assert.match(geminiSource,/this\._availableModels\(kind\)/);
@@ -80,6 +80,21 @@ test("Dialogue uses a bounded latency and model fallback policy",()=>{
   assert.match(geminiSource,/kind:"dialogue",thinkingLevel:"low"/);
   assert.match(geminiSource,/configuredTimeoutMs/);
   assert.match(geminiSource,/maxModels:env\.GEMINI_DIALOGUE_MAX_MODELS,timeoutMsOverride:env\.GEMINI_DIALOGUE_TIMEOUT_MS/);
+});
+
+test("Dialogue compacts context and only requests advanced cognition when needed",()=>{
+  assert.match(geminiSource,/function dialogueNeedsAdvancedCognition\(context\)/);
+  assert.match(geminiSource,/function compactDialogueContext\(context/);
+  assert.match(geminiSource,/AdvancedDialogueSchema/);
+  assert.match(geminiSource,/This is ordinary conversation/);
+  assert.match(geminiSource,/This message has meaningful cognitive relevance/);
+});
+
+test("Dialogue retries with the compact schema after truncated output",()=>{
+  assert.match(geminiSource,/Retrying Gemini dialogue with compact schema/);
+  assert.match(geminiSource,/reason==="AI_INVALID_OUTPUT"/);
+  assert.match(geminiSource,/COMPACT_DIALOGUE_SCHEMA/);
+  assert.match(geminiSource,/outputTokenCeilingOverride:compactOutputTokens/);
 });
 
 test("Chat isolates Gemini failures so deterministic delivery can still complete",()=>{
