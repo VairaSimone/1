@@ -11,19 +11,21 @@ import { Relationships } from './pages/Relationships'
 import { Development } from './pages/Development'
 import { Chat } from './pages/Chat'
 import { Mind } from './pages/Mind'
+import { LiveWorld } from './pages/LiveWorld'
 import { NewSimulation } from './pages/NewSimulation'
 import { useSimulation } from './hooks/useSimulation'
 
-export type View = 'overview' | 'analysis' | 'timeline' | 'memory' | 'mind' | 'relationships' | 'development' | 'chat'
+export type View = 'live-world' | 'overview' | 'analysis' | 'timeline' | 'memory' | 'mind' | 'relationships' | 'development' | 'chat'
 
 export default function App() {
   const sim = useSimulation()
-  const [view, setView] = useState<View>('overview')
+  const [view, setView] = useState<View>('live-world')
   const [newSimulation, setNewSimulation] = useState(false)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
 
   const title = useMemo(() => ({
+    'live-world': ['OSSERVATORIO', 'Mondo vivo', 'Guarda Asami e gli altri abitanti muoversi nel quartiere e ricostruisci la simulazione nel tempo.'],
     overview: ['SALA DI CONTROLLO', 'Asami in tempo reale', 'Osserva cosa sta vivendo, quale bisogno guida il suo comportamento e come la simulazione evolve.'],
     analysis: ['OSSERVABILITÀ', 'Analisi della simulazione', 'Esamina ciò che è successo in un intervallo preciso, misura l’attività e individua eventuali anomalie.'],
     timeline: ['OSSERVABILITÀ', 'Cronologia', 'Eventi e azioni ordinati per tempo simulato.'],
@@ -54,7 +56,8 @@ export default function App() {
       {sim.error && !sim.dashboard && <div className="content"><ErrorState text={sim.error} retry={() => void sim.refresh()} /></div>}
       {!sim.dashboard && sim.simulation && <div className="content"><LoadingState text="Caricamento dello stato di Asami…" /></div>}
       {sim.dashboard && sim.simulation && <div className="content">
-        {view !== 'overview' && <PageTitle eyebrow={title[0]} title={title[1]} description={title[2]} action={<button className="ghost-button" onClick={() => void sim.refresh(true)}>Sincronizza</button>} />}
+        {view !== 'overview' && view !== 'live-world' && <PageTitle eyebrow={title[0]} title={title[1]} description={title[2]} action={<button className="ghost-button" onClick={() => void sim.refresh(true)}>Sincronizza</button>} />}
+        {view === 'live-world' && <LiveWorld simulation={sim.simulation} world={sim.world} dashboard={sim.dashboard} asamiId={sim.asamiId || sim.dashboard.entity.id} />}
         {view === 'overview' && <Overview simulation={sim.simulation} dashboard={sim.dashboard} clockSpeed={sim.clockSpeed} />}
         {view === 'analysis' && <Analysis simulationId={sim.simulation.id} entityId={sim.asamiId || sim.dashboard.entity.id} currentSimulationAt={sim.simulation.currentSimulationAt} onRefresh={() => void sim.refresh(true)} />}
         {view === 'timeline' && <Timeline items={sim.timeline} events={sim.events} />}
