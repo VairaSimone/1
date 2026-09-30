@@ -182,7 +182,8 @@ async function sendMessage({
         simulationId,
         asamiEntityId,
         conversationId:cid,
-        latencyMs:Date.now()-aiStartedAt
+        latencyMs:Date.now()-aiStartedAt,
+        geminiStatus:gemini?.lastRequestStatus||null
       },"Gemini dialogue unavailable; deterministic reply used");
     }
   }
