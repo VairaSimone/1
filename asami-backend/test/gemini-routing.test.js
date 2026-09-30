@@ -67,7 +67,8 @@ test("Gemini startup exposes the effective autonomy output ceiling",()=>{
 
 
 test("Dialogue uses a bounded latency and model fallback policy",()=>{
-  assert.match(envSource,/GEMINI_DIALOGUE_MODEL: z\.string\(\)/);
+  assert.match(envSource,/GEMINI_DIALOGUE_MODEL: z\.string\(\)\.default\("gemini-3\.1-flash-lite"\)/);
+  assert.match(envSource,/GEMINI_DIALOGUE_FALLBACK_MODELS: z\.preprocess/);
   assert.match(envSource,/GEMINI_DIALOGUE_FALLBACK_MODELS: z\.preprocess/);
   assert.match(envSource,/GEMINI_DIALOGUE_TIMEOUT_MS: z\.preprocess/);
   assert.match(envSource,/GEMINI_DIALOGUE_MAX_MODELS: z\.coerce\.number\(\)\.int\(\)\.min\(1\)/);
@@ -93,4 +94,12 @@ test("Gemini budget is isolated between autonomy and dialogue",()=>{
   assert.match(envSource,/GEMINI_DIALOGUE_DAILY_BUDGET_USD: z\.coerce\.number/);
   assert.match(fs.readFileSync(path.join(__dirname,"../src/services/gemini-budget-service.js"),"utf8"),/kind VARCHAR\(20\)/);
   assert.match(fs.readFileSync(path.join(__dirname,"../src/services/gemini-budget-service.js"),"utf8"),/budgetKind = kind === "dialogue" \? "DIALOGUE" : "AUTONOMY"/);
+});
+
+
+test("Gemini autonomy budget gate backs off after a local daily-budget block",()=>{
+  const budgetSource=fs.readFileSync(path.join(__dirname,"../src/services/gemini-budget-service.js"),"utf8");
+  assert.match(budgetSource,/const budgetBlockedUntil = new Map\(\)/);
+  assert.match(budgetSource,/budgetBlockedUntil\.set\(budgetKind/);
+  assert.match(budgetSource,/retryAfterMs/);
 });
