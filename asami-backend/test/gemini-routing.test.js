@@ -34,8 +34,8 @@ test("Gemini request accounting identifies the model that answered",()=>{
 });
 
 test("Autonomy availability depends on model availability",()=>{
-  assert.match(geminiSource,/if\\(!this\\._hasAvailableModel\\(\\)\\)return false/);
-  assert.match(geminiSource,/\\._availableModels\\(\\)/);
+  assert.match(geminiSource,/if\(!this\._hasAvailableModel\(\)\)return false/);
+  assert.match(geminiSource,/\._availableModels\(\)/);
 });
 
 
@@ -67,15 +67,15 @@ test("Gemini startup exposes the effective autonomy output ceiling",()=>{
 
 
 test("Dialogue uses a bounded latency and model fallback policy",()=>{
-  assert.match(envSource,/GEMINI_DIALOGUE_TIMEOUT_MS: z\\.coerce\\.number\\(\\)\\.int\\(\\)\\.min\\(1000\\)/);
+  assert.match(envSource,/GEMINI_DIALOGUE_TIMEOUT_MS: z\.coerce\.number\(\)\.int\(\)\.min\(1000\)/);
   assert.match(envSource,/GEMINI_DIALOGUE_MAX_MODELS: z\\.coerce\\.number\\(\\)\\.int\\(\\)\\.min\\(1\\)/);
   assert.match(geminiSource,/maxModels=null,timeoutMsOverride=null/);
-  assert.match(geminiSource,/kind==="dialogue"\\?Math\\.max\\(1000,Math\\.min\\(30000,configuredTimeoutMs\\))/);
-  assert.match(geminiSource,/maxModels:env\\.GEMINI_DIALOGUE_MAX_MODELS,timeoutMsOverride:env\\.GEMINI_DIALOGUE_TIMEOUT_MS/);
+  assert.match(geminiSource,/kind==="dialogue"\?Math\.max\(1000,Math\.min\(30000,configuredTimeoutMs\))/);
+  assert.match(geminiSource,/maxModels:env\.GEMINI_DIALOGUE_MAX_MODELS,timeoutMsOverride:env\.GEMINI_DIALOGUE_TIMEOUT_MS/);
 });
 
 test("Chat isolates Gemini failures so deterministic delivery can still complete",()=>{
-  assert.match(chatSource,/generated=await gemini\\.dialogue\\(context\\)/);
+  assert.match(chatSource,/generated=await gemini\.dialogue\(context\)/);
   assert.match(chatSource,/Gemini dialogue failed; deterministic reply will be used/);
-  assert.match(chatSource,/const reply=generated\\?\\.reply\\|\\|deterministicReply\\(context,content\\)/);
+  assert.match(chatSource,/const reply=generated\?\.reply\|\|deterministicReply\(context,content\)/);
 });
