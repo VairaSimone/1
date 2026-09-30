@@ -61,6 +61,41 @@ function appendUnique<T extends { id: string }>(items: T[], item: T, limit: numb
   return [item, ...items.filter((current) => current.id !== item.id)].slice(0, limit)
 }
 
+function chatSequence(message: ChatMessage) {
+  const metadata = message.metadata && typeof message.metadata === 'object'
+    ? message.metadata as Record<string, unknown>
+    : {}
+  const value = Number(metadata.turnSequence)
+  return Number.isFinite(value) ? value : null
+}
+
+function chatOrder(message: ChatMessage) {
+  const metadata = message.metadata && typeof message.metadata === 'object'
+    ? message.metadata as Record<string, unknown>
+    : {}
+  const value = Number(metadata.messageOrder)
+  return Number.isFinite(value) ? value : message.messageType === 'USER' ? 0 : 1
+}
+
+function sortChatMessages(items: ChatMessage[]) {
+  return [...items].sort((a, b) => {
+    const aSequence = chatSequence(a)
+    const bSequence = chatSequence(b)
+    if (aSequence !== null && bSequence !== null && aSequence !== bSequence) return aSequence - bSequence
+    if (aSequence !== null && bSequence === null) return -1
+    if (aSequence === null && bSequence !== null) return 1
+
+    const aOrder = chatOrder(a)
+    const bOrder = chatOrder(b)
+    if (aOrder !== bOrder) return aOrder - bOrder
+
+    const aTime = new Date(a.simulationAt).getTime()
+    const bTime = new Date(b.simulationAt).getTime()
+    if (Number.isFinite(aTime) && Number.isFinite(bTime) && aTime !== bTime) return aTime - bTime
+    return a.id.localeCompare(b.id)
+  })
+}
+
 export function useSimulation() {
   const [simulations, setSimulations] = useState<Simulation[]>([])
   const [simulationId, setSimulationIdState] = useState(() => localStorage.getItem(ACTIVE_SIM_KEY) || '')
@@ -549,7 +584,10 @@ export function useSimulation() {
               localStorage.setItem('asami.conversationId', cid)
               void api.conversationState(simulationId, cid).then(setConversationState).catch(() => undefined)
             }
-            setMessages((prev) => prev.some((m) => m.id === incoming.id) ? prev : [...prev, incoming])
+            setMessages((prev) => {
+              if (prev.some((m) => m.id === incoming.id)) return prev
+              return sortChatMessages([...prev, incoming])
+            })
           }
         } catch { /* malformed realtime messages are ignored */ }
       }
@@ -594,40 +632,83 @@ export function useSimulation() {
   const sendMessage = useCallback(async (content: string) => {
     if (!simulationId || !chatSenderId || !asamiId) throw new Error('Serve un interlocutore valido oltre ad Asami per inviare messaggi.')
 
-    const result = await api.sendMessage(simulationId, {
-      senderEntityId: chatSenderId,
-      asamiEntityId: asamiId,
-      conversationId: conversationId || undefined,
-      content,
-    })
-
-    const optimisticAt = new Date().toISOString()
+    const optimisticId = 'optimistic-user-' + Date.now() + '-' + Math.random().toString(36).slice(2)
+    const knownSequences = messages
+      .map((message) => chatSequence(message))
+      .filter((value): value is number => value !== null)
+    const predictedTurnSequence = knownSequences.length ? Math.max(...knownSequences) + 1 : 1
+    const optimisticAt = simulation?.currentSimulationAt || new Date().toISOString()
     const optimisticUser: ChatMessage = {
+      id: optimisticId,
+      senderEntityId: chatSenderId,
+      messageType: 'USER',
+      content,
+      simulationAt: optimisticAt,
+      status: 'DELIVERED',
+      metadata: {
+        source: 'frontend-optimistic',
+        turnSequence: predictedTurnSequence,
+        messageOrder: 0,
+        optimistic: true,
+      },
+    }
+
+    setMessages((prev) => sortChatMessages([...prev, optimisticUser]))
+
+    let result
+    try {
+      result = await api.sendMessage(simulationId, {
+        senderEntityId: chatSenderId,
+        asamiEntityId: asamiId,
+        conversationId: conversationId || undefined,
+        content,
+      })
+    } catch (error) {
+      setMessages((prev) => prev.filter((message) => message.id !== optimisticId))
+      throw error
+    }
+
+    const persistedUser: ChatMessage = {
       id: result.userMessageId,
       senderEntityId: chatSenderId,
       messageType: 'USER',
       content,
       simulationAt: optimisticAt,
       status: 'DELIVERED',
-      metadata: { source: 'frontend-optimistic' },
+      metadata: {
+        source: 'frontend',
+        turnSequence: Number(result.turnSequence || predictedTurnSequence),
+        messageOrder: 0,
+      },
     }
-    const optimisticAssistant: ChatMessage = {
+    const persistedAssistant: ChatMessage = {
       id: result.assistantMessageId,
       senderEntityId: asamiId,
       messageType: 'ASSISTANT',
       content: result.reply,
       simulationAt: optimisticAt,
       status: 'DELIVERED',
-      metadata: { source: 'api-response', fallback: !result.aiUsed },
+      metadata: {
+        source: 'api-response',
+        fallback: !result.aiUsed,
+        turnSequence: Number(result.turnSequence || predictedTurnSequence),
+        messageOrder: 1,
+      },
     }
 
     setConversationId(result.conversationId)
     localStorage.setItem('asami.conversationId', result.conversationId)
     setMessages((prev) => {
-      const filtered = prev.filter((message) =>
-        message.id !== optimisticUser.id && message.id !== optimisticAssistant.id
+      const withoutThisTurn = prev.filter((message) =>
+        message.id !== optimisticId &&
+        message.id !== result.userMessageId &&
+        message.id !== result.assistantMessageId
       )
-      return [...filtered, optimisticUser, optimisticAssistant]
+      const existingAssistant = prev.find((message) => message.id === result.assistantMessageId)
+      const assistant = existingAssistant
+        ? { ...existingAssistant, ...persistedAssistant, metadata: { ...(existingAssistant.metadata || {}), ...persistedAssistant.metadata } }
+        : persistedAssistant
+      return sortChatMessages([...withoutThisTurn, persistedUser, assistant])
     })
 
     // Reconcile persisted state in the background. A failure here must not
@@ -636,13 +717,13 @@ export function useSimulation() {
       api.conversationMessages(simulationId, result.conversationId),
       api.conversationState(simulationId, result.conversationId),
     ]).then(([nextMessages, nextState]) => {
-      setMessages(nextMessages)
+      setMessages(sortChatMessages(nextMessages))
       setConversationState(nextState)
     }).catch(() => undefined)
 
     void refresh(true).catch(() => undefined)
     return result
-  }, [simulationId, chatSenderId, asamiId, conversationId, refresh])
+  }, [simulationId, chatSenderId, asamiId, conversationId, messages, simulation, refresh])
 
   useEffect(() => {
     if (!simulationId || !conversationId) {
@@ -655,7 +736,7 @@ export function useSimulation() {
       api.conversationState(simulationId, conversationId),
     ]).then(([nextMessages, nextState]) => {
       if (cancelled) return
-      setMessages(nextMessages)
+      setMessages(sortChatMessages(nextMessages))
       setConversationState(nextState)
     }).catch(() => {
       if (!cancelled) setConversationState(null)
