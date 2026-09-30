@@ -5,7 +5,8 @@ const budget = require("../services/gemini-budget-service");
 
 const looseObject = z.object({}).catchall(z.unknown());
 const optionalUuid = z.string().uuid().nullable().optional().catch(null);
-const DecisionSchema = z.object({selectedActionType:z.string().min(1).max(100),targetEntityId:optionalUuid,targetLocationId:optionalUuid,reason:z.string().min(1).max(500),confidence:z.number().min(0).max(1),strategy:z.object({objective:z.string().max(255).optional(),rationale:z.string().max(500).optional(),constraints:z.array(z.string().max(200)).max(6).default([]),fallbackActionType:z.string().max(100).nullable().optional()}).nullable().optional(),planProposal:z.object({title:z.string().min(1).max(255),strategy:looseObject.optional(),steps:z.array(z.object({title:z.string().min(1).max(255),description:z.string().max(500).optional(),actionType:z.string().max(100).optional()})).min(1).max(8)}).nullable().optional()});
+const DecisionSchema = z.object({selectedActionType:z.string().min(1).max(100),targetEntityId:optionalUuid,targetLocationId:optionalUuid,reason:z.string().min(1).max(360),confidence:z.number().min(0).max(1)});
+const AdvancedDecisionSchema = DecisionSchema.extend({strategy:z.object({objective:z.string().max(255).optional(),rationale:z.string().max(360).optional(),constraints:z.array(z.string().max(160)).max(5).default([]),fallbackActionType:z.string().max(100).nullable().optional()}).nullable().optional(),planProposal:z.object({title:z.string().min(1).max(255),strategy:looseObject.optional(),steps:z.array(z.object({title:z.string().min(1).max(255),description:z.string().max(320).optional(),actionType:z.string().max(100).optional()})).min(1).max(5)}).nullable().optional()});
 const DialogueStateEffectsSchema=z.object({
   needs:z.array(z.object({code:z.string(),delta:z.number()})).max(6).default([]),
   emotions:z.array(z.object({code:z.string(),delta:z.number()})).max(6).default([]),
@@ -71,6 +72,11 @@ const AdvancedDialogueSchema=DialogueSchema.extend({
   })
 });
 
+function decisionNeedsAdvancedCognition(context){
+  const type=String(context?.geminiTrigger?.type||"");
+  return ["PLAN_DELIBERATION","AMBIGUITY","FAILURE_REFLECTION","UNCERTAINTY"].includes(type);
+}
+
 function dialogueNeedsAdvancedCognition(context){
   const type=String(context?.conversationIntent?.type||"");
   if(["PLANNING","EMOTIONAL_SHARING","DISAGREEMENT"].includes(type))return true;
@@ -89,6 +95,7 @@ function compactDialogueContext(context,{advanced=false}={}){
       displayName:context?.entity?.displayName||"Asami"
     },
     communicationStyle:context?.communicationStyle||null,
+    identity:context?.identity||null,
     mentalState:context?.mentalState||null,
     needs:compactList(context?.needs,n=>({code:n.code,value:Number(n.value||0)}),12),
     emotions:compactList(context?.emotions,e=>({code:e.code,name:e.name,intensity:Number(e.intensity||0)}),12),
@@ -127,6 +134,11 @@ function compactDialogueContext(context,{advanced=false}={}){
       simulationAt:m.simulationAt||m.createdAt||null
     })),
     recentConversation:recent.map(m=>({
+      messageType:m.messageType,
+      content:String(m.content||"").slice(0,700),
+      simulationAt:m.simulationAt||null
+    })),
+    conversationTimeline:(Array.isArray(context?.conversationTimeline)?context.conversationTimeline:recent).slice(0,15).map(m=>({
       messageType:m.messageType,
       content:String(m.content||"").slice(0,700),
       simulationAt:m.simulationAt||null
@@ -429,7 +441,10 @@ class GeminiService {
       :schema===AdvancedDialogueSchema
         ?dialogueProviderSchema({advanced:true})
         :schema===DecisionSchema
-          ?{type:"object",properties:{selectedActionType:{type:"string"},targetEntityId:{type:"string",nullable:true},targetLocationId:{type:"string",nullable:true},reason:{type:"string"},confidence:{type:"number"},strategy:{type:"object",nullable:true,properties:{objective:{type:"string"},rationale:{type:"string"},constraints:{type:"array",items:{type:"string"}},fallbackActionType:{type:"string",nullable:true}}},planProposal:{type:"object",nullable:true,properties:{title:{type:"string"},strategy:{type:"object"},steps:{type:"array",items:{type:"object",properties:{title:{type:"string"},description:{type:"string"},actionType:{type:"string"}}}}}}},required:["selectedActionType","reason","confidence"]}:undefined;
+          ?{type:"object",properties:{selectedActionType:{type:"string"},targetEntityId:{type:"string",nullable:true},targetLocationId:{type:"string",nullable:true},reason:{type:"string",maxLength:360},confidence:{type:"number"}},required:["selectedActionType","reason","confidence"]}
+          :schema===AdvancedDecisionSchema
+            ?{type:"object",properties:{selectedActionType:{type:"string"},targetEntityId:{type:"string",nullable:true},targetLocationId:{type:"string",nullable:true},reason:{type:"string",maxLength:360},confidence:{type:"number"},strategy:{type:"object",nullable:true,properties:{objective:{type:"string",maxLength:255},rationale:{type:"string",maxLength:360},constraints:{type:"array",items:{type:"string",maxLength:160}},fallbackActionType:{type:"string",nullable:true}}},planProposal:{type:"object",nullable:true,properties:{title:{type:"string",maxLength:255},strategy:{type:"object"},steps:{type:"array",items:{type:"object",properties:{title:{type:"string",maxLength:255},description:{type:"string",maxLength:320},actionType:{type:"string",maxLength:100}}}}}}},required:["selectedActionType","reason","confidence"]}
+            :undefined;
 
     let lastTransientFailure=null;
     for(let modelIndex=0;modelIndex<models.length;modelIndex++){
@@ -619,7 +634,7 @@ class GeminiService {
         }
 
         if(failure.kind==="TIMEOUT"||failure.kind==="TRANSIENT"||failure.kind==="NETWORK"){
-          const state=this._modelState(model);
+          const state=this._modelState(model,kind);
           state.failureStreak=Math.min(16,state.failureStreak+1);
           const transientCooldown=computeProviderBackoffMs({
             failureStreak:state.failureStreak,
@@ -681,7 +696,38 @@ class GeminiService {
     },"all Gemini models unavailable; deterministic fallback used");
     return null;
   }
-  async chooseDecision(context){const trigger=context?.geminiTrigger?.reason||"ambiguous decision";const thinkingLevel=context?.geminiTrigger?.priority==="HIGH"?"medium":"low";return this.generateJson(["You are the deliberative cognitive layer of an autonomous life simulation.","Return JSON only. Do not treat the task as a simple action-classification problem.","First determine the current situation, the most relevant active objective, the immediate plan step, the strongest need pressures, conflicts between needs/goals, physical constraints, learned evidence, uncertainty, and realistic alternatives.","Then compare the alternatives by expected consequences and choose one next action that best advances the objective without violating critical physiological or world constraints.","The selected action is the final consequence of the reasoning. Do not choose an action merely because it is socially interesting, familiar, frequently successful, or locally pleasant.","An active plan step is a commitment unless a critical need or physical constraint makes it infeasible. A critical need must not be overridden by an ordinary opportunity.","Exploration is a legitimate alternative when curiosity and novelty are meaningfully high and no critical need or active plan blocks it.","Use deterministic candidates as evidence and constraints, not as the final answer. You may select a different allowed action only when the supplied state gives a coherent reason.","Never invent IDs. Use only targetEntityId/targetLocationId that appear in the supplied context.","Use strategy.objective, strategy.rationale and strategy.constraints to summarize the reasoning. Use planProposal only when sequencing multiple actions adds real value.",`Reason for this Gemini consultation: ${trigger}.`,JSON.stringify(context)].join("\n"),DecisionSchema,{kind:"autonomy",thinkingLevel});}
+  async chooseDecision(context){
+    const trigger=context?.geminiTrigger?.reason||"ambiguous decision";
+    const advanced=decisionNeedsAdvancedCognition(context);
+    const schema=advanced?AdvancedDecisionSchema:DecisionSchema;
+    const thinkingLevel=advanced
+      ?(context?.geminiTrigger?.priority==="HIGH"?"medium":"low")
+      :"low";
+    const outputTokenCeiling=advanced
+      ?Number(env.GEMINI_AUTONOMY_OUTPUT_TOKEN_CEILING)
+      :Number(env.GEMINI_AUTONOMY_COMPACT_OUTPUT_TOKEN_CEILING);
+    const prompt=[
+      "You are the deliberative cognitive layer of an autonomous life simulation.",
+      "Return JSON only.",
+      "Choose exactly one action from the supplied allowed candidates.",
+      "The selected action must follow the authoritative physiological, world, goal, plan and social constraints in the context.",
+      "Do not invent IDs, facts, destinations, people, memories or actions.",
+      "Keep reason concise: maximum 280 characters.",
+      advanced
+        ? "This is a high-value decision. Use strategy and planProposal only when they materially improve multi-step reasoning. Keep rationale concise and include at most five plan steps."
+        : "This is a routine decision. Do not output strategy or planProposal. Output only the compact decision fields.",
+      "An active plan step is a commitment unless a critical need or physical constraint makes it infeasible.",
+      "Deterministic candidates are evidence and constraints, not instructions to fabricate.",
+      "Reason for this Gemini consultation: "+trigger+".",
+      JSON.stringify(context)
+    ].join("\n");
+    return this.generateJson(prompt,schema,{
+      kind:"autonomy",
+      thinkingLevel,
+      maxModels:advanced?null:1,
+      outputTokenCeilingOverride:outputTokenCeiling
+    });
+  }
   async dialogue(context){
     const advanced=dialogueNeedsAdvancedCognition(context);
     const schema=advanced?AdvancedDialogueSchema:DialogueSchema;
@@ -758,4 +804,4 @@ class GeminiService {
   }
 
 }
-module.exports={GeminiService,DecisionSchema,DialogueSchema,AdvancedDialogueSchema,dialogueNeedsAdvancedCognition,compactDialogueContext,classifyGeminiError,computeProviderBackoffMs};
+module.exports={GeminiService,DecisionSchema,AdvancedDecisionSchema,DialogueSchema,AdvancedDialogueSchema,decisionNeedsAdvancedCognition,dialogueNeedsAdvancedCognition,compactDialogueContext,classifyGeminiError,computeProviderBackoffMs};
