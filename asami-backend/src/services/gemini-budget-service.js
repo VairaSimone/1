@@ -4,6 +4,7 @@ const { env } = require("../config/env");
 let initialized = false;
 let providerBlockedUntil = 0;
 let providerBlockReason = null;
+const budgetBlockedUntil = new Map();
 
 async function ensureGeminiUsageTable() {
   if (initialized) return;
@@ -144,6 +145,10 @@ function emptyUsage(period_type, period_key, kind = null) {
 async function reserve({ prompt, outputTokenCeiling, kind }) {
   await ensureGeminiUsageTable();
   const budgetKind = kind === "dialogue" ? "DIALOGUE" : "AUTONOMY";
+  const cachedBlockMs = Math.max(0, Number(budgetBlockedUntil.get(budgetKind) || 0) - Date.now());
+  if (cachedBlockMs > 0) {
+    return { allowed: false, reason: "DAILY_BUDGET", retryAfterMs: cachedBlockMs };
+  }
   const now = new Date();
   const { day, month } = periodKeys(now);
   const inputTokens = estimateInputTokens(prompt);
@@ -184,9 +189,23 @@ async function reserve({ prompt, outputTokenCeiling, kind }) {
     if (!canSpend) {
       await conn.rollback();
       const dailyBlocked = dailyCommitted + estimatedUsd > pacedDailyLimit + 1e-9 || Number(dayRow?.requests || 0) >= dailyRequests;
+      let retryAfterMs = 0;
+      if (dailyBlocked) {
+        const dailyLimitForPacing = Math.max(0.000001, dailyLimit);
+        const requiredFraction = Math.min(1, (dailyCommitted + estimatedUsd) / dailyLimitForPacing);
+        const graceMinutes = Math.max(0, Number(env.GEMINI_DAILY_PACING_GRACE_MINUTES) || 0);
+        const nowMinutes = now.getUTCHours() * 60 + now.getUTCMinutes() + now.getUTCSeconds() / 60;
+        const requiredMinutes = Math.max(0, requiredFraction * 1440 - graceMinutes);
+        retryAfterMs = Math.max(1000, Math.ceil(Math.max(0, requiredMinutes - nowMinutes) * 60000));
+        budgetBlockedUntil.set(budgetKind, Date.now() + retryAfterMs);
+      } else {
+        retryAfterMs = Math.max(1000, 24 * 60 * 60 * 1000 - (Date.now() % (24 * 60 * 60 * 1000)));
+        budgetBlockedUntil.set(budgetKind, Date.now() + retryAfterMs);
+      }
       return {
         allowed: false,
         reason: dailyBlocked ? "DAILY_BUDGET" : "MONTHLY_BUDGET",
+        retryAfterMs,
         estimatedUsd,
         pacedDailyLimit
       };
@@ -201,6 +220,7 @@ async function reserve({ prompt, outputTokenCeiling, kind }) {
       [estimatedUsd, budgetKind, month]
     );
     await conn.commit();
+    budgetBlockedUntil.delete(budgetKind);
     return { allowed: true, inputTokens, estimatedUsd, day, month, kind };
   } catch (err) {
     try { await conn.rollback(); } catch {}
