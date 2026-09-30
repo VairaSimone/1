@@ -256,13 +256,49 @@ export function useSimulation() {
 
     const updateWorldClock = (payload: Record<string, unknown>, occurredAt: string) => {
       const simulationAt = String(payload.simulationTime || payload.simulationAt || occurredAt)
-      if (!Number.isFinite(new Date(simulationAt).getTime())) return
-      setWorld((prev) => prev ? {
-        ...prev,
-        simulationAt,
-        isLive: true,
-        simulation: { ...prev.simulation, currentSimulationAt: simulationAt }
-      } : prev)
+      const simulationMs = new Date(simulationAt).getTime()
+      if (!Number.isFinite(simulationMs)) return
+      setWorld((prev) => {
+        if (!prev) return prev
+        const recentEvents = prev.recentEvents.map((event) => {
+          if (!event.environmental || !event.locationId || !['RAIN', 'STORM'].includes(String(event.eventCode || '').toUpperCase())) return event
+          const expiresAt = event.metadata?.weatherExpiresAt ? new Date(String(event.metadata.weatherExpiresAt)).getTime() : Number.NaN
+          if (!Number.isFinite(expiresAt) || simulationMs < expiresAt) return event
+          return event
+        })
+        const latestWeatherByLocation = new Map<string, { event: typeof prev.recentEvents[number]; expiresAt: number }>()
+        for (const event of recentEvents) {
+          if (!event.locationId || !event.environmental) continue
+          const weatherCode = String(event.eventCode || '').toUpperCase()
+          if (!['RAIN', 'STORM'].includes(weatherCode)) continue
+          const eventMs = new Date(event.simulationAt).getTime()
+          const expiresAt = event.metadata?.weatherExpiresAt ? new Date(String(event.metadata.weatherExpiresAt)).getTime() : Number.NaN
+          if (!Number.isFinite(eventMs)) continue
+          const existing = latestWeatherByLocation.get(event.locationId)
+          if (!existing || eventMs > new Date(existing.event.simulationAt).getTime()) {
+            latestWeatherByLocation.set(event.locationId, { event, expiresAt })
+          }
+        }
+        const locations = prev.locations.map((location) => {
+          const latest = latestWeatherByLocation.get(location.locationId)
+          if (!latest) return location
+          const latestCode = String(latest.event.eventCode || '').toUpperCase()
+          const active = !Number.isFinite(latest.expiresAt) || simulationMs < latest.expiresAt
+          if (!active) return { ...location, environment: { ...location.environment, weather: 'CLEAR' } }
+          const preset = latestCode === 'STORM'
+            ? { weather: 'STORM', temperature: 12, humidity: .95, visibility: .4 }
+            : { weather: 'RAIN', temperature: 14, humidity: .9, visibility: .65 }
+          return { ...location, environment: { ...location.environment, ...preset, updatedAt: simulationAt, replaySource: 'realtime-event-stream' } }
+        })
+        return {
+          ...prev,
+          simulationAt,
+          isLive: true,
+          locations,
+          recentEvents,
+          simulation: { ...prev.simulation, currentSimulationAt: simulationAt }
+        }
+      })
       setSimulations((prev) => prev.map((item) => item.id === simulationId ? { ...item, currentSimulationAt: simulationAt } : item))
     }
 
@@ -380,6 +416,48 @@ export function useSimulation() {
                 metadata: eventPayload.metadata || {}
               }
               setEvents((prev) => appendUnique(prev, event, 100))
+              setWorld((prev) => {
+                if (!prev) return prev
+                const locationId = eventPayload.locationId ? String(eventPayload.locationId) : null
+                const eventCode = String(eventPayload.eventCode || '').toUpperCase()
+                const worldEvent = {
+                  id: String(eventPayload.id),
+                  type: String(eventPayload.type || 'WORLD'),
+                  category: String(eventPayload.category || 'WORLD'),
+                  title: String(eventPayload.title || 'Evento del mondo'),
+                  description: eventPayload.description ? String(eventPayload.description) : null,
+                  simulationAt: eventAt,
+                  importance: Number(eventPayload.importance || 0),
+                  status: String(eventPayload.status || 'RECORDED'),
+                  locationId,
+                  eventCode: eventCode || null,
+                  environmental: Boolean(eventPayload.environmental),
+                  metadata: (eventPayload.metadata && typeof eventPayload.metadata === 'object' ? eventPayload.metadata : {}) as Record<string, unknown>
+                }
+                const locations = eventCode === 'RAIN' || eventCode === 'STORM'
+                  ? prev.locations.map((location) => location.locationId === locationId
+                    ? {
+                        ...location,
+                        environment: {
+                          ...location.environment,
+                          weather: eventCode,
+                          temperature: eventCode === 'STORM' ? 12 : 14,
+                          humidity: eventCode === 'STORM' ? .95 : .9,
+                          visibility: eventCode === 'STORM' ? .4 : .65,
+                          updatedAt: eventAt,
+                          replaySource: 'realtime-event-stream'
+                        }
+                      }
+                    : location)
+                  : prev.locations
+                return {
+                  ...prev,
+                  simulationAt: eventAt,
+                  isLive: true,
+                  locations,
+                  recentEvents: appendUnique(prev.recentEvents, worldEvent, 50)
+                }
+              })
               const locationId = eventPayload.locationId ? String(eventPayload.locationId) : null
               pushActivity({
                 id: 'event:' + String(eventPayload.id),
