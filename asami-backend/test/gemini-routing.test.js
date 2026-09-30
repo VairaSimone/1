@@ -35,7 +35,7 @@ test("Gemini request accounting identifies the model that answered",()=>{
 
 test("Autonomy availability depends on model availability",()=>{
   assert.match(geminiSource,/if\(!this\._hasAvailableModel\("autonomy"\)\)return false/);
-  assert.match(geminiSource,/\._availableModels\(\)/);
+  assert.match(geminiSource,/_availableModels\("autonomy"\)/);
 });
 
 
