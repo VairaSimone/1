@@ -87,6 +87,8 @@ async function main(){
     shuttingDown=true;
     logger.info({signal},"shutdown started");
     try{
+      const abortedGeminiRequests=typeof gemini.abortAllRequests==="function"?gemini.abortAllRequests(signal):0;
+      logger.info({signal,abortedGeminiRequests},"Gemini requests aborted for shutdown");
       const drained = await engine.stop({drainTimeoutMs:5000});
       await new Promise(resolve=>server.close(resolve));
       wss.close();
