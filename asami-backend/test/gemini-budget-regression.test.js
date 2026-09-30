@@ -20,7 +20,7 @@ function loadBudgetServiceWithFakePool() {
     async rollback() {},
     release() {},
     async query(sql, values) {
-      if (sql.includes("SELECT reserved_usd,estimated_usd,requests FROM gemini_usage WHERE period_type='DAY'")) {
+      if (sql.includes("SELECT reserved_usd,estimated_usd,requests FROM gemini_usage WHERE kind=? AND period_type='DAY'")) {
         return [[{
           reserved_usd: 0,
           estimated_usd: 0,
@@ -28,7 +28,7 @@ function loadBudgetServiceWithFakePool() {
         }], []];
       }
 
-      if (sql.includes("SELECT reserved_usd,estimated_usd,requests FROM gemini_usage WHERE period_type='MONTH'")) {
+      if (sql.includes("SELECT reserved_usd,estimated_usd,requests FROM gemini_usage WHERE kind=? AND period_type='MONTH'")) {
         return [[{
           reserved_usd: 0,
           estimated_usd: 0,
