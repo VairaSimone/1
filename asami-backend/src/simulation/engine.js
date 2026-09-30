@@ -28,6 +28,20 @@ const CRITICAL_EVENT_PATTERNS = /DANGER|EMERGENCY|ACCIDENT|THREAT|CRISIS|EVACUAT
 const EXPECTED_ENTITY_CONDITION_CODES = new Set(["MOVEMENT_ORIGIN_REQUIRED","MOVEMENT_DESTINATION_REQUIRED","MOVEMENT_DESTINATION_UNREACHABLE","MOVEMENT_ALREADY_ACTIVE","CRITICAL_RESOURCE_RECOVERY_UNAVAILABLE","CRITICAL_ACTION_UNAVAILABLE"]);
 function isExpectedEntityCondition(err){return EXPECTED_ENTITY_CONDITION_CODES.has(String(err?.code||"").toUpperCase());}
 function isCriticalResourceRecoveryUnavailable(err){return String(err?.code||"").toUpperCase()==="CRITICAL_RESOURCE_RECOVERY_UNAVAILABLE";}
+function mergeNeedChanges(baseNeeds=[],changes=[]){
+  const next=(Array.isArray(baseNeeds)?baseNeeds:[]).map(need=>({...need}));
+  for(const change of Array.isArray(changes)?changes:[]){
+    const code=String(change?.code||"").toUpperCase();
+    if(!code)continue;
+    const existing=next.find(need=>String(need?.code||"").toUpperCase()===code);
+    if(existing){
+      if(Number.isFinite(Number(change.new)))existing.value=Number(change.new);
+    }else if(Number.isFinite(Number(change.new))){
+      next.push({code,value:Number(change.new),priorityWeight:Number(change.priorityWeight||1)});
+    }
+  }
+  return next;
+}
 
 function realtimeIso(value){
   if(!value)return null;
@@ -326,7 +340,6 @@ class SimulationEngine {
             observability.increment(sim.id,"integrity_violation_total",violations.reduce((sum,item)=>sum+Number(item.count||0),0));
           }
           this.worldMaintenanceAt.set(sim.id, nextTime.getTime());
-          observability.logSnapshot(sim.id,nextTime.toISOString());
         }
         setPhase("world.events");
         const worldEventIds=await generateWorldEvents(sim.id,nextTime,tickId,elapsedMinutes);
@@ -636,7 +649,7 @@ class SimulationEngine {
                     simulationId: sim.id,
                     entityId: id,
                     simulationTime: nextTime,
-                    needs: latestNeedsForTick||await readNeeds(id),
+                    needs: latestNeedsForTick||currentNeedsForTick||[],
                     activeActionType: retry.started.actionType||retry.decision.actionType
                   });
                   this.hub.publish(sim.id, "action.created", {
