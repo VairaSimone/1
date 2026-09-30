@@ -166,10 +166,10 @@ function buildRouter({hub,gemini}){
       FROM messages m
       WHERE m.simulation_id=UUID_TO_BIN(?) AND m.conversation_id=UUID_TO_BIN(?)
       ORDER BY
+      m.simulation_created_at ASC,
       CASE WHEN JSON_EXTRACT(m.metadata,'$.turnSequence') IS NULL THEN 0 ELSE 1 END ASC,
       CAST(COALESCE(JSON_UNQUOTE(JSON_EXTRACT(m.metadata,'$.turnSequence')),'0') AS UNSIGNED) ASC,
       CAST(COALESCE(JSON_UNQUOTE(JSON_EXTRACT(m.metadata,'$.messageOrder')),'0') AS UNSIGNED) ASC,
-      m.simulation_created_at ASC,
       m.id ASC
     `,[simulationId,conversationId]);
     res.json(rows);
