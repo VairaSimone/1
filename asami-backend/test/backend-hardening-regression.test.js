@@ -162,7 +162,7 @@ test('movement start normalizes ISO simulation timestamps before using a raw DB 
 test('raw mysql connections normalize simulation timestamps like pool.query',()=>{
   const source=read('db/pool.js');
   assert.match(source,/originalGetConnection = pool\.getConnection\.bind\(pool\)/);
-  assert.match(source,/conn\.query = \(sql, values\) => originalConnectionQuery\(sql, normalizeMysqlValues\(values\)\)/);
+  assert.match(source,/conn\.query = async \(sql, values\) => \{/);\n   assert.match(source,/originalConnectionQuery\(sql, normalizeMysqlValues\(values\)\)/);
 });
 
 test('entity need persistence is serialized and current plus history share one transaction',()=>{
@@ -260,7 +260,7 @@ test('critical resource invariant checks reachability from actor locations and v
   const section=source.slice(start,end);
   assert.ok(start>=0&&end>start);
   assert.match(section,/loadActorLocationIds\(simulationId,entityId\)/);
-  assert.match(section,/findReachableResource\(locations,originId,resource\)/);
+  assert.match(section,/findReachableResource\(locations,origin\.locationId,resource\)/);
   assert.match(section,/ensureResourceReserveAtLocation\([\s\S]*locationId:originId/);
   assert.match(section,/const refreshed=await loadActiveLocations\(simulationId\)/);
   assert.match(section,/const stillReachable=findReachableResource\(nextLocations,originId,resource\)/);
@@ -289,7 +289,7 @@ test('decision context records explicit RESOURCE_EMERGENCY mode',()=>{
 test('engine enforces critical resource invariant before actors are selected',()=>{
   const source=read('simulation/engine.js');
   assert.match(source,/ensureCriticalResourceAvailability/);
-  const invariantIndex=source.indexOf('phase = "world.resource_invariant"');
+  const invariantIndex=source.indexOf('setPhase("world.resource_invariant")');
   const actorIndex=source.indexOf('findAutonomousActors',invariantIndex);
   assert.ok(invariantIndex>=0&&actorIndex>invariantIndex);
   assert.match(source.slice(invariantIndex,actorIndex),/ensureCriticalResourceAvailability\(sim\.id,nextTime\.toISOString\(\)\)/);
@@ -397,7 +397,7 @@ test('resource failures move goals and plans to BLOCKED and preserve a resumable
   assert.match(source,/retryWhenResourceAvailable:true/);
   assert.match(source,/blockedReason/);
   assert.match(source,/SET status='BLOCKED'/);
-  assert.match(source,/plan_steps SET status='BLOCKED'/);
+  assert.match(source,/UPDATE plan_steps\s+SET status='BLOCKED'/);
 });
 
 test('blocked goals only return to ACTIVE after their required resource is reachable',()=>{
@@ -436,7 +436,7 @@ test('need and emotion retention stop cooperatively when the cycle time budget i
     const start=source.indexOf('async function '+fn);
     const end=source.indexOf('\nasync function ',start+10);
     const section=source.slice(start,end>start?end:source.length);
-    assert.match(section,/deleteSelectedRows/);
+    assert.match(section,/deleteHistoryDirectBatch\(conn/);
   }
   assert.match(source,/while \(deleted < POLICY\.maxDeletesPerTable && retentionBudgetAvailable\(simulationId\)/);
 });
@@ -488,7 +488,7 @@ test('Gemini transient failures open an exponential backoff breaker',()=>{
   assert.match(source,/AI_TIMEOUT/);
   assert.match(source,/providerFailureStreak/);
   assert.match(source,/computeProviderBackoffMs/);
-  assert.match(source,/local circuit breaker opened with exponential backoff/);
+  assert.match(source,/blockedUntil=Date\.now\(\)\+delay/);\n  assert.match(source,/computeProviderBackoffMs/);
 });
 
 test('Gemini autonomy receives a bounded context',()=>{
@@ -731,7 +731,7 @@ test('batched autonomy refreshes only mutable physiological state before decidin
   assert.match(source,/const latestNeeds=Array\.isArray\(needsOverride\)&&needsOverride\.length\?needsOverride:context\.needs/);
   assert.match(source,/needsOverride:/);
   assert.match(source,/rebuildDecisionCandidates/);
-  assert.match(source,/recoveryBlocks:decisionService\.activeRecoveryBlocks/);
+  assert.match(source,/const recoveryBlocks=decisionService\.activeRecoveryBlocks/);
 });
 
 test('batched decision context keeps resource-unavailable knowledge semantics',()=>{
