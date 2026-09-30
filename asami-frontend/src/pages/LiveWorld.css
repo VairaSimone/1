@@ -496,7 +496,6 @@
   stroke-width: 2.4;
   stroke-linecap: round;
   stroke-dasharray: 10 8;
-  filter: url(#worldGlow);
   animation: causalDash 1.1s linear infinite;
   vector-effect: non-scaling-stroke;
 }
