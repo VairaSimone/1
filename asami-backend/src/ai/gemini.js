@@ -442,6 +442,7 @@ class GeminiService {
       const controller=new AbortController();
       const timeoutId=setTimeout(()=>controller.abort(),timeoutMs);
       let finalized=false;
+      let raw="";
 
       try{
         const response=await this.client.models.generateContent({
@@ -459,7 +460,7 @@ class GeminiService {
             }
           }
         });
-        const raw=typeof response.text==="string"?response.text:"";
+        raw=typeof response.text==="string"?response.text:"";
         const finishReason=String(
           response?.candidates?.[0]?.finishReason ||
           response?.candidates?.[0]?.finish_reason ||
