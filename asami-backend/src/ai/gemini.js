@@ -273,7 +273,13 @@ class GeminiService {
           retryAfterMs:Number(reservation.retryAfterMs||0),
           kind
         };
-        logger.debug({kind,reason:reservation.reason,retryAfterMs:reservation.retryAfterMs},"Gemini request skipped by local gate; deterministic fallback used");
+        logger.warn({
+          kind,
+          reason:reservation.reason,
+          retryAfterMs:Number(reservation.retryAfterMs||0),
+          estimatedUsd:Number(reservation.estimatedUsd||0),
+          pacedDailyLimit:Number(reservation.pacedDailyLimit||0)
+        },"Gemini request skipped by local budget/provider gate; deterministic fallback used");
         return null;
       }
 
