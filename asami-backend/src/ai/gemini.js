@@ -138,6 +138,8 @@ function compactDialogueContext(context,{advanced=false}={}){
   };
 
   if(advanced){
+    compact.entity.id=context?.entity?.id||null;
+    compact.interlocutor.id=context?.interlocutor?.id||null;
     compact.cognitiveProfile={
       preferences:compactList(context?.cognitiveProfile?.preferences,p=>({
         targetType:p.targetType,targetEntityId:p.targetEntityId||null,value:Number(p.preferenceValue||0),
