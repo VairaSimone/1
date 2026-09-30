@@ -9,6 +9,7 @@ const { analyzeSimulation } = require("../services/analysis-service");
 const { sendMessage } = require("../services/chat-service");
 const { getConversationState } = require("../services/conversation-state-service");
 const { getUsage } = require("../services/gemini-budget-service");
+const { getWorldSnapshot } = require("../services/world-observer-service");
 const { simulationCreate, speed, message, uuid, queryLimit } = require("./validation");
 const { runIdempotent } = require("../services/idempotency-service");
 const { env } = require("../config/env");
@@ -97,6 +98,13 @@ function buildRouter({hub,gemini}){
     const dashboard=await entityRepo.getDashboard(uuid.parse(req.params.simulationId),uuid.parse(req.params.entityId));
     if(!dashboard)return res.status(404).json({error:"Entity not found"});
     res.json(dashboard);
+  });
+
+  router.get("/simulations/:simulationId/world",async(req,res)=>{
+    const simulationId=uuid.parse(req.params.simulationId);
+    const snapshot=await getWorldSnapshot(simulationId,req.query.at ? String(req.query.at) : null);
+    if(!snapshot)return res.status(404).json({error:"Simulation not found"});
+    res.json(snapshot);
   });
   router.get("/simulations/:simulationId/analysis",async(req,res)=>{
     const simulationId=uuid.parse(req.params.simulationId);
