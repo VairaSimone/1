@@ -82,7 +82,6 @@ export function useSimulation() {
   const [error, setError] = useState<string | null>(null)
   const [wsConnected, setWsConnected] = useState(false)
   const wsRef = useRef<WebSocket | null>(null)
-  const refreshTimer = useRef<number | null>(null)
   const worldLastFetchAt = useRef(0)
   const worldRequestInFlight = useRef<Promise<WorldSnapshot | null> | null>(null)
   const worldRef = useRef<WorldSnapshot | null>(null)
@@ -149,20 +148,316 @@ export function useSimulation() {
     if (!simulationId) return
     const base = (import.meta.env.VITE_WS_BASE_URL || `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/realtime`).replace(/\/$/, '')
     const url = `${base}?simulationId=${encodeURIComponent(simulationId)}`
-    let retry = 0; let disposed = false; let retryTimer: number | null = null
+    let retry = 0
+    let disposed = false
+    let retryTimer: number | null = null
+
+    const pushActivity = (activity: WorldActivity) => {
+      setWorldActivities((prev) => appendUnique(prev, activity, 8))
+    }
+
+    const actorName = (entityId: unknown) => {
+      const id = entityId ? String(entityId) : ''
+      return worldRef.current?.actors.find((actor) => actor.id === id)?.displayName || 'abitante'
+    }
+
+    const locationName = (locationId: unknown) => {
+      const id = locationId ? String(locationId) : ''
+      return worldRef.current?.locations.find((location) => location.locationId === id)?.name || 'destinazione'
+    }
+
+    const updateDashboardFromState = (payload: Record<string, unknown>, fallbackAt: string) => {
+      const entityId = String(payload.entityId || '')
+      if (!entityId || entityId !== asamiId) return
+      const needChanges = Array.isArray(payload.needChanges) ? payload.needChanges : []
+      const emotionChanges = Array.isArray(payload.emotionChanges) ? payload.emotionChanges : []
+      const worldState = payload.worldState && typeof payload.worldState === 'object' ? payload.worldState as Record<string, unknown> : null
+      setDashboard((prev) => {
+        if (!prev) return prev
+        const nextNeeds = needChanges.length
+          ? prev.needs.map((need) => {
+              const change = needChanges.find((item) => item && typeof item === 'object' && String((item as Record<string, unknown>).code || '') === need.code) as Record<string, unknown> | undefined
+              return change && Number.isFinite(Number(change.new)) ? { ...need, value: Number(change.new) } : need
+            })
+          : prev.needs
+        const nextEmotions = emotionChanges.length
+          ? prev.emotions.map((emotion) => {
+              const change = emotionChanges.find((item) => item && typeof item === 'object' && String((item as Record<string, unknown>).code || '') === emotion.code) as Record<string, unknown> | undefined
+              return change && Number.isFinite(Number(change.new)) ? { ...emotion, intensity: Number(change.new) } : emotion
+            })
+          : prev.emotions
+        const hasActionKey = Boolean(worldState && Object.prototype.hasOwnProperty.call(worldState, 'action'))
+        const currentAction = hasActionKey
+          ? normalizeRealtimeAction(worldState?.action, fallbackAt)
+          : prev.currentAction
+        return { ...prev, needs: nextNeeds, emotions: nextEmotions, currentAction: currentAction ? {
+          id: currentAction.id,
+          actionType: currentAction.actionType,
+          status: currentAction.status,
+          startedAt: currentAction.startedAt,
+          completedAt: currentAction.completedAt,
+          target: currentAction.targetLocationId ? { locationId: currentAction.targetLocationId } : currentAction.targetEntityId ? { entityId: currentAction.targetEntityId } : null,
+          parameters: null,
+          result: null
+        } : hasActionKey ? null : prev.currentAction }
+      })
+    }
+
+    const applyWorldActor = (payload: Record<string, unknown>, occurredAt: string) => {
+      setWorld((prev) => {
+        if (!prev) return prev
+        const entityId = String(payload.entityId || '')
+        const index = prev.actors.findIndex((actor) => actor.id === entityId)
+        if (index < 0) return prev
+        const actor = prev.actors[index]
+        const state = payload.worldState && typeof payload.worldState === 'object' ? payload.worldState as Record<string, unknown> : payload
+        const atIso = String(payload.simulationAt || state.simulationAt || occurredAt)
+        const hasLocationKey = Object.prototype.hasOwnProperty.call(state, 'locationId')
+        const hasMovingKey = Object.prototype.hasOwnProperty.call(state, 'moving')
+        const hasMovementKey = Object.prototype.hasOwnProperty.call(state, 'movement')
+        const hasActionKey = Object.prototype.hasOwnProperty.call(state, 'action')
+        const locationId = hasLocationKey ? (state.locationId ? String(state.locationId) : null) : actor.locationId
+        const moving = hasMovingKey ? Boolean(state.moving) : actor.moving
+        const movement = hasMovementKey ? normalizeRealtimeMovement(state.movement, prev, atIso) : actor.movement
+        const action = hasActionKey ? normalizeRealtimeAction(state.action, atIso) : actor.action
+        let latitude = actor.latitude
+        let longitude = actor.longitude
+        if (moving && movement) {
+          const origin = prev.locations.find((location) => location.locationId === movement.originLocationId)
+          const destination = prev.locations.find((location) => location.locationId === movement.destinationLocationId)
+          const progress = movement.progress
+          if (origin && destination) {
+            latitude = Number(origin.latitude) + (Number(destination.latitude) - Number(origin.latitude)) * progress
+            longitude = Number(origin.longitude) + (Number(destination.longitude) - Number(origin.longitude)) * progress
+          }
+        } else if (locationId) {
+          const location = prev.locations.find((item) => item.locationId === locationId)
+          if (location) {
+            latitude = location.latitude
+            longitude = location.longitude
+          }
+        }
+        const nextActor = { ...actor, locationId, moving, movement, action, latitude, longitude }
+        const actors = prev.actors.slice()
+        actors[index] = nextActor
+        return {
+          ...prev,
+          simulationAt: atIso,
+          isLive: true,
+          actors
+        }
+      })
+    }
+
+    const updateWorldClock = (payload: Record<string, unknown>, occurredAt: string) => {
+      const simulationAt = String(payload.simulationTime || payload.simulationAt || occurredAt)
+      if (!Number.isFinite(new Date(simulationAt).getTime())) return
+      setWorld((prev) => prev ? {
+        ...prev,
+        simulationAt,
+        isLive: true,
+        simulation: { ...prev.simulation, currentSimulationAt: simulationAt }
+      } : prev)
+      setSimulations((prev) => prev.map((item) => item.id === simulationId ? { ...item, currentSimulationAt: simulationAt } : item))
+    }
+
     const connect = () => {
       if (disposed) return
-      const ws = new WebSocket(url); wsRef.current = ws
-      ws.onopen = () => { setWsConnected(true); retry = 0 }
+      const ws = new WebSocket(url)
+      wsRef.current = ws
+      ws.onopen = () => {
+        setWsConnected(true)
+        retry = 0
+        void refresh(true)
+      }
       ws.onmessage = (event) => {
         try {
           const msg = JSON.parse(event.data) as WsMessage
-          if (msg.type === 'simulation.status' || msg.type === 'simulation.speed' || msg.type === 'simulation.tick' || msg.type === 'world.event' || msg.type === 'entity.state' || msg.type === 'action.created' || msg.type === 'action.completed') {
-            if (refreshTimer.current) window.clearTimeout(refreshTimer.current)
-            refreshTimer.current = window.setTimeout(() => refresh(true).catch(() => undefined), msg.type === 'simulation.tick' ? 350 : 80)
+          const p = msg.payload || {}
+
+          if (msg.type === 'simulation.tick') {
+            updateWorldClock(p, msg.occurredAt)
+            if (Date.now() - worldLastFetchAt.current > 30000) void refreshWorldOnly()
           }
+
+          if (msg.type === 'simulation.status') {
+            const status = String(p.status || '')
+            if (status) {
+              setSimulations((prev) => prev.map((item) => item.id === simulationId ? { ...item, status } : item))
+              setWorld((prev) => prev ? { ...prev, simulation: { ...prev.simulation, status } } : prev)
+            }
+          }
+
+          if (msg.type === 'simulation.speed') {
+            const speed = Number(p.speed)
+            if (Number.isFinite(speed)) setClockSpeed(speed)
+          }
+
+          if (msg.type === 'world.actor') {
+            applyWorldActor(p, msg.occurredAt)
+          }
+
+          if (msg.type === 'entity.state') {
+            applyWorldActor(p, msg.occurredAt)
+            updateDashboardFromState(p, String(p.simulationAt || msg.occurredAt))
+          }
+
+          if (msg.type === 'action.created') {
+            const action = p.action && typeof p.action === 'object' ? p.action as Record<string, unknown> : null
+            const entityId = String(p.entityId || '')
+            if (action) {
+              const actionAt = String(action.startedAt || action.startedSimulationAt || msg.occurredAt)
+              const actionId = String(action.id || action.actionId || '')
+              const actionType = String(action.actionType || 'ACTION')
+              const movement = action.movement && typeof action.movement === 'object' ? action.movement as Record<string, unknown> : null
+              const targetEntityId = action.targetEntityId ? String(action.targetEntityId) : null
+              const targetLocationId = action.targetLocationId ? String(action.targetLocationId) : null
+              const targetName = targetEntityId ? actorName(targetEntityId) : targetLocationId ? locationName(targetLocationId) : null
+              pushActivity({
+                id: 'action:' + actionId + ':' + actionAt,
+                kind: movement ? 'movement' : actionType === 'TALKING' ? 'social' : 'action',
+                simulationAt: actionAt,
+                title: actorName(entityId) + ' ha iniziato ' + realtimeLabel(actionType),
+                detail: targetName ? ('Obiettivo · ' + targetName) : 'Una nuova decisione è diventata comportamento.',
+                entityId,
+                targetEntityId,
+                steps: [
+                  movement && targetLocationId ? ('Si sta dirigendo verso ' + locationName(targetLocationId)) : null,
+                  actionType === 'TALKING' && targetEntityId ? ('Sta per interagire con ' + actorName(targetEntityId)) : null,
+                  !movement && actionType !== 'TALKING' ? ('Azione ' + realtimeLabel(actionType) + ' in corso') : null
+                ].filter((step): step is string => Boolean(step))
+              })
+            }
+          }
+
+          if (msg.type === 'action.completed') {
+            const action = p.action && typeof p.action === 'object' ? p.action as Record<string, unknown> : null
+            const entityId = String(p.entityId || '')
+            const actionType = String(action?.actionType || p.actionType || 'ACTION')
+            const targetEntityId = action?.targetEntityId || p.targetEntityId ? String(action?.targetEntityId || p.targetEntityId) : null
+            const atIso = String(p.simulationAt || msg.occurredAt)
+            const actionId = String(action?.id || p.actionId || '')
+            const outcome = String(p.outcome || 'SUCCESS')
+            setTimeline((prev) => appendUnique(prev, {
+              at: atIso,
+              kind: 'ACTION',
+              id: actionId,
+              type: actionType,
+              summary: realtimeLabel(actionType) + ' [' + outcome + ']',
+              metadata: p
+            }, 200))
+            pushActivity({
+              id: 'complete:' + actionId + ':' + atIso,
+              kind: actionType === 'TALKING' ? 'social' : 'action',
+              simulationAt: atIso,
+              title: actorName(entityId) + ' ha completato ' + realtimeLabel(actionType),
+              detail: targetEntityId ? ('Interazione con ' + actorName(targetEntityId)) : ('Esito · ' + outcome),
+              entityId,
+              targetEntityId,
+              steps: ['Esito: ' + outcome].concat(targetEntityId ? ['Conseguenza osservabile su ' + actorName(targetEntityId)] : [])
+            })
+          }
+
+          if (msg.type === 'world.event') {
+            const eventPayload = p.event && typeof p.event === 'object' ? p.event as Record<string, unknown> : null
+            if (eventPayload?.id) {
+              const eventAt = String(eventPayload.simulationAt || msg.occurredAt)
+              const event = {
+                id: String(eventPayload.id),
+                type: String(eventPayload.type || 'WORLD'),
+                category: String(eventPayload.category || 'WORLD'),
+                title: String(eventPayload.title || 'Evento del mondo'),
+                description: eventPayload.description ? String(eventPayload.description) : null,
+                simulationAt: eventAt,
+                importance: Number(eventPayload.importance || 0),
+                status: String(eventPayload.status || 'RECORDED'),
+                sourceActionId: eventPayload.sourceActionId ? String(eventPayload.sourceActionId) : null,
+                metadata: eventPayload.metadata || {}
+              }
+              setEvents((prev) => appendUnique(prev, event, 100))
+              const locationId = eventPayload.locationId ? String(eventPayload.locationId) : null
+              pushActivity({
+                id: 'event:' + String(eventPayload.id),
+                kind: 'world',
+                simulationAt: eventAt,
+                title: String(eventPayload.title || 'Evento del mondo'),
+                detail: eventPayload.description ? String(eventPayload.description) : 'Il mondo fisico è cambiato.',
+                steps: [String(eventPayload.type || 'WORLD') + ' registrato', locationId ? ('Luogo · ' + locationName(locationId)) : 'Evento di quartiere']
+              })
+            }
+          }
+
+          if (msg.type === 'entity.consequence') {
+            const entityId = String(p.entityId || '')
+            const actionId = String(p.actionId || '')
+            const actionType = String(p.actionType || 'ACTION')
+            const atIso = String(p.simulationAt || msg.occurredAt)
+            const targetEntityId = p.targetEntityId ? String(p.targetEntityId) : null
+            const targetName = targetEntityId ? actorName(targetEntityId) : null
+            const outcome = String(p.outcome || 'SUCCESS')
+            const emotionChanges = Array.isArray(p.emotionChanges) ? p.emotionChanges : []
+            const social = p.social && typeof p.social === 'object' ? p.social as Record<string, unknown> : null
+            const memory = p.memory && typeof p.memory === 'object' ? p.memory as Record<string, unknown> : null
+            const developmentData = p.development && typeof p.development === 'object' ? p.development as Development : null
+
+            setTimeline((prev) => appendUnique(prev, {
+              at: atIso,
+              kind: 'ACTION',
+              id: actionId,
+              type: actionType,
+              summary: realtimeLabel(actionType) + ' [' + outcome + ']',
+              metadata: p
+            }, 200))
+
+            if (memory?.id && memory.content) {
+              const memoryItem: Memory = {
+                id: String(memory.id),
+                memoryType: 'EPISODIC',
+                content: String(memory.content),
+                importance: Number(memory.importance || 0),
+                strength: 1,
+                confidence: .9,
+                emotionalIntensity: Number(memory.emotionalIntensity || 0),
+                simulationAt: atIso,
+                metadata: { actionId, outcome }
+              }
+              setMemories((prev) => appendUnique(prev, memoryItem, 100))
+            }
+
+            if (developmentData) {
+              setDevelopment((prev) => ({ current: developmentData, history: prev.history }))
+              if (entityId === asamiId) {
+                setDashboard((prev) => prev ? { ...prev } : prev)
+              }
+            }
+
+            pushActivity({
+              id: 'consequence:' + actionId + ':' + atIso,
+              kind: actionType === 'TALKING' ? 'social' : 'consequence',
+              simulationAt: atIso,
+              title: actorName(entityId) + ' ha prodotto una conseguenza',
+              detail: targetName ? (realtimeLabel(actionType) + ' con ' + targetName) : (realtimeLabel(actionType) + ' · ' + outcome),
+              entityId,
+              targetEntityId,
+              steps: [
+                'Esito: ' + outcome,
+                emotionChanges.length
+                  ? ('Emozioni · ' + emotionChanges.slice(0, 2).map((change) => {
+                      const item = change && typeof change === 'object' ? change as Record<string, unknown> : {}
+                      const delta = Number(item.delta || 0)
+                      return String(item.code || 'EMOTION') + ' ' + (delta >= 0 ? '+' : '') + delta.toFixed(3)
+                    }).join(' · '))
+                  : null,
+                social ? ('Relazione' + (targetName ? ' con ' + targetName : '') + ' aggiornata') : null,
+                memory?.id ? 'Nuova memoria episodica registrata' : null,
+                developmentData ? 'Sviluppo aggiornato' : null
+              ].filter((step): step is string => Boolean(step))
+            })
+
+            updateDashboardFromState(p, atIso)
+          }
+
           if (msg.type === 'message.created') {
-            const p = msg.payload
             const metadata = (p.metadata && typeof p.metadata === 'object' ? p.metadata : {}) as Record<string, unknown>
             const incoming: ChatMessage = { id: String(p.id), senderEntityId: String(p.senderEntityId), messageType: String(p.type), content: String(p.content), simulationAt: String(p.simulationAt || msg.occurredAt), status: 'DELIVERED', metadata }
             if (p.conversationId && (metadata.proactive || String(p.senderEntityId) === asamiId)) {
@@ -175,12 +470,24 @@ export function useSimulation() {
           }
         } catch { /* malformed realtime messages are ignored */ }
       }
-      ws.onclose = () => { setWsConnected(false); if (disposed) return; retry += 1; const delay = Math.min(5000, 500 * 2 ** Math.min(retry, 4)); retryTimer = window.setTimeout(connect, delay) }
+      ws.onclose = () => {
+        setWsConnected(false)
+        if (disposed) return
+        retry += 1
+        const delay = Math.min(5000, 500 * 2 ** Math.min(retry, 4))
+        retryTimer = window.setTimeout(connect, delay)
+      }
       ws.onerror = () => setWsConnected(false)
     }
     connect()
-    return () => { disposed = true; if (retryTimer) window.clearTimeout(retryTimer); if (refreshTimer.current) window.clearTimeout(refreshTimer.current); wsRef.current?.close(); wsRef.current = null; setWsConnected(false) }
-  }, [simulationId, refresh, asamiId])
+    return () => {
+      disposed = true
+      if (retryTimer) window.clearTimeout(retryTimer)
+      wsRef.current?.close()
+      wsRef.current = null
+      setWsConnected(false)
+    }
+  }, [simulationId, refresh, refreshWorldOnly, asamiId])
 
   // WebSocket is the primary realtime channel. Poll only as a low-frequency
   // fallback while it is disconnected, avoiding continuous dashboard queries.
@@ -236,5 +543,5 @@ export function useSimulation() {
   }, [simulationId, conversationId])
   const setChatSenderId = useCallback((id: string) => { setChatSenderIdState(id); localStorage.setItem(CHAT_SENDER_KEY, id) }, [])
 
-  return { simulations, simulation, simulationId, asamiId, dashboard, timeline, events, memories, development, world, messages, conversationState, clockSpeed, chatSenderId, loading, refreshing, error, wsConnected, setSimulationId, setChatSenderId, createSimulation, refresh, control, changeSpeed, sendMessage }
+  return { simulations, simulation, simulationId, asamiId, dashboard, timeline, events, memories, development, world, worldActivities, messages, conversationState, clockSpeed, chatSenderId, loading, refreshing, error, wsConnected, setSimulationId, setChatSenderId, createSimulation, refresh, control, changeSpeed, sendMessage }
 }
