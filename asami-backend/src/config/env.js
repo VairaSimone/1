@@ -24,11 +24,11 @@ const Env = z.object({
     if(value===undefined||value===null||String(value).trim()==="")return ["gemini-3.7-flash","gemini-3.6-flash"];
     return String(value).split(",").map(item=>item.trim()).filter(Boolean);
   },z.array(z.string().min(1).max(100)).max(5).default(["gemini-3.7-flash","gemini-3.6-flash"])),
-  GEMINI_DIALOGUE_MODEL: z.string().default("gemini-3.5-flash-lite"),
+  GEMINI_DIALOGUE_MODEL: z.string().default("gemini-3.1-flash-lite"),
   GEMINI_DIALOGUE_FALLBACK_MODELS: z.preprocess((value)=>{
-    if(value===undefined||value===null||String(value).trim()==="")return ["gemini-3.6-flash","gemini-3.7-flash"];
+    if(value===undefined||value===null||String(value).trim()==="")return ["gemini-3.5-flash-lite","gemini-3.7-flash"];
     return String(value).split(",").map(item=>item.trim()).filter(Boolean);
-  },z.array(z.string().min(1).max(100)).max(5).default(["gemini-3.6-flash","gemini-3.7-flash"])),
+  },z.array(z.string().min(1).max(100)).max(5).default(["gemini-3.5-flash-lite","gemini-3.7-flash"])),
   GEMINI_DIALOGUE_TIMEOUT_MS: z.preprocess((value)=>{
     if(value===undefined||value===null||String(value).trim()==="")return 12000;
     const n=Number(value);
