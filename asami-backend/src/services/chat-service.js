@@ -7,6 +7,7 @@ const { createEvent, addEffect } = require("./event-service");
 const { applyNeedDeltas, applyEmotionDeltas, applyTraitDeltas, applyRelationshipDeltas, updateCommunicationStyle, createGoalFromProposal } = require("./conversation-cognition-service");
 const { getCognitiveProfile, applyDialogueCognition, recordHabitEvidence, updateMentalState } = require("./personality-service");
 const { learnFromAction } = require("./action-service");
+const logger = require("../lib/logger");
 const {
   getConversationState,
   updateConversationState,
@@ -161,7 +162,30 @@ async function sendMessage({
     intent:context.conversationIntent,
     topic:context.conversationTopic
   });
-  const generated=gemini?.client?await gemini.dialogue(context):null;
+  let generated=null;
+  if(gemini?.client){
+    const aiStartedAt=Date.now();
+    try{
+      generated=await gemini.dialogue(context);
+    }catch(err){
+      logger.warn({
+        simulationId,
+        asamiEntityId,
+        conversationId:cid,
+        latencyMs:Date.now()-aiStartedAt,
+        err:String(err?.message||err)
+      },"Gemini dialogue failed; deterministic reply will be used");
+      generated=null;
+    }
+    if(!generated){
+      logger.warn({
+        simulationId,
+        asamiEntityId,
+        conversationId:cid,
+        latencyMs:Date.now()-aiStartedAt
+      },"Gemini dialogue unavailable; deterministic reply used");
+    }
+  }
   const sanitizedEffects=sanitizeDialogueEffects(generated,content,context.conversationIntent);
   if(generated)generated.stateEffects=sanitizedEffects;
   const significance=scoreMessageSignificance(content,{
