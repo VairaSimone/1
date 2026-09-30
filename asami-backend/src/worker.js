@@ -35,7 +35,7 @@ async function main(){
   await engine.start();
   logger.info("Asami simulation worker started");
   let shuttingDown=false;
-  const shutdown=async(signal)=>{if(shuttingDown)return;shuttingDown=true;logger.info({signal},"worker shutdown started");try{await engine.stop({drainTimeoutMs:5000});await close();process.exit(0);}catch(err){logger.error({err,signal},"worker shutdown failed");try{await close();}catch{}process.exit(1);}};
+  const shutdown=async(signal)=>{if(shuttingDown)return;shuttingDown=true;logger.info({signal},"worker shutdown started");try{const abortedGeminiRequests=typeof gemini.abortAllRequests==="function"?gemini.abortAllRequests(signal):0;logger.info({signal,abortedGeminiRequests},"Gemini requests aborted for worker shutdown");const drained=await engine.stop({drainTimeoutMs:5000});await close();process.exit(drained?0:1);}catch(err){logger.error({err,signal},"worker shutdown failed");try{await close();}catch{}process.exit(1);}};
   process.once("SIGINT",()=>shutdown("SIGINT"));process.once("SIGTERM",()=>shutdown("SIGTERM"));
 }
 main().catch(err=>{logger.fatal({err},"worker startup failed");process.exit(1);});
