@@ -368,8 +368,10 @@ class SimulationEngine {
             const wasCompleted = nextTime >= completionAt; const updateTime = wasCompleted ? completionAt : nextTime; const updateHours = Math.min(168, Math.max(0, (updateTime - previousTime) / 3600000));
             setPhase("entity.perception"); const perception = await perceive(sim.id, entityId, nextTime); worldLocationId=perception?.location?.locationId || activeMovement?.originLocationId || null;
             setPhase("entity.needs"); const needChanges = await updateNeeds(entityId, updateTime, updateHours, null, active.id, active.actionType, { significant: wasCompleted, perception });
-            setPhase("entity.emotions"); await applyEmotions(entityId, updateTime, needChanges, null, active.id, active.actionType, updateHours);
-            setPhase("entity.interruption"); const interruption = !wasCompleted ? getInterruptionReason(active.actionType, await readNeeds(entityId), perception) : null;
+            setPhase("entity.emotions"); await applyEmotions(entityId, updateTime, needChanges, null, active.id, active.actionType, updateHours, { perception, traits: batchTraits, significant: wasCompleted });
+            setPhase("entity.interruption");
+            if(!wasCompleted) latestNeedsForTick=await readNeeds(entityId);
+            const interruption = !wasCompleted ? getInterruptionReason(active.actionType, latestNeedsForTick, perception) : null;
             if (interruption) {
               const interrupted = await interruptActiveAction({ simulationId: sim.id, entityId, active, simulationTime: updateTime, interruption, needChanges, perception });
               if (interrupted) {
@@ -378,7 +380,7 @@ class SimulationEngine {
                   simulationId: sim.id,
                   entityId,
                   simulationTime: updateTime,
-                  needs: await readNeeds(entityId),
+                  needs: latestNeedsForTick||await readNeeds(entityId),
                   activeActionType: null
                 });
                 setPhase("entity.publish");
@@ -416,7 +418,7 @@ class SimulationEngine {
               setPhase("entity.emotions.outcome");
               const expectedOutcome = active.decisionId ? await getDecisionExpectedOutcome(active.decisionId) : null;
               const needRelief = needChanges.filter(change => Number(change.delta) < 0).reduce((sum, change) => sum + Math.abs(Number(change.delta)), 0);
-              outcomeEmotionChanges=await applyEmotions(entityId, completionAt, needChanges, eventId, active.id, active.actionType, 0, { event: true, outcome, expectedOutcome, targetEntityId, targetLocationId, relationshipIntent, failureReason: completion.failureReason || null, meaning: active.metadata?.goalId ? (outcome === "SUCCESS" ? "GOAL_PROGRESS" : "GOAL_BLOCKED") : null, needRelief: Math.min(1, needRelief) });
+              outcomeEmotionChanges=await applyEmotions(entityId, completionAt, needChanges, eventId, active.id, active.actionType, 0, { event: true, outcome, expectedOutcome, targetEntityId, targetLocationId, relationshipIntent, failureReason: completion.failureReason || null, meaning: active.metadata?.goalId ? (outcome === "SUCCESS" ? "GOAL_PROGRESS" : "GOAL_BLOCKED") : null, needRelief: Math.min(1, needRelief), traits: batchTraits });
               setPhase("entity.goal"); await autonomyService.completeGoalForAction(active.metadata?.goalId || null, active.actionType, completionAt, outcome, { simulationId: sim.id, entityId, actionId: active.id, targetEntityId, targetLocationId, ...completion });
               setPhase("entity.learning"); if (successful) await actionService.learnFromAction(entityId, active.actionType, completionAt);
               setPhase("entity.development"); if (successful) developmentUpdate=await updateDevelopment(sim.id, entityId, completionAt, active.actionType);
@@ -433,7 +435,8 @@ class SimulationEngine {
               if (postActionGapHours > 0.0001) {
                 setPhase("entity.gap.catchup");
                 const passiveNeedChanges = await updateNeeds(entityId, nextTime, postActionGapHours, null, null, null, { significant: false });
-                await applyEmotions(entityId, nextTime, passiveNeedChanges, null, null, null, postActionGapHours);
+                await applyEmotions(entityId, nextTime, passiveNeedChanges, null, null, null, postActionGapHours, { traits: batchTraits });
+                latestNeedsForTick=null;
               }
             }
             if (wasCompleted) {
@@ -441,7 +444,8 @@ class SimulationEngine {
               await actionService.markActionPostProcessingComplete(active.id);
             }
             setPhase("entity.mental_state");
-            const latestNeeds = await readNeeds(entityId);
+            const latestNeeds = latestNeedsForTick||await readNeeds(entityId);
+            latestNeedsForTick=latestNeeds;
             await refreshMentalStateFromSimulation({
               simulationId: sim.id,
               entityId,
@@ -516,10 +520,12 @@ class SimulationEngine {
             if (elapsedHours > 0.0001) {
               setPhase("entity.gap.catchup");
               const passiveNeedChanges = await updateNeeds(entityId, nextTime, elapsedHours, null, null, null, { significant: false });
-              await applyEmotions(entityId, nextTime, passiveNeedChanges, null, null, null, elapsedHours);
+              await applyEmotions(entityId, nextTime, passiveNeedChanges, null, null, null, elapsedHours, { traits: batchTraits });
+              latestNeedsForTick=null;
             }
             setPhase("entity.mental_state");
-            const latestNeeds = await readNeeds(entityId);
+            const latestNeeds = latestNeedsForTick||await readNeeds(entityId);
+            latestNeedsForTick=latestNeeds;
             await refreshMentalStateFromSimulation({
               simulationId: sim.id,
               entityId,
@@ -528,7 +534,7 @@ class SimulationEngine {
               activeActionType: null
             });
             setPhase("entity.autonomy");
-            const autonomy = await autonomyService.actForEntity({ simulationId: sim.id, entityId, simulationTime: nextTime.toISOString(), gemini: this.gemini, tickId, batchContext: autonomyBatchContext });
+            const autonomy = await autonomyService.actForEntity({ simulationId: sim.id, entityId, simulationTime: nextTime.toISOString(), gemini: this.gemini, tickId, batchContext: autonomyBatchContext, needsOverride: latestNeeds });
             if (!autonomy) continue;
             const decision = autonomy.decision;
             if (!decision?.actionType) throw Object.assign(new Error("Autonomy produced no executable action type"), { code: "AUTONOMY_ACTION_TYPE_REQUIRED" });
@@ -596,7 +602,8 @@ class SimulationEngine {
                   simulationTime: nextTime.toISOString(),
                   gemini: this.gemini,
                   tickId,
-                  batchContext: autonomyBatchContext
+                  batchContext: autonomyBatchContext,
+                  needsOverride:latestNeedsForTick||await readNeeds(id)
                 });
 
                 if (retry?.decision?.actionType && retry?.started?.actionId) {
@@ -606,7 +613,7 @@ class SimulationEngine {
                     simulationId: sim.id,
                     entityId: id,
                     simulationTime: nextTime,
-                    needs: await readNeeds(id),
+                    needs: latestNeedsForTick||await readNeeds(id),
                     activeActionType: retry.started.actionType||retry.decision.actionType
                   });
                   this.hub.publish(sim.id, "action.created", {
