@@ -131,6 +131,15 @@ test("Gemini autonomy budget gate backs off after a local daily-budget block",()
 });
 
 
+test("Chat ordering is chronological with turn metadata only as a same-time tie breaker",()=>{
+  const frontend=fs.readFileSync(path.join(__dirname,"../../asami-frontend/src/hooks/useSimulation.ts"),"utf8");
+  const routes=fs.readFileSync(path.join(__dirname,"../src/api/routes.js"),"utf8");
+  const chat=fs.readFileSync(path.join(__dirname,"../src/services/chat-service.js"),"utf8");
+  assert.match(frontend,/const aTime = new Date\(a\.simulationAt\)\.getTime\(\)[\s\S]*const aSequence = chatSequence\(a\)/);
+  assert.match(routes,/ORDER BY[\s\S]*m\.simulation_created_at ASC[\s\S]*turnSequence/);
+  assert.match(chat,/ORDER BY[\s\S]*m\.simulation_created_at ASC[\s\S]*turnSequence/);
+});
+
 test("Conversation context is grounded in authoritative identity and durable timeline",()=>{
   assert.match(entityRepoSource,/LEFT JOIN persons p ON p\.entity_id=e\.id/);
   assert.match(entityRepoSource,/birth_simulation_at AS birthSimulationAt/);
