@@ -744,16 +744,17 @@ test('batched decision context keeps resource-unavailable knowledge semantics',(
 
 test('batched perception selects display name from the joined entity alias',()=>{
   const source=read('services/perception-service.js');
-  assert.doesNotMatch(source,/other\\.display_name/);
-  assert.match(source,/otherEntity\\.display_name AS displayName/);
+  assert.doesNotMatch(source,/other\.display_name/);
+  assert.match(source,/otherEntity\.display_name AS displayName/);
 });
 
 test('engine batches traits and keeps per-actor need catch-up state local',()=>{
   const engine=read('simulation/engine.js');
   const state=read('services/state-service.js');
-  assert.match(state,/async function getTraitsBatch\\(/);
-  assert.match(state,/module\\.exports=.*getTraitsBatch/);
+  assert.match(state,/async function getTraitsBatch\(/);
+  assert.match(state,/module\.exports=.*getTraitsBatch/);
   assert.match(engine,/getTraitsBatch/);
-  assert.match(engine,/const batchTraits=traitsByEntity\.get\\(entityId\\)\\|\\|await getTraits\\(entityId\\)/);
+  assert.match(engine,/const loadedTraits=traitsByEntity\.get\(entityId\)/);
+  assert.match(engine,/const batchTraits=Array\.isArray\(loadedTraits\)&&loadedTraits\.length\?loadedTraits:await getTraits\(entityId\)/);
   assert.match(engine,/let latestNeedsForTick=null/);
 });
