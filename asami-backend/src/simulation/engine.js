@@ -3,7 +3,7 @@ const { env } = require("../config/env");
 const { pool, pingWithRetry, getDatabaseHealth } = require("../db/pool");
 const simRepo = require("../repositories/simulation-repo");
 const { getAsamiCandidate } = require("../repositories/entity-repo");
-const { ensureEntityState, updateNeeds, applyEmotions, developTraits, readNeeds, flushPendingNeedHistory } = require("../services/state-service");
+const { ensureEntityState, updateNeeds, applyEmotions, developTraits, readNeeds, getTraits, getTraitsBatch, flushPendingNeedHistory } = require("../services/state-service");
 const autonomyService = require("../services/autonomy-service");
 const { perceive, perceiveBatch } = require("../services/perception-service");
 const actionService = require("../services/action-service");
@@ -346,6 +346,7 @@ class SimulationEngine {
         let autonomyBatchContext=null;
         let activeActionsByEntity=new Map();
         let perceptionByEntity=new Map();
+        let traitsByEntity=new Map();
         try{
           setPhase("entity.context.batch");
           [activeActionsByEntity,perceptionByEntity]=await Promise.all([
@@ -357,6 +358,12 @@ class SimulationEngine {
           perceptionByEntity=new Map();
           logger.warn(logger.contextError({simulationId:sim.id,phase:"entity.context.batch"},batchStateError,"batched entity context unavailable; falling back to per-actor reads"));
         }
+        try{
+          traitsByEntity=await getTraitsBatch(actors);
+        }catch(batchTraitsError){
+          traitsByEntity=new Map();
+          logger.warn(logger.contextError({simulationId:sim.id,phase:"entity.traits.batch"},batchTraitsError,"batched traits unavailable; falling back to per-actor reads"));
+        }
         try {
           setPhase("autonomy.context.batch");
           autonomyBatchContext=await autonomyService.prepareTickAutonomyContext({simulationId:sim.id,entityIds:actors,simulationTime:nextTime.toISOString()});
@@ -367,8 +374,10 @@ class SimulationEngine {
         }
         for (const id of actors) {
           let actorHadActivity=false;
+          let latestNeedsForTick=null;
           try {
           entityId = id; actionType = null; setPhase("entity.state"); await ensureEntityState(entityId, nextTime);
+          const batchTraits=traitsByEntity.get(entityId)||await getTraits(entityId);
           const elapsedHours = Math.min(168, Math.max(0, (nextTime - previousTime) / 3600000)); const active = activeActionsByEntity.get(entityId)||await actionService.getActiveAction(entityId, sim.id);
           if (active) {
             actorHadActivity=true;
