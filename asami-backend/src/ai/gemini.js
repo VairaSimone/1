@@ -354,6 +354,8 @@ class GeminiService {
             kind,
             model,
             finishReason:err?.finishReason||null,
+            error:err?.message||String(err),
+            rawPreview:typeof raw==="string"?raw.slice(0,500):"",
             fallbackTo:fallbackModel,
             latencyMs:Date.now()-startedAt
           },"Gemini produced invalid structured output; trying fallback model");
