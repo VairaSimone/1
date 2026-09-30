@@ -140,7 +140,9 @@ class GeminiService {
       monthlyBudgetUsd:env.GEMINI_MONTHLY_BUDGET_USD,
       timeoutMs:env.GEMINI_TIMEOUT_MS,
       autonomyOutputTokenCeiling:env.GEMINI_AUTONOMY_OUTPUT_TOKEN_CEILING,
-      autonomyIntervalMinutes:env.GEMINI_AUTONOMY_MIN_INTERVAL_MINUTES
+      autonomyIntervalMinutes:env.GEMINI_AUTONOMY_MIN_INTERVAL_MINUTES,
+      dialogueTimeoutMs:env.GEMINI_DIALOGUE_TIMEOUT_MS,
+      dialogueMaxModels:env.GEMINI_DIALOGUE_MAX_MODELS
     },"Gemini cognitive budget enabled");
     return true;
   }
@@ -159,7 +161,7 @@ class GeminiService {
     this.lastAutonomyDecisionAt.set(entityId,new Date(simulationTime).getTime());
     return true;
   }
-  async generateJson(prompt,schema,{kind="autonomy",thinkingLevel="low"}={}){
+  async generateJson(prompt,schema,{kind="autonomy",thinkingLevel="low",maxModels=null,timeoutMsOverride=null}={}){
     if(!this.client){
       this.lastRequestStatus={status:"FALLBACK",source:"DETERMINISTIC_FALLBACK",reason:"GEMINI_DISABLED",attempted:false,retryAfterMs:0,kind};
       return null;
@@ -168,7 +170,11 @@ class GeminiService {
     const outputTokenCeiling=kind==="dialogue"
       ?Number(env.GEMINI_DIALOGUE_OUTPUT_TOKEN_CEILING)
       :Number(env.GEMINI_AUTONOMY_OUTPUT_TOKEN_CEILING);
-    const models=this._availableModels();
+    const availableModels=this._availableModels();
+    const requestedMaxModels=Number(maxModels);
+    const models=Number.isFinite(requestedMaxModels)&&requestedMaxModels>0
+      ?availableModels.slice(0,Math.floor(requestedMaxModels))
+      :availableModels;
     if(!models.length){
       const blocked=this.models
         .map(model=>this._modelBlockRemainingMs(model))
@@ -206,7 +212,10 @@ class GeminiService {
         return null;
       }
 
-      const timeoutMs=Math.max(30000,Number(env.GEMINI_TIMEOUT_MS)||30000);
+      const configuredTimeoutMs=Number(timeoutMsOverride)||Number(env.GEMINI_TIMEOUT_MS)||30000;
+      const timeoutMs=kind==="dialogue"
+        ?Math.max(1000,Math.min(30000,configuredTimeoutMs))
+        :Math.max(30000,configuredTimeoutMs);
       const startedAt=Date.now();
       const controller=new AbortController();
       const timeoutId=setTimeout(()=>controller.abort(),timeoutMs);
@@ -338,7 +347,10 @@ class GeminiService {
         if(failure.kind==="RATE_LIMIT"||failure.kind==="QUOTA"){
           const state=this._modelState(model);
           state.failureStreak=0;
-          const modelCooldown=Math.max(failure.retryAfterMs||0,failure.kind==="QUOTA"?60000:30000);
+          const configuredCooldown=failure.kind==="QUOTA"
+            ?Number(env.GEMINI_PROVIDER_QUOTA_COOLDOWN_MS)
+            :Number(env.GEMINI_PROVIDER_RATE_LIMIT_COOLDOWN_MS);
+          const modelCooldown=Math.max(failure.retryAfterMs||0,configuredCooldown||0);
           this._blockModel(model,modelCooldown,fallbackReason);
           this.lastRequestStatus={
             status:"FALLBACK",
