@@ -377,7 +377,8 @@ class SimulationEngine {
           let latestNeedsForTick=null;
           try {
           entityId = id; actionType = null; setPhase("entity.state"); await ensureEntityState(entityId, nextTime);
-          const batchTraits=traitsByEntity.get(entityId)||await getTraits(entityId);
+          const loadedTraits=traitsByEntity.get(entityId);
+          const batchTraits=Array.isArray(loadedTraits)&&loadedTraits.length?loadedTraits:await getTraits(entityId);
           const elapsedHours = Math.min(168, Math.max(0, (nextTime - previousTime) / 3600000)); const active = activeActionsByEntity.get(entityId)||await actionService.getActiveAction(entityId, sim.id);
           if (active) {
             actorHadActivity=true;
