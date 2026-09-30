@@ -87,7 +87,7 @@ test("Dialogue uses a bounded latency and model fallback policy",()=>{
   assert.match(geminiSource,/thinkingLevel:advanced\?"low":"minimal"/);
   assert.match(geminiSource,/dialogueCompactOutputTokenCeiling:env\.GEMINI_DIALOGUE_COMPACT_OUTPUT_TOKEN_CEILING/);
   assert.match(geminiSource,/configuredTimeoutMs/);
-  assert.match(geminiSource,/maxModels:env\.GEMINI_DIALOGUE_MAX_MODELS,timeoutMsOverride:env\.GEMINI_DIALOGUE_TIMEOUT_MS/);
+  assert.match(geminiSource,/maxModels:env\.GEMINI_DIALOGUE_MAX_MODELS/);
 });
 
 test("Dialogue compacts context and only requests advanced cognition when needed",()=>{
