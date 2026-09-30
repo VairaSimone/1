@@ -21,6 +21,7 @@ const { reconcileCompletedActions } = require("../services/action-reconciliation
 const { runSimulationIntegrityCheck } = require("../services/integrity-check-service");
 const { calibrateDecisionOutcome } = require("../services/decision-service");
 const observability = require("../services/simulation-observability");
+const { WEATHER_DURATIONS_HOURS } = require("../services/environment-service");
 
 const INTERRUPTIBLE_ACTIONS = new Set(["SLEEPING", "WORKING", "STUDYING"]);
 const CRITICAL_EVENT_PATTERNS = /DANGER|EMERGENCY|ACCIDENT|THREAT|CRISIS|EVACUATION|ATTACK|FIRE/i;
@@ -87,6 +88,10 @@ async function publishWorldEvents(hub,simulationId,eventIds=[]){
   );
   for(const row of rows){
     const metadata=realtimeJson(row.metadata,{})||{};
+    const eventCode=metadata.eventCode?String(metadata.eventCode):null;
+    const weatherDurationHours=eventCode&&Number.isFinite(Number(WEATHER_DURATIONS_HOURS[eventCode]))?Number(WEATHER_DURATIONS_HOURS[eventCode]):null;
+    const weatherExpiresAt=weatherDurationHours!==null?realtimeIso(new Date(new Date(row.simulationAt).getTime()+weatherDurationHours*3600000)):null;
+    const realtimeMetadata=weatherExpiresAt?{...metadata,weatherExpiresAt,weatherDurationHours}:metadata;
     hub.publish(simulationId,"world.event",{
       event:{
         id:row.id,
@@ -99,9 +104,9 @@ async function publishWorldEvents(hub,simulationId,eventIds=[]){
         status:row.status,
         sourceActionId:row.sourceActionId||null,
         locationId:metadata.locationId?String(metadata.locationId):null,
-        eventCode:metadata.eventCode?String(metadata.eventCode):null,
+        eventCode,
         environmental:Boolean(metadata.environmental),
-        metadata
+        metadata:realtimeMetadata
       }
     });
   }
