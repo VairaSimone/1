@@ -378,6 +378,7 @@ class GeminiService {
       dialogueMonthlyBudgetUsd:env.GEMINI_DIALOGUE_MONTHLY_BUDGET_USD,
       timeoutMs:env.GEMINI_TIMEOUT_MS,
       autonomyOutputTokenCeiling:env.GEMINI_AUTONOMY_OUTPUT_TOKEN_CEILING,
+      autonomyCompactOutputTokenCeiling:env.GEMINI_AUTONOMY_COMPACT_OUTPUT_TOKEN_CEILING,
       autonomyIntervalMinutes:env.GEMINI_AUTONOMY_MIN_INTERVAL_MINUTES,
       dialogueModel:env.GEMINI_DIALOGUE_MODEL,
       dialogueFallbacks:this.dialogueModels.slice(1),
@@ -750,7 +751,7 @@ class GeminiService {
       schema,
       {
         kind:"dialogue",
-        thinkingLevel:"low",
+        thinkingLevel:advanced?"low":"minimal",
         maxModels:1,
         timeoutMsOverride:env.GEMINI_DIALOGUE_TIMEOUT_MS,
         outputTokenCeilingOverride:advanced?Number(env.GEMINI_DIALOGUE_OUTPUT_TOKEN_CEILING):compactOutputTokens
