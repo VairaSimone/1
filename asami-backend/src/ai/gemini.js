@@ -498,10 +498,10 @@ class GeminiService {
       }
 
       const configuredTimeoutMs=Number(timeoutMsOverride)||Number(env.GEMINI_TIMEOUT_MS)||30000;
-      const remainingBudgetMs=Math.max(1,requestDeadlineAt-Date.now());
+      const timeoutBudgetMs=Math.max(1,requestDeadlineAt-Date.now());
       const timeoutMs=kind==="dialogue"
-        ?Math.max(1,Math.min(30000,configuredTimeoutMs,remainingBudgetMs))
-        :Math.max(1,Math.min(configuredTimeoutMs,remainingBudgetMs));
+        ?Math.max(1,Math.min(30000,configuredTimeoutMs,timeoutBudgetMs))
+        :Math.max(1,Math.min(configuredTimeoutMs,timeoutBudgetMs));
       const startedAt=Date.now();
       const controller=new AbortController();
       this.activeControllers.add(controller);
