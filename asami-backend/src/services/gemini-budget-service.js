@@ -157,7 +157,9 @@ async function reserve({ prompt, outputTokenCeiling, kind }) {
   const monthlyLimit = Number(budgetKind === "DIALOGUE" ? env.GEMINI_DIALOGUE_MONTHLY_BUDGET_USD : env.GEMINI_AUTONOMY_MONTHLY_BUDGET_USD);
   const dailyRequests = Number(budgetKind === "DIALOGUE" ? env.GEMINI_DIALOGUE_DAILY_MAX_REQUESTS : env.GEMINI_AUTONOMY_DAILY_MAX_REQUESTS);
   const monthlyRequests = Number(budgetKind === "DIALOGUE" ? env.GEMINI_DIALOGUE_MONTHLY_MAX_REQUESTS : env.GEMINI_AUTONOMY_MONTHLY_MAX_REQUESTS);
-  const pacedDailyLimit = budgetKind === "DIALOGUE"\n    ? dailyLimit\n    : Math.min(dailyLimit, dailyPacedLimitUsd(now) * (dailyLimit / Math.max(0.000001, Number(env.GEMINI_DAILY_BUDGET_USD))));
+  const pacedDailyLimit = budgetKind === "DIALOGUE"
+    ? dailyLimit
+    : Math.min(dailyLimit, dailyPacedLimitUsd(now) * (dailyLimit / Math.max(0.000001, Number(env.GEMINI_DAILY_BUDGET_USD))));
   const conn = await pool.getConnection();
 
   try {
