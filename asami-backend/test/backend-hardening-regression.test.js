@@ -177,7 +177,9 @@ test('entity need persistence is serialized and current plus history share one t
   const section=source.slice(updateStart,updateEnd);
   assert.match(section,/return withEntityStateLock\(entityId, async db =>/);
   assert.match(section,/readNeeds\(entityId,db\)/);
-  assert.match(section,/persistNeedTransition\([\s\S]*db/);
+  assert.match(section,/UPDATE entity_needs_current[\s\S]*CASE need_id/);
+  assert.match(section,/accumulateNeedHistory\([\s\S]*db/);
+  assert.match(section,/flushPendingNeedHistory\(entityId,causeActionId,db\)/);
 });
 
 test('conversation need and entity writes use the same entity state serialization',()=>{
@@ -726,7 +728,8 @@ test('batched memory recall updates selected memories with one set-based write',
 
 test('batched autonomy refreshes only mutable physiological state before deciding',()=>{
   const source=read('services/autonomy-service.js');
-  assert.match(source,/latestNeeds=await readNeeds\(entityId\)/);
+  assert.match(source,/const latestNeeds=Array\.isArray\(needsOverride\)&&needsOverride\.length\?needsOverride:context\.needs/);
+  assert.match(source,/needsOverride:/);
   assert.match(source,/rebuildDecisionCandidates/);
   assert.match(source,/recoveryBlocks:decisionService\.activeRecoveryBlocks/);
 });
