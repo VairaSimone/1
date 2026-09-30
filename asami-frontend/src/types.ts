@@ -111,7 +111,7 @@ export interface EventItem { id: string; type: string; category: string; title: 
 export interface Development { entityId?: string; developmentStageId?: string | null; physicalScore?: number; cognitiveScore?: number; socialScore?: number; emotionalScore?: number; educationScore?: number; updatedSimulationAt?: string; version?: number }
 export interface DevelopmentHistoryItem extends Development { simulationAt?: string; reason?: string | null; oldStage?: string | null; newStage?: string | null; oldStageId?: string | null; newStageId?: string | null }
 export interface ChatMessage { id: string; senderEntityId: string; messageType: 'USER' | 'ASSISTANT' | string; content: string; simulationAt: string; status: string; metadata?: unknown }
-export interface ChatResponse { conversationId: string; userMessageId: string; assistantMessageId: string; reply: string; aiUsed: boolean }
+export interface ChatResponse { conversationId: string; userMessageId: string; assistantMessageId: string; turnSequence: number; reply: string; aiUsed: boolean }
 export interface ConversationState {
   conversationId: string
   status: string
