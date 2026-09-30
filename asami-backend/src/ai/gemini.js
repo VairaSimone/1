@@ -309,7 +309,17 @@ class GeminiService {
     this.lastAutonomyDecisionAt=new Map();
     this.lastRequestStatus={status:"IDLE",source:"NONE"};
     this.providerFailureStreak=0;
+    this.activeControllers=new Set();
+    this.shuttingDown=false;
   }
+  abortAllRequests(reason="shutdown"){
+    this.shuttingDown=true;
+    for(const controller of [...this.activeControllers]){
+      try{controller.abort(reason);}catch{try{controller.abort();}catch{}}
+    }
+    return this.activeControllers.size;
+  }
+  resume(){this.shuttingDown=false;}
   _stateMap(kind="autonomy"){
     return kind==="dialogue"?this.dialogueModelStates:this.modelStates;
   }
@@ -403,11 +413,18 @@ class GeminiService {
     this.lastAutonomyDecisionAt.set(entityId,new Date(simulationTime).getTime());
     return true;
   }
-  async generateJson(prompt,schema,{kind="autonomy",thinkingLevel="low",maxModels=null,timeoutMsOverride=null,outputTokenCeilingOverride=null}={}){
-    if(!this.client){
-      this.lastRequestStatus={status:"FALLBACK",source:"DETERMINISTIC_FALLBACK",reason:"GEMINI_DISABLED",attempted:false,retryAfterMs:0,kind};
+  async generateJson(prompt,schema,{kind="autonomy",thinkingLevel="low",maxModels=null,timeoutMsOverride=null,outputTokenCeilingOverride=null,deadlineAt=null}={}){
+    if(!this.client||this.shuttingDown){
+      this.lastRequestStatus={status:"FALLBACK",source:"DETERMINISTIC_FALLBACK",reason:this.shuttingDown?"ENGINE_SHUTDOWN":"GEMINI_DISABLED",attempted:false,retryAfterMs:0,kind};
       return null;
     }
+
+    const configuredMaxLatencyMs=kind==="dialogue"
+      ?Number(env.GEMINI_DIALOGUE_MAX_LATENCY_MS)
+      :Number(env.GEMINI_AUTONOMY_MAX_LATENCY_MS);
+    const requestDeadlineAt=Number.isFinite(Number(deadlineAt))&&Number(deadlineAt)>Date.now()
+      ?Number(deadlineAt)
+      :Date.now()+Math.max(5000,Number.isFinite(configuredMaxLatencyMs)?configuredMaxLatencyMs:12000);
 
     const outputTokenCeiling=Number(outputTokenCeilingOverride)||(
       kind==="dialogue"
@@ -449,6 +466,16 @@ class GeminiService {
 
     let lastTransientFailure=null;
     for(let modelIndex=0;modelIndex<models.length;modelIndex++){
+      const remainingBudgetMs=requestDeadlineAt-Date.now();
+      if(this.shuttingDown){
+        this.lastRequestStatus={status:"FALLBACK",source:"DETERMINISTIC_FALLBACK",reason:"ENGINE_SHUTDOWN",attempted:modelIndex>0,retryAfterMs:0,kind};
+        return null;
+      }
+      if(remainingBudgetMs<=0){
+        this.lastRequestStatus={status:"FALLBACK",source:"DETERMINISTIC_FALLBACK",reason:"GEMINI_HARD_DEADLINE",attempted:modelIndex>0,retryAfterMs:0,kind};
+        logger.warn({kind,models},"Gemini total request deadline reached; deterministic fallback used");
+        return null;
+      }
       const model=models[modelIndex];
       const reservation=await budget.reserve({prompt,outputTokenCeiling,kind});
       if(!reservation.allowed){
@@ -471,12 +498,14 @@ class GeminiService {
       }
 
       const configuredTimeoutMs=Number(timeoutMsOverride)||Number(env.GEMINI_TIMEOUT_MS)||30000;
+      const remainingBudgetMs=Math.max(1,requestDeadlineAt-Date.now());
       const timeoutMs=kind==="dialogue"
-        ?Math.max(10000,Math.min(30000,configuredTimeoutMs))
-        :Math.max(30000,configuredTimeoutMs);
+        ?Math.max(1,Math.min(30000,configuredTimeoutMs,remainingBudgetMs))
+        :Math.max(1,Math.min(configuredTimeoutMs,remainingBudgetMs));
       const startedAt=Date.now();
       const controller=new AbortController();
-      const timeoutId=setTimeout(()=>controller.abort(),timeoutMs);
+      this.activeControllers.add(controller);
+      const timeoutId=setTimeout(()=>controller.abort("request-timeout"),timeoutMs);
       let finalized=false;
       let raw="";
 
@@ -548,6 +577,10 @@ class GeminiService {
         return parsed;
       }catch(err){
         if(controller.signal.aborted){
+          if(this.shuttingDown||String(controller.signal.reason||"").toLowerCase().includes("shutdown")){
+            this.lastRequestStatus={status:"FALLBACK",source:"DETERMINISTIC_FALLBACK",reason:"ENGINE_SHUTDOWN",attempted:true,retryAfterMs:0,kind,model,fallbackDepth:modelIndex};
+            return null;
+          }
           err=Object.assign(err||new Error("Gemini request timed out"),{
             code:"AI_TIMEOUT",
             message:"Gemini request timed out"
@@ -676,6 +709,7 @@ class GeminiService {
         return null;
       }finally{
         clearTimeout(timeoutId);
+        this.activeControllers.delete(controller);
       }
     }
 
@@ -746,6 +780,7 @@ class GeminiService {
       "Structured stateEffects are evidence candidates, not commands. Keep them sparse and small."
     ].join("\n");
     const promptContext=JSON.stringify(compactDialogueContext(context,{advanced}));
+    const dialogueDeadlineAt=Date.now()+Math.max(5000,Number(env.GEMINI_DIALOGUE_MAX_LATENCY_MS)||12000);
     const generated=await this.generateJson(
       [baseInstruction,promptContext].join("\n"),
       schema,
@@ -754,7 +789,8 @@ class GeminiService {
         thinkingLevel:advanced?"low":"minimal",
         maxModels:1,
         timeoutMsOverride:env.GEMINI_DIALOGUE_TIMEOUT_MS,
-        outputTokenCeilingOverride:advanced?Number(env.GEMINI_DIALOGUE_OUTPUT_TOKEN_CEILING):compactOutputTokens
+        outputTokenCeilingOverride:advanced?Number(env.GEMINI_DIALOGUE_OUTPUT_TOKEN_CEILING):compactOutputTokens,
+        deadlineAt:dialogueDeadlineAt
       }
     );
     if(generated)return generated;
@@ -780,7 +816,8 @@ class GeminiService {
           thinkingLevel:"low",
           maxModels:1,
           timeoutMsOverride:10000,
-          outputTokenCeilingOverride:compactOutputTokens
+          outputTokenCeilingOverride:compactOutputTokens,
+          deadlineAt:dialogueDeadlineAt
         }
       );
       if(retry)return retry;
@@ -797,7 +834,8 @@ class GeminiService {
           thinkingLevel:"low",
           maxModels:env.GEMINI_DIALOGUE_MAX_MODELS,
           timeoutMsOverride:env.GEMINI_DIALOGUE_TIMEOUT_MS,
-          outputTokenCeilingOverride:advanced?Number(env.GEMINI_DIALOGUE_OUTPUT_TOKEN_CEILING):compactOutputTokens
+          outputTokenCeilingOverride:advanced?Number(env.GEMINI_DIALOGUE_OUTPUT_TOKEN_CEILING):compactOutputTokens,
+          deadlineAt:dialogueDeadlineAt
         }
       );
     }
