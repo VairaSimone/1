@@ -49,7 +49,7 @@ export function useSimulation() {
     if (soft) setRefreshing(true); else setLoading(true)
     setError(null)
     try {
-      const simPromise = api.simulation(simulationId); const clockPromise = api.clock(simulationId); const asamiPromise = api.asami(simulationId); const worldPromise = api.world(simulationId)
+      const simPromise = api.simulation(simulationId); const clockPromise = api.clock(simulationId); const asamiPromise = api.asami(simulationId); const worldPromise = api.world(simulationId).catch(() => null)
       const [sim, clockData, entity, nextDashboard, nextWorld] = await Promise.all([simPromise, clockPromise, asamiPromise, asamiPromise.then((e) => api.dashboard(simulationId, e.id)), worldPromise])
       if (clockData.clock) setClockSpeed(Number(clockData.clock.speed))
       setSimulations((prev) => prev.some((x) => x.id === sim.id) ? prev.map((x) => x.id === sim.id ? sim : x) : [sim, ...prev])
