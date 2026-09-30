@@ -257,9 +257,33 @@ async function interruptActiveAction({ simulationId, entityId, active, simulatio
 }
 
 class SimulationEngine {
-  constructor({ gemini, hub }) { this.gemini = gemini; this.hub = hub; this.running = new Set(); this.interval = null; this.tickCounter = new Map(); this.worldMaintenanceAt = new Map(); this.pulseInFlight = false; this.stopping = false; }
+  constructor({ gemini, hub }) { this.gemini = gemini; this.hub = hub; this.running = new Set(); this.runningTasks = new Map(); this.interval = null; this.tickCounter = new Map(); this.worldMaintenanceAt = new Map(); this.pulseInFlight = false; this.pulsePromise = null; this.stopping = false; }
   async start() { if (this.interval) return; this.stopping = false; this.interval = setInterval(() => this.pulse().catch(err => logger.error(logger.contextError({ phase: "pulse" }, err, "engine pulse failed"))), env.ENGINE_INTERVAL_MS); await this.pulse(); }
-  async stop({ drainTimeoutMs = 5000 } = {}) { this.stopping = true; if (this.interval) { clearInterval(this.interval); this.interval = null; } const timeout = Math.max(0, Number(drainTimeoutMs) || 5000); const deadline = Date.now() + timeout; while (this.running.size && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 50)); const drained = this.running.size === 0; if (!drained) logger.warn({ activeSimulations: this.running.size }, "engine shutdown timeout reached; simulations still running"); return drained; }
+  async stop({ drainTimeoutMs = 5000 } = {}) {
+    this.stopping = true;
+    if (this.interval) {
+      clearInterval(this.interval);
+      this.interval = null;
+    }
+    const timeout = Math.max(0, Number(drainTimeoutMs) || 5000);
+    const deadline = Date.now() + timeout;
+    while (Date.now() < deadline) {
+      const tasks = [...this.runningTasks.values()];
+      if (!this.pulseInFlight && tasks.length === 0 && this.running.size === 0) return true;
+      const remainingMs = Math.max(1, deadline - Date.now());
+      const waiters = [];
+      if (this.pulsePromise) waiters.push(this.pulsePromise.catch(()=>{}));
+      waiters.push(...tasks.map(task=>Promise.resolve(task).catch(()=>{})));
+      if (!waiters.length) break;
+      await Promise.race([
+        Promise.allSettled(waiters),
+        new Promise(resolve=>setTimeout(resolve,Math.min(50,remainingMs)))
+      ]);
+    }
+    const drained=this.running.size===0 && this.runningTasks.size===0 && !this.pulseInFlight;
+    if (!drained) logger.warn({ activeSimulations:this.running.size,activeTasks:this.runningTasks.size,pulseInFlight:this.pulseInFlight }, "engine shutdown timeout reached; simulations still running");
+    return drained;
+  }
   async pulse() {
     if (this.stopping || this.pulseInFlight) return;
     this.pulseInFlight = true;
@@ -279,13 +303,18 @@ class SimulationEngine {
           continue;
         }
         this.running.add(sim.id);
-        this.runSimulation(sim)
+        const task=this.runSimulation(sim)
           .catch(err => logger.error(logger.contextError({ simulationId: sim.id, phase: "simulation" }, err, "simulation failed")))
-          .finally(() => this.running.delete(sim.id));
+          .finally(() => {
+            this.running.delete(sim.id);
+            this.runningTasks.delete(sim.id);
+          });
+        this.runningTasks.set(sim.id,task);
       }
       observability.setGauge("global","simulation_queue_depth",queueDepth);
     } finally {
       this.pulseInFlight = false;
+      this.pulsePromise = null;
     }
   }
   async runSimulation(sim) {
