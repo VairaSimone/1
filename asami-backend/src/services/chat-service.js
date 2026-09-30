@@ -799,7 +799,7 @@ async function initiateConversation({simulationId,asamiEntityId,simulationTime,g
     type:"ASSISTANT",
     content:reply,
     simulationAt:simulationTime,
-    metadata
+    metadata:{...metadata,turnSequence,messageOrder:1}
   });
   hub.publish(simulationId,"entity.state",{
     entityId:asamiEntityId,
