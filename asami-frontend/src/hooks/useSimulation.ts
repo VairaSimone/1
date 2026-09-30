@@ -593,16 +593,54 @@ export function useSimulation() {
   const changeSpeed = useCallback(async (speed: number) => { if (!simulationId) return; const result = await api.speed(simulationId, speed); setSimulations((prev) => prev.map((s) => s.id === result.id ? result : s)); await refresh(true) }, [simulationId, refresh])
   const sendMessage = useCallback(async (content: string) => {
     if (!simulationId || !chatSenderId || !asamiId) throw new Error('Serve un interlocutore valido oltre ad Asami per inviare messaggi.')
-    const result = await api.sendMessage(simulationId, { senderEntityId: chatSenderId, asamiEntityId: asamiId, conversationId: conversationId || undefined, content })
+
+    const result = await api.sendMessage(simulationId, {
+      senderEntityId: chatSenderId,
+      asamiEntityId: asamiId,
+      conversationId: conversationId || undefined,
+      content,
+    })
+
+    const optimisticAt = new Date().toISOString()
+    const optimisticUser: ChatMessage = {
+      id: result.userMessageId,
+      senderEntityId: chatSenderId,
+      messageType: 'USER',
+      content,
+      simulationAt: optimisticAt,
+      status: 'DELIVERED',
+      metadata: { source: 'frontend-optimistic' },
+    }
+    const optimisticAssistant: ChatMessage = {
+      id: result.assistantMessageId,
+      senderEntityId: asamiId,
+      messageType: 'ASSISTANT',
+      content: result.reply,
+      simulationAt: optimisticAt,
+      status: 'DELIVERED',
+      metadata: { source: 'api-response', fallback: !result.aiUsed },
+    }
+
     setConversationId(result.conversationId)
     localStorage.setItem('asami.conversationId', result.conversationId)
-    const [nextMessages, nextState] = await Promise.all([
+    setMessages((prev) => {
+      const filtered = prev.filter((message) =>
+        message.id !== optimisticUser.id && message.id !== optimisticAssistant.id
+      )
+      return [...filtered, optimisticUser, optimisticAssistant]
+    })
+
+    // Reconcile persisted state in the background. A failure here must not
+    // hide a response that was already successfully returned by the chat API.
+    void Promise.all([
       api.conversationMessages(simulationId, result.conversationId),
       api.conversationState(simulationId, result.conversationId),
-    ])
-    setMessages(nextMessages)
-    setConversationState(nextState)
-    await refresh(true)
+    ]).then(([nextMessages, nextState]) => {
+      setMessages(nextMessages)
+      setConversationState(nextState)
+    }).catch(() => undefined)
+
+    void refresh(true).catch(() => undefined)
     return result
   }, [simulationId, chatSenderId, asamiId, conversationId, refresh])
 
