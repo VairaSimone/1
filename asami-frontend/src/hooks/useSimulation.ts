@@ -187,7 +187,9 @@ export function useSimulation() {
             })
           : prev.emotions
         const hasActionKey = Boolean(worldState && Object.prototype.hasOwnProperty.call(worldState, 'action'))
-        const realtimeAction = hasActionKey ? normalizeRealtimeAction(worldState?.action, fallbackAt) : null
+        const realtimeAction: WorldAction | null = hasActionKey
+          ? normalizeRealtimeAction(worldState?.action, fallbackAt)
+          : null
         const currentAction = realtimeAction ? {
           id: realtimeAction.id,
           actionType: realtimeAction.actionType,
