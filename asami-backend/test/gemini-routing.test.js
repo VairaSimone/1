@@ -86,3 +86,11 @@ test("Chat isolates Gemini failures so deterministic delivery can still complete
   assert.match(chatSource,/Gemini dialogue failed; deterministic reply will be used/);
   assert.match(chatSource,/const reply=generated\?\.reply\|\|deterministicReply\(context,content\)/);
 });
+
+
+test("Gemini budget is isolated between autonomy and dialogue",()=>{
+  assert.match(envSource,/GEMINI_AUTONOMY_DAILY_BUDGET_USD: z\.coerce\.number/);
+  assert.match(envSource,/GEMINI_DIALOGUE_DAILY_BUDGET_USD: z\.coerce\.number/);
+  assert.match(fs.readFileSync(path.join(__dirname,"../src/services/gemini-budget-service.js"),"utf8"),/kind VARCHAR\(20\)/);
+  assert.match(fs.readFileSync(path.join(__dirname,"../src/services/gemini-budget-service.js"),"utf8"),/budgetKind = kind === "dialogue" \? "DIALOGUE" : "AUTONOMY"/);
+});
