@@ -258,8 +258,7 @@ test("normal Gemini autonomy uses low reasoning and escalates only high-priority
   const source=fs.readFileSync(path.join(__dirname,"../src/ai/gemini.js"),"utf8");
   assert.match(
     source,
-    /const thinkingLevel=advanced\?/
-
+    /const thinkingLevel=advanced\s*\n\s*\?\(context\?\.geminiTrigger\?\.priority==="HIGH"\?"medium":"low"\)\s*\n\s*:"low";/
   );
   assert.match(source,/DecisionSchema,\{kind:"autonomy",thinkingLevel\}\)/);
 });
