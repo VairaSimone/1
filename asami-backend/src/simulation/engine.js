@@ -391,10 +391,15 @@ class SimulationEngine {
           if (this.stopping) break;
           let actorHadActivity=false;
           let latestNeedsForTick=null;
+          let currentNeedsForTick=null;
           try {
           entityId = id; actionType = null; setPhase("entity.state"); await ensureEntityState(entityId, nextTime);
           const loadedTraits=traitsByEntity.get(entityId);
           const batchTraits=Array.isArray(loadedTraits)&&loadedTraits.length?loadedTraits:await getTraits(entityId);
+          const batchedActorContext=autonomyBatchContext?.contexts?.get(entityId)||null;
+          currentNeedsForTick=Array.isArray(batchedActorContext?.needs)&&batchedActorContext.needs.length
+            ?batchedActorContext.needs.map(need=>({...need}))
+            :null;
           const elapsedHours = Math.min(168, Math.max(0, (nextTime - previousTime) / 3600000)); const active = activeActionsByEntity.get(entityId)||await actionService.getActiveAction(entityId, sim.id);
           if (active) {
             actorHadActivity=true;
@@ -407,9 +412,11 @@ class SimulationEngine {
             const wasCompleted = nextTime >= completionAt; const updateTime = wasCompleted ? completionAt : nextTime; const updateHours = Math.min(168, Math.max(0, (updateTime - previousTime) / 3600000));
             setPhase("entity.perception"); const perception = perceptionByEntity.get(entityId)||await perceive(sim.id, entityId, nextTime); worldLocationId=perception?.location?.locationId || activeMovement?.originLocationId || null;
             setPhase("entity.needs"); const needChanges = await updateNeeds(entityId, updateTime, updateHours, null, active.id, active.actionType, { significant: wasCompleted, perception });
+            currentNeedsForTick=mergeNeedChanges(currentNeedsForTick,needChanges);
+            if(!currentNeedsForTick.length)currentNeedsForTick=await readNeeds(entityId);
             setPhase("entity.emotions"); await applyEmotions(entityId, updateTime, needChanges, null, active.id, active.actionType, updateHours, { perception, traits: batchTraits, significant: wasCompleted });
             setPhase("entity.interruption");
-            if(!wasCompleted) latestNeedsForTick=await readNeeds(entityId);
+            if(!wasCompleted) latestNeedsForTick=currentNeedsForTick;
             const interruption = !wasCompleted ? getInterruptionReason(active.actionType, latestNeedsForTick, perception) : null;
             if (interruption) {
               const interrupted = await interruptActiveAction({ simulationId: sim.id, entityId, active, simulationTime: updateTime, interruption, needChanges, perception });
@@ -419,7 +426,7 @@ class SimulationEngine {
                   simulationId: sim.id,
                   entityId,
                   simulationTime: updateTime,
-                  needs: latestNeedsForTick||await readNeeds(entityId),
+                  needs: latestNeedsForTick||currentNeedsForTick||[],
                   activeActionType: null
                 });
                 setPhase("entity.publish");
@@ -474,8 +481,9 @@ class SimulationEngine {
               if (postActionGapHours > 0.0001) {
                 setPhase("entity.gap.catchup");
                 const passiveNeedChanges = await updateNeeds(entityId, nextTime, postActionGapHours, null, null, null, { significant: false });
+                currentNeedsForTick=mergeNeedChanges(currentNeedsForTick,passiveNeedChanges);
                 await applyEmotions(entityId, nextTime, passiveNeedChanges, null, null, null, postActionGapHours, { traits: batchTraits });
-                latestNeedsForTick=null;
+                latestNeedsForTick=currentNeedsForTick;
               }
             }
             if (wasCompleted) {
@@ -483,8 +491,11 @@ class SimulationEngine {
               await actionService.markActionPostProcessingComplete(active.id);
             }
             setPhase("entity.mental_state");
-            const latestNeeds = latestNeedsForTick||await readNeeds(entityId);
+            const latestNeeds=(latestNeedsForTick&&latestNeedsForTick.length)
+              ?latestNeedsForTick
+              :(currentNeedsForTick&&currentNeedsForTick.length?currentNeedsForTick:await readNeeds(entityId));
             latestNeedsForTick=latestNeeds;
+            currentNeedsForTick=latestNeeds;
             await refreshMentalStateFromSimulation({
               simulationId: sim.id,
               entityId,
@@ -559,8 +570,9 @@ class SimulationEngine {
             if (elapsedHours > 0.0001) {
               setPhase("entity.gap.catchup");
               const passiveNeedChanges = await updateNeeds(entityId, nextTime, elapsedHours, null, null, null, { significant: false });
+              currentNeedsForTick=mergeNeedChanges(currentNeedsForTick,passiveNeedChanges);
               await applyEmotions(entityId, nextTime, passiveNeedChanges, null, null, null, elapsedHours, { traits: batchTraits });
-              latestNeedsForTick=null;
+              latestNeedsForTick=currentNeedsForTick;
             }
             setPhase("entity.mental_state");
             const latestNeeds = latestNeedsForTick||await readNeeds(entityId);
