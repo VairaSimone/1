@@ -4,7 +4,7 @@ import {
   Library, LocateFixed, MapPin, Moon, Pause, Play, Radio, RotateCcw, School,
   ShoppingCart, Sparkles, Sun, TreePine, UserRound, Users, Wrench, CloudRain,
 } from 'lucide-react'
-import type { Dashboard, Simulation, WorldActor, WorldLocation, WorldSnapshot } from '../types'
+import type { Dashboard, Simulation, WorldActor, WorldActivity, WorldLocation, WorldSnapshot } from '../types'
 import { api } from '../lib/api'
 import { formatSimTime, labelize, pct } from '../lib/format'
 import { EmptyState, ErrorState, ProgressBar } from '../components/Ui'
@@ -98,11 +98,13 @@ export function LiveWorld({
   world,
   dashboard,
   asamiId,
+  worldActivities = [],
 }: {
   simulation: Simulation
   world: WorldSnapshot | null
   dashboard: Dashboard | null
   asamiId: string
+  worldActivities?: WorldActivity[]
 }) {
   const [mode, setMode] = useState<Mode>('live')
   const [displayWorld, setDisplayWorld] = useState<WorldSnapshot | null>(world)
@@ -165,6 +167,10 @@ export function LiveWorld({
   const targetActor = selected?.action?.targetEntityId
     ? displayWorld?.actors.find((actor) => actor.id === selected.action?.targetEntityId) || null
     : null
+  const latestActivity = mode === 'live' ? worldActivities[0] || null : null
+  const causalActorIds = latestActivity
+    ? new Set([latestActivity.entityId || '', latestActivity.targetEntityId || ''].filter(Boolean))
+    : new Set<string>()
 
   const currentNeeds = dashboard && mode === 'live' ? [...dashboard.needs].sort((a, b) => Number(a.value) - Number(b.value)).slice(0, 4) : []
   const currentEmotions = dashboard && mode === 'live' ? dashboard.emotions.slice(0, 4) : []
@@ -256,6 +262,20 @@ export function LiveWorld({
               })
             })}
             <path d={'M 0 ' + (340 + Math.sin(hour / 24 * Math.PI * 2) * 12) + ' C 180 295, 300 380, 490 342 S 760 282, 1000 340'} className="world-river" />
+            {latestActivity?.entityId && latestActivity?.targetEntityId && (() => {
+              const source = displayWorld.actors.find((actor) => actor.id === latestActivity.entityId)
+              const target = displayWorld.actors.find((actor) => actor.id === latestActivity.targetEntityId)
+              if (!source || !target || source.latitude === null || source.longitude === null || target.latitude === null || target.longitude === null) return null
+              const sourcePoint = {
+                x: ((Number(source.longitude) - projection.minLon) / Math.max(.000001, projection.maxLon - projection.minLon)) * 1000,
+                y: (1 - (Number(source.latitude) - projection.minLat) / Math.max(.000001, projection.maxLat - projection.minLat)) * 680,
+              }
+              const targetPoint = {
+                x: ((Number(target.longitude) - projection.minLon) / Math.max(.000001, projection.maxLon - projection.minLon)) * 1000,
+                y: (1 - (Number(target.latitude) - projection.minLat) / Math.max(.000001, projection.maxLat - projection.minLat)) * 680,
+              }
+              return <line x1={sourcePoint.x} y1={sourcePoint.y} x2={targetPoint.x} y2={targetPoint.y} className="world-causal-link" />
+            })()}
           </svg>
 
           <div className="world-grid-lines" aria-hidden="true" />
@@ -285,7 +305,7 @@ export function LiveWorld({
             const y = (1 - (Number(actor.latitude) - projection.minLat) / Math.max(.000001, projection.maxLat - projection.minLat)) * 100
             return <button
               key={actor.id}
-              className={cn('world-actor', actor.id === selectedId && 'selected', actor.isAsami && 'asami', actor.moving && 'moving')}
+              className={cn('world-actor', actor.id === selectedId && 'selected', actor.isAsami && 'asami', actor.moving && 'moving', causalActorIds.has(actor.id) && 'causal-focus')}
               style={{ left: x + '%', top: y + '%' }}
               onClick={() => setSelectedId(actor.id)}
               title={actor.displayName + ' · ' + actionLabel(actor)}
@@ -296,6 +316,17 @@ export function LiveWorld({
               {actor.moving && <span className="actor-move"><Footprints size={10} /></span>}
             </button>
           })}
+          {latestActivity && <div className="world-causal-overlay">
+            <div className="world-causal-card">
+              <div className="world-causal-kicker">CATENA CAUSALE · {formatSimTime(latestActivity.simulationAt)}</div>
+              <strong className="world-causal-title">{latestActivity.title}</strong>
+              <span className="world-causal-detail">{latestActivity.detail}</span>
+              <div className="world-causal-steps">
+                {latestActivity.steps.slice(0, 4).map((step, index) => <span className="world-causal-step" key={latestActivity.id + '-' + index}><i>{index + 1}</i>{step}</span>)}
+              </div>
+            </div>
+          </div>}
+
         </div>
 
         <div className="world-legend">
