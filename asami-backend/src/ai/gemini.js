@@ -184,7 +184,25 @@ function dialogueProviderSchema({advanced=false}={}){
       beliefs:numberArray({predicate:{type:"string"},subjectEntityId:{type:"string",nullable:true},objectValue:{type:"string"},confidence:{type:"number"},importance:{type:"number"}}),
       knowledge:numberArray({knowledgeType:{type:"string"},content:{type:"string"},subjectEntityId:{type:"string",nullable:true},objectEntityId:{type:"string",nullable:true},predicate:{type:"string",nullable:true},confidence:{type:"number"},importance:{type:"number"}}),
       habitCandidate:{type:"object",nullable:true,properties:{name:{type:"string"},description:{type:"string"},frequency:{type:"string"},confidence:{type:"number"}}},
-      planProposal:{type:"object",nullable:true,properties:{title:{type:"string"},strategy:{type:"object"},steps:{type:"array",items:{type:"object",properties:{title:{type:"string"},description:{type:"string"},actionType:{type:"string"}}}}}
+      planProposal:{
+        type:"object",
+        nullable:true,
+        properties:{
+          title:{type:"string"},
+          strategy:{type:"object"},
+          steps:{
+            type:"array",
+            items:{
+              type:"object",
+              properties:{
+                title:{type:"string"},
+                description:{type:"string"},
+                actionType:{type:"string"}
+              }
+            }
+          }
+        }
+      }
     });
   }
   return {
