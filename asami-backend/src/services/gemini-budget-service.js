@@ -225,8 +225,8 @@ async function release(reservation) {
   if (!reservation?.allowed) return;
   const { day, month, estimatedUsd, kind } = reservation;
   const budgetKind = kind === "dialogue" ? "DIALOGUE" : "AUTONOMY";
-  await pool.query(`UPDATE gemini_usage SET reserved_usd=GREATEST(0,reserved_usd-?) WHERE period_type='DAY' AND period_key=?`, [estimatedUsd, budgetKind, day]);
-  await pool.query(`UPDATE gemini_usage SET reserved_usd=GREATEST(0,reserved_usd-?) WHERE period_type='MONTH' AND period_key=?`, [estimatedUsd, budgetKind, month]);
+  await pool.query(`UPDATE gemini_usage SET reserved_usd=GREATEST(0,reserved_usd-?) WHERE kind=? AND period_type='DAY' AND period_key=?`, [estimatedUsd, budgetKind, day]);
+  await pool.query(`UPDATE gemini_usage SET reserved_usd=GREATEST(0,reserved_usd-?) WHERE kind=? AND period_type='MONTH' AND period_key=?`, [estimatedUsd, budgetKind, month]);
 }
 
 async function restoreRejectedRequest(reservation) {
