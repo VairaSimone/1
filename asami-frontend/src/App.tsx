@@ -44,7 +44,7 @@ export default function App() {
     window.setTimeout(() => setNotice(null), 2800)
   }
 
-  if (newSimulation) return <div className="shell"><main className="main standalone"><NewSimulation onCreate={async (payload) => { await sim.createSimulation(payload); setNewSimulation(false); setView('overview') }} onCancel={() => setNewSimulation(false)} /></main></div>
+  if (newSimulation) return <div className="shell"><main className="main standalone"><NewSimulation onCreate={async (payload) => { await sim.createSimulation(payload); setNewSimulation(false); setView('live-world') }} onCancel={() => setNewSimulation(false)} /></main></div>
   if (sim.loading && !sim.dashboard) return <div className="startup"><div className="startup-mark">✦</div><strong>ASAMI</strong><span>Connessione al motore di simulazione…</span><div className="startup-loader" /></div>
 
   return <div className={`shell ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`}>
