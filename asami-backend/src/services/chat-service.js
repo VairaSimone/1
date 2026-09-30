@@ -502,10 +502,10 @@ async function buildAsamiConversationContext(simulationId,asamiEntityId,senderEn
        SELECT m.message_type AS messageType,m.content,m.simulation_created_at AS simulationAt,
               ROW_NUMBER() OVER(
                  ORDER BY
+                   m.simulation_created_at ASC,
                    CASE WHEN JSON_EXTRACT(m.metadata,'$.turnSequence') IS NULL THEN 0 ELSE 1 END ASC,
                    CAST(COALESCE(JSON_UNQUOTE(JSON_EXTRACT(m.metadata,'$.turnSequence')),'0') AS UNSIGNED) ASC,
                    CAST(COALESCE(JSON_UNQUOTE(JSON_EXTRACT(m.metadata,'$.messageOrder')),'0') AS UNSIGNED) ASC,
-                   m.simulation_created_at ASC,
                    m.id ASC
                ) AS rn,
               COUNT(*) OVER() AS total
