@@ -72,12 +72,12 @@ test("Dialogue uses a bounded latency and model fallback policy",()=>{
   assert.match(envSource,/GEMINI_DIALOGUE_FALLBACK_MODELS: z\.preprocess/);
   assert.match(envSource,/GEMINI_DIALOGUE_TIMEOUT_MS: z\.preprocess/);
   assert.match(envSource,/GEMINI_DIALOGUE_MAX_MODELS: z\.coerce\.number\(\)\.int\(\)\.min\(1\)/);\n  assert.match(envSource,/GEMINI_DIALOGUE_COMPACT_OUTPUT_TOKEN_CEILING: z\.coerce\.number/);
-  assert.match(geminiSource,/maxModels=null,timeoutMsOverride=null/);
+  assert.match(geminiSource,/maxModels=null,timeoutMsOverride=null,outputTokenCeilingOverride=null/);
   assert.match(geminiSource,/kind==="dialogue"\?this\.dialogueModels:this\.models/);
   assert.match(geminiSource,/this\._availableModels\(kind\)/);
   assert.match(geminiSource,/kind==="dialogue"/);
   assert.match(geminiSource,/Math\.max\(10000,Math\.min\(30000,configuredTimeoutMs\)\)/);
-  assert.match(geminiSource,/kind:"dialogue",thinkingLevel:"low"/);
+  assert.match(geminiSource,/kind:"dialogue",thinkingLevel:"low"/);\n  assert.match(geminiSource,/dialogueCompactOutputTokenCeiling:env\.GEMINI_DIALOGUE_COMPACT_OUTPUT_TOKEN_CEILING/);
   assert.match(geminiSource,/configuredTimeoutMs/);
   assert.match(geminiSource,/maxModels:env\.GEMINI_DIALOGUE_MAX_MODELS,timeoutMsOverride:env\.GEMINI_DIALOGUE_TIMEOUT_MS/);
 });
@@ -92,7 +92,7 @@ test("Dialogue compacts context and only requests advanced cognition when needed
 
 test("Dialogue retries with the compact schema after truncated output",()=>{
   assert.match(geminiSource,/Retrying Gemini dialogue with compact schema/);
-  assert.match(geminiSource,/reason==="AI_INVALID_OUTPUT"/);
+  assert.match(geminiSource,/reason==="AI_INVALID_OUTPUT"/);\n  assert.match(geminiSource,/let raw=""/);
   assert.match(geminiSource,/COMPACT_DIALOGUE_SCHEMA/);
   assert.match(geminiSource,/outputTokenCeilingOverride:compactOutputTokens/);
 });
