@@ -1,4 +1,4 @@
-import { Brain, BrainCircuit, Clock3, Database, HeartHandshake, History, LayoutDashboard, MessageCircle, Plus, Sparkles, Users, Activity } from 'lucide-react'
+import { Activity, Brain, BrainCircuit, Clock3, Database, Globe2, HeartHandshake, History, LayoutDashboard, MessageCircle, Plus, Sparkles, Users } from 'lucide-react'
 import type { Simulation } from '../types'
 import { formatSimTime } from '../lib/format'
 import { Brand } from './Brand'
@@ -15,6 +15,7 @@ interface Props {
 
 export function Sidebar({ simulations, simulation, view, setView, onSimulationChange, onNewSimulation }: Props) {
   const nav = [
+    ['live-world', Globe2, 'Mondo vivo'],
     ['overview', LayoutDashboard, 'Panoramica'],
     ['analysis', Activity, 'Analisi'],
     ['timeline', History, 'Cronologia'],
