@@ -214,7 +214,7 @@ class GeminiService {
 
       const configuredTimeoutMs=Number(timeoutMsOverride)||Number(env.GEMINI_TIMEOUT_MS)||30000;
       const timeoutMs=kind==="dialogue"
-        ?Math.max(1000,Math.min(30000,configuredTimeoutMs))
+        ?Math.max(10000,Math.min(30000,configuredTimeoutMs))
         :Math.max(30000,configuredTimeoutMs);
       const startedAt=Date.now();
       const controller=new AbortController();
