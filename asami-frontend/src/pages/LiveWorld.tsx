@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
-  BookOpen, Coffee, Dumbbell, Footprints, Globe2, HeartPulse, Home, Landmark,
+  Coffee, Dumbbell, Footprints, Globe2, HeartPulse, Home, Landmark,
   Library, LocateFixed, MapPin, Moon, Pause, Play, Radio, RotateCcw, School,
   ShoppingCart, Sparkles, Sun, TreePine, UserRound, Users, Wrench, CloudRain,
 } from 'lucide-react'
@@ -50,6 +50,11 @@ function eventSeverity(importance: number) {
   if (Number(importance) >= .75) return 'critical'
   if (Number(importance) >= .5) return 'warning'
   return 'info'
+}
+
+function needPressure(code: string, value: number) {
+  const safeValue = Math.max(0, Math.min(1, Number(value) || 0))
+  return ['ENERGY', 'SAFETY'].includes(code.toUpperCase()) ? 1 - safeValue : safeValue
 }
 
 function actionLabel(actor: WorldActor) {
@@ -324,7 +329,7 @@ export function LiveWorld({
           {selected.isAsami && mode === 'live' && dashboard && <div className="inspector-metrics">
             <div className="inspector-section-label">STATO INTERNO · AGGIORNAMENTO LIVE</div>
             <div className="inspector-metric-grid">
-              {currentNeeds.map((need) => <div key={need.code}><span>{labelize(need.name)}</span><strong>{pct(1 - Number(need.value))}</strong><ProgressBar value={1 - Number(need.value)} compact /></div>)}
+              {currentNeeds.map((need) => <div key={need.code}><span>{labelize(need.name)}</span><strong>{pct(needPressure(need.code, Number(need.value)))}</strong><ProgressBar value={needPressure(need.code, Number(need.value))} compact /></div>)}
               {currentEmotions.map((emotion) => <div key={emotion.code}><span>{labelize(emotion.name)}</span><strong>{pct(emotion.intensity)}</strong><ProgressBar value={emotion.intensity} compact /></div>)}
             </div>
           </div>}
