@@ -36,7 +36,7 @@ async function ensureConversation(simulationId,senderEntityId,asamiEntityId,conv
     const[existing]=await conn.query(`SELECT BIN_TO_UUID(c.id) AS id FROM conversations c JOIN conversation_participants p1 ON p1.conversation_id=c.id AND p1.entity_id=UUID_TO_BIN(?) JOIN conversation_participants p2 ON p2.conversation_id=c.id AND p2.entity_id=UUID_TO_BIN(?) WHERE c.simulation_id=UUID_TO_BIN(?) AND c.status='ACTIVE' AND p1.left_simulation_at IS NULL AND p2.left_simulation_at IS NULL ORDER BY c.created_simulation_at DESC LIMIT 1`,[senderEntityId,asamiEntityId,simulationId]);
     if(existing.length)return existing[0].id;
     const id=uuid();
-    await conn.query(`INSERT INTO conversations(id,simulation_id,channel,created_simulation_at,status,metadata,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),'CHAT',?,'ACTIVE',?,1)`,[id,simulationId,simulationTime,JSON.stringify({asamiEntityId,senderEntityId})]);
+    await conn.query(`INSERT INTO conversations(id,simulation_id,channel,created_simulation_at,status,metadata,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),'CHAT',?,'ACTIVE',?,1)`,[id,simulationId,simulationTime,JSON.stringify({asamiEntityId,senderEntityId,messageSequence:0})]);
     for(const entityId of[senderEntityId,asamiEntityId])await conn.query(`INSERT INTO conversation_participants(conversation_id,simulation_id,entity_id,joined_simulation_at) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?)`,[id,simulationId,entityId,simulationTime]);
     return id;
   }finally{
@@ -46,6 +46,37 @@ async function ensureConversation(simulationId,senderEntityId,asamiEntityId,conv
 }
 
 async function findExistingConversation(simulationId,entityA,entityB){const[rows]=await pool.query(`SELECT BIN_TO_UUID(c.id) AS id FROM conversations c JOIN conversation_participants p1 ON p1.conversation_id=c.id AND p1.entity_id=UUID_TO_BIN(?) JOIN conversation_participants p2 ON p2.conversation_id=c.id AND p2.entity_id=UUID_TO_BIN(?) WHERE c.simulation_id=UUID_TO_BIN(?) AND c.status='ACTIVE' AND p1.left_simulation_at IS NULL AND p2.left_simulation_at IS NULL ORDER BY c.created_simulation_at DESC LIMIT 1`,[entityA,entityB,simulationId]);return rows[0]?.id||null;}
+async function reserveConversationTurn(simulationId,conversationId){
+  const keySource=[String(simulationId),String(conversationId)].join("|");
+  const lockKey="asami:conversation-turn:"+require("crypto").createHash("sha1").update(keySource).digest("hex");
+  const conn=await pool.getConnection();
+  let locked=false;
+  try{
+    const[lockRows]=await conn.query("SELECT GET_LOCK(?,5) AS acquired",[lockKey]);
+    locked=Number(lockRows[0]?.acquired)===1;
+    if(!locked)throw Object.assign(new Error("Conversation turn lock unavailable"),{code:"CONVERSATION_TURN_LOCK_UNAVAILABLE"});
+    const[rows]=await conn.query(
+      `SELECT COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(metadata,'$.messageSequence')) AS UNSIGNED),0) AS messageSequence
+       FROM conversations
+       WHERE simulation_id=UUID_TO_BIN(?) AND id=UUID_TO_BIN(?) AND status='ACTIVE'
+       LIMIT 1
+       FOR UPDATE`,
+      [simulationId,conversationId]
+    );
+    if(!rows.length)throw Object.assign(new Error("Conversation not found"),{code:"NOT_FOUND"});
+    const nextSequence=Math.max(0,Number(rows[0].messageSequence)||0)+1;
+    await conn.query(
+      `UPDATE conversations
+       SET metadata=JSON_SET(COALESCE(metadata,JSON_OBJECT()),'$.messageSequence',?)
+       WHERE simulation_id=UUID_TO_BIN(?) AND id=UUID_TO_BIN(?) AND status='ACTIVE'`,
+      [nextSequence,simulationId,conversationId]
+    );
+    return nextSequence;
+  }finally{
+    try{if(locked)await conn.query("SELECT RELEASE_LOCK(?)",[lockKey]);}catch{}
+    conn.release();
+  }
+}
 
 function clampDialogueDelta(value,maxAbs){const n=Number(value);return Number.isFinite(n)?Math.max(-maxAbs,Math.min(maxAbs,n)):0;}
 function hasFutureIntent(text){return /\b(domani|dopodomani|prossim|settimana|mese|anno|vorrei|voglio|penso di|prometto|farò|parto|programma|piano|tomorrow|next|future|i want|i will|i'm going to|plan|promise)\b/i.test(String(text||""));}
@@ -170,7 +201,7 @@ async function sendMessage({
   const userMessageId=uuid();
   await pool.query(
     "INSERT INTO messages(id,simulation_id,conversation_id,sender_entity_id,message_type,content,simulation_created_at,status,metadata,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),'USER',?,?,'DELIVERED',?,1)",
-    [userMessageId,simulationId,cid,senderEntityId,content,simulationTime,JSON.stringify({source:"frontend"})]
+    [userMessageId,simulationId,cid,senderEntityId,content,simulationTime,JSON.stringify({source:"frontend",turnSequence,messageOrder:0})]
   );
   await pool.query(
     "UPDATE communication_attempts SET status='DELIVERED',message_id=UUID_TO_BIN(?),result=? WHERE id=UUID_TO_BIN(?) AND status='STARTED'",
@@ -365,7 +396,7 @@ async function sendMessage({
   assistantId=uuid();
   await pool.query(
     "INSERT INTO messages(id,simulation_id,conversation_id,sender_entity_id,message_type,content,simulation_created_at,status,metadata,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),'ASSISTANT',?,?,'DELIVERED',?,1)",
-    [assistantId,simulationId,cid,asamiEntityId,reply,simulationTime,JSON.stringify(aiMeta)]
+    [assistantId,simulationId,cid,asamiEntityId,reply,simulationTime,JSON.stringify({...aiMeta,turnSequence,messageOrder:1})]
   );
   await pool.query(
     "UPDATE communication_intents SET status='SENT',version=version+1 WHERE id=UUID_TO_BIN(?) AND status='ATTEMPTING'",
@@ -379,7 +410,7 @@ async function sendMessage({
     type:"ASSISTANT",
     content:reply,
     simulationAt:simulationTime,
-    metadata:{proactive:false,...aiMeta}
+    metadata:{proactive:false,...aiMeta,turnSequence,messageOrder:1}
   });
   hub.publish(simulationId,"entity.state",{
     entityId:asamiEntityId,
@@ -467,7 +498,14 @@ async function buildAsamiConversationContext(simulationId,asamiEntityId,senderEn
   const [messages]=await pool.query(
     `SELECT messageType,content,simulationAt FROM (
        SELECT m.message_type AS messageType,m.content,m.simulation_created_at AS simulationAt,
-              ROW_NUMBER() OVER(ORDER BY m.simulation_created_at ASC,m.id ASC) AS rn,
+              ROW_NUMBER() OVER(
+                 ORDER BY
+                   CASE WHEN JSON_EXTRACT(m.metadata,'$.turnSequence') IS NULL THEN 0 ELSE 1 END ASC,
+                   CAST(COALESCE(JSON_UNQUOTE(JSON_EXTRACT(m.metadata,'$.turnSequence')),'0') AS UNSIGNED) ASC,
+                   CAST(COALESCE(JSON_UNQUOTE(JSON_EXTRACT(m.metadata,'$.messageOrder')),'0') AS UNSIGNED) ASC,
+                   m.simulation_created_at ASC,
+                   m.id ASC
+               ) AS rn,
               COUNT(*) OVER() AS total
        FROM messages m
        WHERE m.simulation_id=UUID_TO_BIN(?) AND m.conversation_id=UUID_TO_BIN(?)
@@ -743,7 +781,7 @@ async function initiateConversation({simulationId,asamiEntityId,simulationTime,g
   };
   await pool.query(
     "INSERT INTO messages(id,simulation_id,conversation_id,sender_entity_id,message_type,content,simulation_created_at,status,metadata,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),'ASSISTANT',?,?,'DELIVERED',?,1)",
-    [assistantId,simulationId,cid,asamiEntityId,reply,simulationTime,JSON.stringify(metadata)]
+    [assistantId,simulationId,cid,asamiEntityId,reply,simulationTime,JSON.stringify({...metadata,turnSequence,messageOrder:1})]
   );
   await pool.query(
     "UPDATE communication_attempts SET status='DELIVERED',message_id=UUID_TO_BIN(?),result=? WHERE id=UUID_TO_BIN(?) AND status='STARTED'",
