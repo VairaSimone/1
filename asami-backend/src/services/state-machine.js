@@ -41,7 +41,10 @@ function canTransition(kind,from,to){
   const type=TRANSITIONS[kind];
   if(!type)return false;
   const source=normalize(from),target=normalize(to);
-  if(source===target)return true;
+  if(source===target){
+    const terminalStates=type[source]?.size===0;
+    return !terminalStates;
+  }
   return Boolean(type[source]?.has(target));
 }
 
