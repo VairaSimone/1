@@ -1,7 +1,7 @@
 import type { AnalysisData, ChatMessage, ChatResponse, Clock, ConversationState, Dashboard, Development, DevelopmentHistoryItem, EventItem, Memory, Simulation, TimelineItem, MindData, WorldSnapshot } from '../types'
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/$/, '')
-const REQUEST_TIMEOUT_MS = 15000
+const REQUEST_TIMEOUT_MS = 20000
 
 class ApiError extends Error {
   status: number
