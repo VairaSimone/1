@@ -187,19 +187,22 @@ export function useSimulation() {
             })
           : prev.emotions
         const hasActionKey = Boolean(worldState && Object.prototype.hasOwnProperty.call(worldState, 'action'))
-        const currentAction = hasActionKey
-          ? normalizeRealtimeAction(worldState?.action, fallbackAt)
-          : prev.currentAction
-        return { ...prev, needs: nextNeeds, emotions: nextEmotions, currentAction: currentAction ? {
-          id: currentAction.id,
-          actionType: currentAction.actionType,
-          status: currentAction.status,
-          startedAt: currentAction.startedAt,
-          completedAt: currentAction.completedAt,
-          target: currentAction.targetLocationId ? { locationId: currentAction.targetLocationId } : currentAction.targetEntityId ? { entityId: currentAction.targetEntityId } : null,
+        const realtimeAction = hasActionKey ? normalizeRealtimeAction(worldState?.action, fallbackAt) : null
+        const currentAction = realtimeAction ? {
+          id: realtimeAction.id,
+          actionType: realtimeAction.actionType,
+          status: realtimeAction.status,
+          startedAt: realtimeAction.startedAt,
+          completedAt: realtimeAction.completedAt,
+          target: realtimeAction.targetLocationId
+            ? { locationId: realtimeAction.targetLocationId }
+            : realtimeAction.targetEntityId
+              ? { entityId: realtimeAction.targetEntityId }
+              : null,
           parameters: null,
           result: null
-        } : hasActionKey ? null : prev.currentAction }
+        } : hasActionKey ? null : prev.currentAction
+        return { ...prev, needs: nextNeeds, emotions: nextEmotions, currentAction }
       })
     }
 
