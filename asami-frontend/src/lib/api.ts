@@ -1,4 +1,4 @@
-import type { AnalysisData, ChatMessage, ChatResponse, Clock, ConversationState, Dashboard, Development, DevelopmentHistoryItem, EventItem, Memory, Simulation, TimelineItem, MindData } from '../types'
+import type { AnalysisData, ChatMessage, ChatResponse, Clock, ConversationState, Dashboard, Development, DevelopmentHistoryItem, EventItem, Memory, Simulation, TimelineItem, MindData, WorldSnapshot } from '../types'
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/$/, '')
 const REQUEST_TIMEOUT_MS = 15000
@@ -39,6 +39,10 @@ export const api = {
   speed: (id: string, speed: number) => request<Simulation>(`/simulations/${id}/speed`, { method: 'POST', headers: { 'Idempotency-Key': crypto.randomUUID() }, body: JSON.stringify({ speed }) }),
   asami: (id: string) => request<Dashboard['entity']>(`/simulations/${id}/asami`),
   dashboard: (simulationId: string, entityId: string) => request<Dashboard>(`/simulations/${simulationId}/dashboard/${entityId}`),
+  world: (simulationId: string, at?: string) => {
+    const query = at ? `?at=${encodeURIComponent(at)}` : ''
+    return request<WorldSnapshot>(`/simulations/${simulationId}/world${query}`)
+  },
   mind: (simulationId: string, entityId: string) => request<MindData>(`/simulations/${simulationId}/mind/${entityId}`),
   causal: (simulationId: string, entityId: string, limit = 60) => request<MindData['causal']>(`/simulations/${simulationId}/causal/${entityId}?limit=${Math.max(1, Math.min(100, limit))}`),
   analysis: (simulationId: string, from?: string, to?: string, entityId?: string) => {
