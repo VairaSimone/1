@@ -68,7 +68,7 @@ async function perceiveBatch(simulationId,entityIds=[],simulationTime){
     pool.query(`
       SELECT BIN_TO_UUID(me.entity_id) AS sourceEntityId,
              BIN_TO_UUID(other.entity_id) AS entityId,
-             other.display_name AS displayName,
+             otherEntity.display_name AS displayName,
              BIN_TO_UUID(other.location_id) AS locationId
       FROM entity_locations_current me
       JOIN entity_locations_current other
