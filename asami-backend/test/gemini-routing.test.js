@@ -83,7 +83,9 @@ test("Dialogue uses a bounded latency and model fallback policy",()=>{
   assert.match(geminiSource,/kind==="dialogue"\?this\.dialogueModels:this\.models/);
   assert.match(geminiSource,/this\._availableModels\(kind\)/);
   assert.match(geminiSource,/kind==="dialogue"/);
-  assert.match(geminiSource,/Math\.max\(10000,Math\.min\(30000,configuredTimeoutMs\)\)/);
+  assert.match(geminiSource,/timeoutMs=kind==="dialogue"/);
+  assert.match(geminiSource,/requestDeadlineAt/);
+  assert.match(geminiSource,/GEMINI_DIALOGUE_MAX_LATENCY_MS/);
   assert.match(geminiSource,/thinkingLevel:advanced\?"low":"minimal"/);
   assert.match(geminiSource,/dialogueCompactOutputTokenCeiling:env\.GEMINI_DIALOGUE_COMPACT_OUTPUT_TOKEN_CEILING/);
   assert.match(geminiSource,/configuredTimeoutMs/);
