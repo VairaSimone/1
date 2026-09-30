@@ -575,8 +575,11 @@ class SimulationEngine {
               latestNeedsForTick=currentNeedsForTick;
             }
             setPhase("entity.mental_state");
-            const latestNeeds = latestNeedsForTick||await readNeeds(entityId);
+            const latestNeeds=(latestNeedsForTick&&latestNeedsForTick.length)
+              ?latestNeedsForTick
+              :(currentNeedsForTick&&currentNeedsForTick.length?currentNeedsForTick:await readNeeds(entityId));
             latestNeedsForTick=latestNeeds;
+            currentNeedsForTick=latestNeeds;
             await refreshMentalStateFromSimulation({
               simulationId: sim.id,
               entityId,
@@ -717,7 +720,9 @@ class SimulationEngine {
             }
           } finally {
             try {
-              const needsForObservability=await readNeeds(id);
+              const needsForObservability=(currentNeedsForTick&&currentNeedsForTick.length)
+                ?currentNeedsForTick
+                :await readNeeds(id);
               const criticalNeed=needsForObservability.some(need=>isCriticalNeed(need.code,need.value));
               const inactivityAlert=observability.recordActorTick(
                 sim.id,
