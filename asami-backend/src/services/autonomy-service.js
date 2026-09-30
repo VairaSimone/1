@@ -7,7 +7,7 @@ const { getEntity } = require("../repositories/entity-repo");
 const { recallContext } = require("./memory-service");
 const { buildSocialContext, buildSocialContexts, buildRemoteSocialContexts, deriveSocialIntent } = require("./social-relationship-service");
 const actionService = require("./action-service");
-const { ensureGoalPlan, advancePlanForAction, selectActiveStep } = require("./planning-service");
+const { ensureGoalPlan, advancePlanForAction, selectActiveStep, MAX_GOAL_AGE_HOURS } = require("./planning-service");
 const { refreshMentalStateFromSimulation } = require("./personality-service");
 const observability = require("./simulation-observability");
 const { readNeeds } = require("./state-service");
@@ -15,6 +15,20 @@ const { readNeeds } = require("./state-service");
 const lastAutonomyDecisionAt=new Map();
 const EXPLORATION_LOCATION_INTEREST={HOME:{},PARK:{FUN:.45,SOCIAL_NEED:.25,CURIOSITY:.30},CAFE:{SOCIAL_NEED:.55,BELONGING:.30,FUN:.20,CURIOSITY:.15},SHOP:{HUNGER:.25,THIRST:.25,CURIOSITY:.10},LIBRARY:{CURIOSITY:.70,ACHIEVEMENT:.55},SCHOOL:{ACHIEVEMENT:.60,CURIOSITY:.40},COMMUNITY:{SOCIAL_NEED:.50,BELONGING:.55,FUN:.25},GYM:{FUN:.45,ACHIEVEMENT:.20},CLINIC:{SAFETY:.60,COMFORT:.20},NATURE:{CURIOSITY:.80,FUN:.35},WORKSHOP:{ACHIEVEMENT:.55,CURIOSITY:.45}};
 const RESOURCE_NEED_CODES={water:"THIRST",food:"HUNGER"};
+const GOAL_PRESSURE_CODES=new Set(["HUNGER","THIRST","SLEEPINESS","SOCIAL_NEED","FUN","CURIOSITY","ACHIEVEMENT","BELONGING"]);
+function goalNeedsValidation(goal,plan,needs=[],simulationTime){
+  if(!goal||!plan)return true;
+  const motivation=parseJson(goal.motivation,{})||{};
+  const needCode=String(motivation.need||"").toUpperCase();
+  const currentNeed=(needs||[]).find(need=>String(need.code||"").toUpperCase()===needCode);
+  const currentValue=Number(currentNeed?.value);
+  if(GOAL_PRESSURE_CODES.has(needCode)&&Number.isFinite(currentValue)&&currentValue<.22)return true;
+  const createdAt=new Date(goal.createdAt||0).getTime();
+  const now=new Date(simulationTime||0).getTime();
+  const progress=Number(goal.progress||0);
+  return Number.isFinite(createdAt)&&Number.isFinite(now)&&
+    (now-createdAt)/3600000>MAX_GOAL_AGE_HOURS&&progress<=0;
+}
 function parseJson(value,fallback={}){if(value===null||value===undefined)return fallback;if(typeof value==='object')return value;try{return JSON.parse(value);}catch{return fallback;}}
 function clamp(value,min=0,max=1){const n=Number(value);if(!Number.isFinite(n))return min;return Math.max(min,Math.min(max,n));}
 function mysqlSimulationDateTime(value){const date=value instanceof Date?value:new Date(value);if(!Number.isFinite(date.getTime()))throw Object.assign(new Error("Invalid simulation time"),{code:"INVALID_SIMULATION_TIME"});const pad=n=>String(n).padStart(2,"0"),ms=String(date.getUTCMilliseconds()).padStart(3,"0");return `${date.getUTCFullYear()}-${pad(date.getUTCMonth()+1)}-${pad(date.getUTCDate())} ${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}:${pad(date.getUTCSeconds())}.${ms}`;}
@@ -272,7 +286,26 @@ async function actForEntity({simulationId,entityId,simulationTime,gemini,tickId=
       const recoveryBlocks=decisionService.activeRecoveryBlocks(context.recentInterruptions||[],latestNeeds);
       context={...context,needs:latestNeeds,recoveryBlocks,candidates:decisionService.rebuildDecisionCandidates({...context,recoveryBlocks},entityId,latestNeeds),needPriority:decisionService.needPriorityState?decisionService.needPriorityState(latestNeeds):context.needPriority};
     }
-  }const goalState=await ensureGoalPlan({simulationId,entityId,simulationTime,needs:context.needs});if(goalState.created||(goalState.goal&&!context.goals.some(goal=>goal.id===goalState.goal.id)))context=await decisionService.buildDecisionContext(simulationId,entityId,simulationTime);context.simulationTime=simulationTime;
+  }
+  const knownGoal=context.goals?.[0]||null;
+  const knownPlan=(context.cognitiveProfile?.plans||[]).find(item=>String(item.goalId||"")===String(knownGoal?.id||""))||null;
+  const goalState=goalNeedsValidation(knownGoal,knownPlan,context.needs,simulationTime)
+    ?await ensureGoalPlan({simulationId,entityId,simulationTime,needs:context.needs})
+    :{goal:knownGoal,plan:knownPlan,created:false,blocked:false};
+  if(goalState.created&&goalState.goal){
+    const goals=[goalState.goal,...(context.goals||[]).filter(goal=>String(goal.id)!==String(goalState.goal.id))];
+    const plans=goalState.plan
+      ?[goalState.plan,...(context.cognitiveProfile?.plans||[]).filter(plan=>String(plan.id)!==String(goalState.plan.id))]
+      :(context.cognitiveProfile?.plans||[]);
+    context={
+      ...context,
+      goals,
+      cognitiveProfile:{...context.cognitiveProfile,plans},
+      simulationTime
+    };
+  }else{
+    context.simulationTime=simulationTime;
+  }
   const currentLocationId=context.location?.locationId||await getEntityLocation(simulationId,entityId);
   let socialContext=batchContext?.socialContexts?.get(entityId)||null;
   if(!socialContext&&entity.entityType==="PERSON"){
