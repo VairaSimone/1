@@ -231,7 +231,7 @@ export function LiveWorld({
         onChange={(e) => { setMode('replay'); setReplayPlaying(false); setReplayAt(Number(e.target.value)) }}
         aria-label="Posizione temporale del replay"
       />
-      <div className="replay-scale"><span>{formatSimTime(rangeStart)}</span><span>{formatSimTime(rangeEnd)}</span></div>
+      <div className="replay-scale"><span>{formatSimTime(new Date(rangeStart))}</span><span>{formatSimTime(new Date(rangeEnd))}</span></div>
     </section>
 
     {error && <ErrorState text={error} retry={() => enterReplay()} />}
