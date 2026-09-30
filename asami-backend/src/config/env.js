@@ -35,6 +35,7 @@ const Env = z.object({
     return Number.isFinite(n)?Math.max(10000,Math.min(30000,n)):value;
   },z.coerce.number().int().min(10000).max(30000).default(12000)),
   GEMINI_DIALOGUE_MAX_MODELS: z.coerce.number().int().min(1).max(3).default(2),
+  GEMINI_DIALOGUE_COMPACT_OUTPUT_TOKEN_CEILING: z.coerce.number().int().min(256).max(4096).default(768),
   GEMINI_TIMEOUT_MS: z.preprocess((value)=>{
     if(value===undefined||value===null||String(value).trim()==="")return 30000;
     const n=Number(value);
