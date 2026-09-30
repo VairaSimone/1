@@ -18,8 +18,13 @@ async function listActors(simulationId, limit = 100) {
 async function getEntity(simulationId, entityId) {
   const [rows] = await pool.query(`
     SELECT BIN_TO_UUID(e.id) AS id, e.display_name AS displayName,
-           et.code AS entityType, e.status, e.description, e.attributes, e.version
-    FROM entities e JOIN entity_types et ON et.id=e.entity_type_id
+           et.code AS entityType, e.status, e.description, e.attributes, e.version,
+           p.first_name AS firstName, p.last_name AS lastName,
+           p.birth_simulation_at AS birthSimulationAt, p.sex, p.gender,
+           p.education_level AS educationLevel
+    FROM entities e
+    JOIN entity_types et ON et.id=e.entity_type_id
+    LEFT JOIN persons p ON p.entity_id=e.id
     WHERE e.simulation_id=UUID_TO_BIN(?) AND e.id=UUID_TO_BIN(?)
     LIMIT 1
   `, [simulationId, entityId]);
@@ -30,8 +35,13 @@ async function getAsamiCandidate(simulationId, preferredEntityId = null) {
   if (preferredEntityId) {
     const [rows] = await pool.query(`
       SELECT BIN_TO_UUID(e.id) AS id, e.display_name AS displayName,
-             et.code AS entityType, e.status, e.description, e.attributes, e.version
-      FROM entities e JOIN entity_types et ON et.id=e.entity_type_id
+             et.code AS entityType, e.status, e.description, e.attributes, e.version,
+             p.first_name AS firstName, p.last_name AS lastName,
+             p.birth_simulation_at AS birthSimulationAt, p.sex, p.gender,
+             p.education_level AS educationLevel
+      FROM entities e
+      JOIN entity_types et ON et.id=e.entity_type_id
+      LEFT JOIN persons p ON p.entity_id=e.id
       WHERE e.simulation_id=UUID_TO_BIN(?)
         AND e.id=UUID_TO_BIN(?)
         AND et.code='PERSON'
@@ -42,8 +52,13 @@ async function getAsamiCandidate(simulationId, preferredEntityId = null) {
   }
   const [rows] = await pool.query(`
     SELECT BIN_TO_UUID(e.id) AS id, e.display_name AS displayName,
-           et.code AS entityType, e.status, e.description, e.attributes, e.version
-    FROM entities e JOIN entity_types et ON et.id=e.entity_type_id
+           et.code AS entityType, e.status, e.description, e.attributes, e.version,
+           p.first_name AS firstName, p.last_name AS lastName,
+           p.birth_simulation_at AS birthSimulationAt, p.sex, p.gender,
+           p.education_level AS educationLevel
+    FROM entities e
+    JOIN entity_types et ON et.id=e.entity_type_id
+    LEFT JOIN persons p ON p.entity_id=e.id
     WHERE e.simulation_id=UUID_TO_BIN(?) AND et.code='PERSON' AND e.status <> 'DEAD'
     ORDER BY CASE WHEN LOWER(e.display_name)='asami' THEN 0 ELSE 1 END,
              e.created_simulation_at LIMIT 1
