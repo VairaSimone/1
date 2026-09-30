@@ -34,7 +34,7 @@ test("Gemini request accounting identifies the model that answered",()=>{
 });
 
 test("Autonomy availability depends on model availability",()=>{
-  assert.match(geminiSource,/if\(!this\._hasAvailableModel\(\)\)return false/);
+  assert.match(geminiSource,/if\(!this\._hasAvailableModel\("autonomy"\)\)return false/);
   assert.match(geminiSource,/\._availableModels\(\)/);
 });
 
@@ -56,7 +56,7 @@ test("Malformed or truncated Gemini structured output fails over to the next mod
 
 test("Gemini provider rate and quota limits are isolated per model",()=>{
   assert.doesNotMatch(geminiSource,/budget\.blockProvider\(failure\.retryAfterMs/);
-  assert.match(geminiSource,/this\._blockModel\(model,modelCooldown,fallbackReason\)/);
+  assert.match(geminiSource,/this\._blockModel\(model,modelCooldown,fallbackReason,kind\)/);
   assert.match(geminiSource,/Gemini model limit reached; trying fallback model/);
   assert.match(geminiSource,/if\(!this\._hasAvailableModel\(\)\)return false/);
 });
