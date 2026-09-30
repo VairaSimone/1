@@ -1,6 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { DecisionSchema } = require("../src/ai/gemini");
+const { DecisionSchema, AdvancedDecisionSchema } = require("../src/ai/gemini");
 const { getGeminiTrigger, sanitizeGeminiChoice } = require("../src/services/autonomy-service");
 
 test("Gemini decision schema accepts strategy and multi-step plan proposals", () => {
@@ -25,7 +25,7 @@ test("Gemini decision schema accepts strategy and multi-step plan proposals", ()
     }
   };
 
-  const result = DecisionSchema.safeParse(input);
+  const result = AdvancedDecisionSchema.safeParse(input);
   assert.equal(result.success, true, result.success ? "" : JSON.stringify(result.error.issues));
   assert.equal(result.data.strategy.objective, "Reach water");
   assert.equal(result.data.planProposal.steps.length, 2);
