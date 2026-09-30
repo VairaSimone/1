@@ -257,11 +257,11 @@ async function interruptActiveAction({ simulationId, entityId, active, simulatio
 }
 
 class SimulationEngine {
-  constructor({ gemini, hub }) { this.gemini = gemini; this.hub = hub; this.running = new Set(); this.interval = null; this.tickCounter = new Map(); this.worldMaintenanceAt = new Map(); this.pulseInFlight = false; }
-  async start() { if (this.interval) return; this.interval = setInterval(() => this.pulse().catch(err => logger.error(logger.contextError({ phase: "pulse" }, err, "engine pulse failed"))), env.ENGINE_INTERVAL_MS); await this.pulse(); }
-  async stop({ drainTimeoutMs = 5000 } = {}) { if (this.interval) { clearInterval(this.interval); this.interval = null; } const timeout = Math.max(0, Number(drainTimeoutMs) || 5000); const deadline = Date.now() + timeout; while (this.running.size && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 50)); const drained = this.running.size === 0; if (!drained) logger.warn({ activeSimulations: this.running.size }, "engine shutdown timeout reached; simulations still running"); return drained; }
+  constructor({ gemini, hub }) { this.gemini = gemini; this.hub = hub; this.running = new Set(); this.interval = null; this.tickCounter = new Map(); this.worldMaintenanceAt = new Map(); this.pulseInFlight = false; this.stopping = false; }
+  async start() { if (this.interval) return; this.stopping = false; this.interval = setInterval(() => this.pulse().catch(err => logger.error(logger.contextError({ phase: "pulse" }, err, "engine pulse failed"))), env.ENGINE_INTERVAL_MS); await this.pulse(); }
+  async stop({ drainTimeoutMs = 5000 } = {}) { this.stopping = true; if (this.interval) { clearInterval(this.interval); this.interval = null; } const timeout = Math.max(0, Number(drainTimeoutMs) || 5000); const deadline = Date.now() + timeout; while (this.running.size && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 50)); const drained = this.running.size === 0; if (!drained) logger.warn({ activeSimulations: this.running.size }, "engine shutdown timeout reached; simulations still running"); return drained; }
   async pulse() {
-    if (this.pulseInFlight) return;
+    if (this.stopping || this.pulseInFlight) return;
     this.pulseInFlight = true;
     try {
       const healthy = await pingWithRetry({ attempts: Math.min(3, Number(env.DB_RETRY_ATTEMPTS) || 3), throwNonTransient: true });
@@ -289,6 +289,7 @@ class SimulationEngine {
     }
   }
   async runSimulation(sim) {
+    if (this.stopping) return;
     const runtimeContext={simulationId:sim.id,tickId:null,tickQueryCount:0};
     return observability.runWithContext(runtimeContext,async()=>{
     const context = { simulationId: sim.id, simulationVersion: sim.version, simulationTime: sim.currentSimulationAt || null };
@@ -306,6 +307,7 @@ class SimulationEngine {
       }
       tickId = await simRepo.advanceAndCreateTick(sim.id, nextTime, sim.version, "AUTONOMOUS", env.ENGINE_VERSION); if (!tickId) return;
       runtimeContext.tickId=tickId;
+      if (this.stopping) return;
       runtimeContext.tickQueryCount=0;
       context.simulationTime = nextTime.toISOString(); setPhase("tick.create");
       try {
@@ -386,6 +388,7 @@ class SimulationEngine {
           logger.warn(logger.contextError({simulationId:sim.id,phase:"autonomy.context.batch"},batchError,"batched autonomy context unavailable; falling back to per-actor context loading"));
         }
         for (const id of actors) {
+          if (this.stopping) break;
           let actorHadActivity=false;
           let latestNeedsForTick=null;
           try {
@@ -728,6 +731,7 @@ class SimulationEngine {
             }
           }
         }
+        if (this.stopping) return;
         setPhase("world.decay"); await decayMemories(sim.id, nextTime); this.tickCounter.set(sim.id, Number(this.tickCounter.get(sim.id) || 0) + 1);
         const count = Number(this.tickCounter.get(sim.id) || 0); if (count % env.GEMINI_PROACTIVE_EVERY_TICKS === 0) { try { const asami = await getAsamiCandidate(sim.id); if (asami) await initiateConversation({ simulationId: sim.id, asamiEntityId: asami.id, simulationTime: nextTime.toISOString(), gemini: this.gemini, hub: this.hub }); } catch (err) { logger.warn({ simulationId: sim.id, phase: "proactive_conversation", err }, "proactive conversation attempt failed"); } } if (count % env.SNAPSHOT_EVERY_TICKS === 0) await simRepo.createSnapshot(sim.id, nextTime);
         await simRepo.completeTick(tickId, { status: "COMPLETED", entityCount: actors.length });
