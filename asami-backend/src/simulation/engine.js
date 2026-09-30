@@ -28,6 +28,85 @@ const EXPECTED_ENTITY_CONDITION_CODES = new Set(["MOVEMENT_ORIGIN_REQUIRED","MOV
 function isExpectedEntityCondition(err){return EXPECTED_ENTITY_CONDITION_CODES.has(String(err?.code||"").toUpperCase());}
 function isCriticalResourceRecoveryUnavailable(err){return String(err?.code||"").toUpperCase()==="CRITICAL_RESOURCE_RECOVERY_UNAVAILABLE";}
 
+function realtimeIso(value){
+  if(!value)return null;
+  const date=value instanceof Date?value:new Date(value);
+  return Number.isFinite(date.getTime())?date.toISOString():null;
+}
+
+function realtimeJson(value,fallback=null){
+  if(value===null||value===undefined)return fallback;
+  if(typeof value==="object")return value;
+  try{return JSON.parse(value);}catch{return fallback;}
+}
+
+function realtimeWorldAction(action,status=null){
+  if(!action)return null;
+  return {
+    id: action.id||action.actionId||null,
+    actionType: action.actionType||null,
+    status: status||action.status||"ACTIVE",
+    startedAt: realtimeIso(action.startedSimulationAt||action.startedAt),
+    completedAt: realtimeIso(action.completedSimulationAt||action.completedAt),
+    targetLocationId: action.targetLocationId||action.metadata?.targetLocationId||null,
+    targetEntityId: action.targetEntityId||action.metadata?.targetEntityId||null
+  };
+}
+
+function publishWorldActorState(hub,simulationId,{entityId,simulationAt,locationId=null,moving=false,movement=null,action=null}){
+  hub.publish(simulationId,"world.actor",{
+    entityId,
+    simulationAt: realtimeIso(simulationAt),
+    locationId: locationId||movement?.originLocationId||null,
+    moving:Boolean(moving),
+    movement: movement||null,
+    action: realtimeWorldAction(action)
+  });
+}
+
+async function publishWorldEvents(hub,simulationId,eventIds=[]){
+  const ids=[...new Set((eventIds||[]).filter(Boolean).map(String))];
+  if(!ids.length)return;
+  const placeholders=ids.map(()=> "UUID_TO_BIN(?)").join(",");
+  const [rows]=await pool.query(
+    `SELECT BIN_TO_UUID(e.id) AS id,
+            et.code AS type,
+            et.category,
+            e.title,
+            e.description,
+            e.simulation_at AS simulationAt,
+            e.importance,
+            e.status,
+            BIN_TO_UUID(e.source_action_id) AS sourceActionId,
+            e.metadata
+     FROM events e
+     JOIN event_types et ON et.id=e.event_type_id
+     WHERE e.simulation_id=UUID_TO_BIN(?)
+       AND e.id IN (${placeholders})`,
+    [simulationId,...ids]
+  );
+  for(const row of rows){
+    const metadata=realtimeJson(row.metadata,{})||{};
+    hub.publish(simulationId,"world.event",{
+      event:{
+        id:row.id,
+        type:row.type,
+        category:row.category,
+        title:row.title,
+        description:row.description||null,
+        simulationAt:realtimeIso(row.simulationAt),
+        importance:Number(row.importance||0),
+        status:row.status,
+        sourceActionId:row.sourceActionId||null,
+        locationId:metadata.locationId?String(metadata.locationId):null,
+        eventCode:metadata.eventCode?String(metadata.eventCode):null,
+        environmental:Boolean(metadata.environmental),
+        metadata
+      }
+    });
+  }
+}
+
 function getNeedDirection(code) {
   const normalized = String(code || "").toUpperCase();
   if (["HUNGER", "THIRST", "SLEEPINESS", "SOCIAL_NEED", "FUN", "CURIOSITY", "ACHIEVEMENT", "BELONGING"].includes(normalized)) return "HIGH";
@@ -244,7 +323,9 @@ class SimulationEngine {
           this.worldMaintenanceAt.set(sim.id, nextTime.getTime());
           observability.logSnapshot(sim.id,nextTime.toISOString());
         }
-        setPhase("world.events"); await generateWorldEvents(sim.id, nextTime, tickId, elapsedMinutes);
+        setPhase("world.events");
+        const worldEventIds=await generateWorldEvents(sim.id,nextTime,tickId,elapsedMinutes);
+        await publishWorldEvents(this.hub,sim.id,worldEventIds);
         setPhase("world.resource_invariant");
         const resourceInvariant = await ensureCriticalResourceAvailability(sim.id, nextTime.toISOString());
         if (resourceInvariant.recovered.length) {
@@ -275,8 +356,11 @@ class SimulationEngine {
             actorHadActivity=true;
             actionType = active.actionType; const actionStart = new Date(active.startedSimulationAt); const durationMinutes = Number(active.metadata?.durationMinutes || 30); const completionAt = new Date(actionStart.getTime() + durationMinutes * 60000);
             const eventId = active.metadata?.eventId || null; const targetEntityId = active.metadata?.targetEntityId || null; const targetLocationId = active.metadata?.targetLocationId || null; const relationshipIntent = active.metadata?.relationshipIntent || "NONE";
+            const activeMovement = active.metadata?.movement || null;
+            let worldLocationId=null;
+            let outcomeEmotionChanges=[]; let developmentUpdate=null; let traitChanges=[]; let memoryId=null;
             const wasCompleted = nextTime >= completionAt; const updateTime = wasCompleted ? completionAt : nextTime; const updateHours = Math.min(168, Math.max(0, (updateTime - previousTime) / 3600000));
-            setPhase("entity.perception"); const perception = await perceive(sim.id, entityId, nextTime);
+            setPhase("entity.perception"); const perception = await perceive(sim.id, entityId, nextTime); worldLocationId=perception?.location?.locationId || activeMovement?.originLocationId || null;
             setPhase("entity.needs"); const needChanges = await updateNeeds(entityId, updateTime, updateHours, null, active.id, active.actionType, { significant: wasCompleted, perception });
             setPhase("entity.emotions"); await applyEmotions(entityId, updateTime, needChanges, null, active.id, active.actionType, updateHours);
             setPhase("entity.interruption"); const interruption = !wasCompleted ? getInterruptionReason(active.actionType, await readNeeds(entityId), perception) : null;
@@ -297,7 +381,22 @@ class SimulationEngine {
                   action: { ...active, status: "INTERRUPTED", interrupted: true },
                   status: "INTERRUPTED",
                   interruption,
-                  needChanges
+                  needChanges,
+                  emotionChanges: [],
+                  worldState: {
+                    locationId: worldLocationId,
+                    moving: false,
+                    movement: null,
+                    action: null
+                  }
+                });
+                publishWorldActorState(this.hub,sim.id,{
+                  entityId,
+                  simulationAt:updateTime,
+                  locationId:worldLocationId,
+                  moving:false,
+                  movement:null,
+                  action:null
                 });
                 continue;
               }
@@ -311,16 +410,16 @@ class SimulationEngine {
               setPhase("entity.emotions.outcome");
               const expectedOutcome = active.decisionId ? await getDecisionExpectedOutcome(active.decisionId) : null;
               const needRelief = needChanges.filter(change => Number(change.delta) < 0).reduce((sum, change) => sum + Math.abs(Number(change.delta)), 0);
-              await applyEmotions(entityId, completionAt, needChanges, eventId, active.id, active.actionType, 0, { event: true, outcome, expectedOutcome, targetEntityId, targetLocationId, relationshipIntent, failureReason: completion.failureReason || null, meaning: active.metadata?.goalId ? (outcome === "SUCCESS" ? "GOAL_PROGRESS" : "GOAL_BLOCKED") : null, needRelief: Math.min(1, needRelief) });
+              outcomeEmotionChanges=await applyEmotions(entityId, completionAt, needChanges, eventId, active.id, active.actionType, 0, { event: true, outcome, expectedOutcome, targetEntityId, targetLocationId, relationshipIntent, failureReason: completion.failureReason || null, meaning: active.metadata?.goalId ? (outcome === "SUCCESS" ? "GOAL_PROGRESS" : "GOAL_BLOCKED") : null, needRelief: Math.min(1, needRelief) });
               setPhase("entity.goal"); await autonomyService.completeGoalForAction(active.metadata?.goalId || null, active.actionType, completionAt, outcome, { simulationId: sim.id, entityId, actionId: active.id, targetEntityId, targetLocationId, ...completion });
               setPhase("entity.learning"); if (successful) await actionService.learnFromAction(entityId, active.actionType, completionAt);
-              setPhase("entity.development"); if (successful) await updateDevelopment(sim.id, entityId, completionAt, active.actionType);
-              setPhase("entity.traits"); await developTraits(entityId, completionAt, { actionType: active.actionType, outcome, targetEntityId, relationshipIntent, goalId: active.metadata?.goalId || null, planId: active.metadata?.planId || null, planStepId: active.metadata?.planStepId || null, intentionId: active.intentionId, decisionId: active.decisionId }, eventId, active.id);
+              setPhase("entity.development"); if (successful) developmentUpdate=await updateDevelopment(sim.id, entityId, completionAt, active.actionType);
+              setPhase("entity.traits"); traitChanges=await developTraits(entityId, completionAt, { actionType: active.actionType, outcome, targetEntityId, relationshipIntent, goalId: active.metadata?.goalId || null, planId: active.metadata?.planId || null, planStepId: active.metadata?.planStepId || null, intentionId: active.intentionId, decisionId: active.decisionId }, eventId, active.id);
               setPhase("entity.habit"); if (successful) await recordHabitEvidence({ entityId, simulationTime: completionAt, actionType: active.actionType });
               setPhase("entity.cognition"); const cognitive = await recordSignificantExperience({ simulationId: sim.id, entityId, simulationTime: completionAt, actionType: active.actionType, outcome, locationId: perception.location?.locationId || null, locationType: perception.location?.locationType || null, targetEntityId, resource: completion.resource || null, needChanges, relationshipIntent, consequence: outcome === "SUCCESS" ? "expected result obtained" : "intended result not fully obtained", learning: completion.resourceLearning?.type || completion.failureReason || null, goalId: active.metadata?.goalId || null, planId: active.metadata?.planId || null });
               setPhase("entity.memory");
               const memoryPayload = outcome === "FAILURE" ? buildFailureMemory({ locationId: perception.location?.locationId || null, simulationTime: completionAt, actionType: active.actionType, perception, decision: { actionType: active.actionType, goalId: active.metadata?.goalId || null }, needChanges, physical: completion.resource, failureReason: completion.failureReason, resourceLearning: completion.resourceLearning }) : buildActionMemory({ actionType: active.actionType, outcome, perception, decision: { actionType: active.actionType, goalId: active.metadata?.goalId || null }, needChanges, completion, simulationAt: completionAt });
-              await createMemory({ simulationId: sim.id, entityId, eventId, locationId: perception.location?.locationId || null, type: "EPISODIC", content: memoryPayload.content, importance: memoryPayload.importance, strength: memoryPayload.strength, confidence: memoryPayload.confidence, emotionalIntensity: memoryPayload.emotionalIntensity, simulationAt: completionAt, metadata: { ...memoryPayload.metadata, actionId: active.id, eventId, durationMinutes, relationshipIntent, goalId: active.metadata?.goalId || null, planId: active.metadata?.planId || null, planStepId: active.metadata?.planStepId || null, cognitiveRefs: { preferenceIds: Array.isArray(cognitive?.preferenceIds) ? cognitive.preferenceIds.slice(0, 8) : [], beliefId: cognitive?.beliefId || null, knowledgeId: cognitive?.knowledgeId || null, learningStrength: Number.isFinite(Number(cognitive?.learningStrength)) ? Number(Number(cognitive.learningStrength).toFixed(4)) : null, semanticBeliefId: cognitive?.semantic?.beliefId || null, semanticPreferenceId: cognitive?.semantic?.preferenceId || null, semanticReliability: Number.isFinite(Number(cognitive?.semantic?.reliability)) ? Number(Number(cognitive.semantic.reliability).toFixed(4)) : null } } });
+              memoryId=await createMemory({ simulationId: sim.id, entityId, eventId, locationId: perception.location?.locationId || null, type: "EPISODIC", content: memoryPayload.content, importance: memoryPayload.importance, strength: memoryPayload.strength, confidence: memoryPayload.confidence, emotionalIntensity: memoryPayload.emotionalIntensity, simulationAt: completionAt, metadata: { ...memoryPayload.metadata, actionId: active.id, eventId, durationMinutes, relationshipIntent, goalId: active.metadata?.goalId || null, planId: active.metadata?.planId || null, planStepId: active.metadata?.planStepId || null, cognitiveRefs: { preferenceIds: Array.isArray(cognitive?.preferenceIds) ? cognitive.preferenceIds.slice(0, 8) : [], beliefId: cognitive.beliefId || null, knowledgeId: cognitive?.knowledgeId || null, learningStrength: Number.isFinite(Number(cognitive?.learningStrength)) ? Number(Number(cognitive.learningStrength).toFixed(4)) : null, semanticBeliefId: cognitive?.semantic?.beliefId || null, semanticPreferenceId: cognitive?.semantic?.preferenceId || null, semanticReliability: Number.isFinite(Number(cognitive?.semantic?.reliability)) ? Number(Number(cognitive.semantic.reliability.toFixed(4))) : null } } });
               // A large simulation jump can finish the active action long before nextTime.
               // Advance the passive state for the remainder so needs/emotions never freeze
               // at the action completion timestamp.
@@ -344,7 +443,69 @@ class SimulationEngine {
               needs: latestNeeds,
               activeActionType: wasCompleted ? null : active.actionType
             });
-            setPhase("entity.publish"); this.hub.publish(sim.id, "entity.state", { entityId, action: { ...active, status: wasCompleted ? "COMPLETED" : "ACTIVE" }, needChanges });
+            if(wasCompleted){
+              setPhase("entity.publish.consequence");
+              this.hub.publish(sim.id,"action.completed",{
+                entityId,
+                action:{
+                  id:active.id,
+                  actionType:active.actionType,
+                  status:"COMPLETED",
+                  startedAt:realtimeIso(active.startedSimulationAt),
+                  completedAt:realtimeIso(completionAt),
+                  targetLocationId,
+                  targetEntityId
+                },
+                outcome,
+                success:successful,
+                result:completion,
+                simulationAt:realtimeIso(completionAt)
+              });
+              this.hub.publish(sim.id,"entity.consequence",{
+                entityId,
+                actionId:active.id,
+                actionType:active.actionType,
+                simulationAt:realtimeIso(completionAt),
+                outcome,
+                success:successful,
+                targetEntityId,
+                targetLocationId,
+                needChanges,
+                emotionChanges:outcomeEmotionChanges,
+                traitChanges,
+                social:completion.socialInteraction||null,
+                memory:memoryId?{
+                  id:memoryId,
+                  content:memoryPayload.content,
+                  importance:Number(memoryPayload.importance||0),
+                  emotionalIntensity:Number(memoryPayload.emotionalIntensity||0)
+                }:null,
+                development:developmentUpdate||null
+              });
+            }
+            setPhase("entity.publish");
+            const completedLocationId=wasCompleted&&activeMovement?.destinationLocationId?activeMovement.destinationLocationId:worldLocationId;
+            const realtimeWorldState={
+              locationId:completedLocationId,
+              moving:!wasCompleted&&Boolean(activeMovement),
+              movement:wasCompleted?null:activeMovement,
+              action:wasCompleted?null:realtimeWorldAction({...active,status:"ACTIVE"})
+            };
+            this.hub.publish(sim.id,"entity.state",{
+              entityId,
+              action:{...active,status:wasCompleted?"COMPLETED":"ACTIVE"},
+              needChanges,
+              emotionChanges:outcomeEmotionChanges,
+              worldState:realtimeWorldState
+            });
+            publishWorldActorState(this.hub,sim.id,{
+              entityId,
+              simulationAt:nextTime,
+              locationId:realtimeWorldState.locationId,
+              moving:realtimeWorldState.moving,
+              movement:realtimeWorldState.movement,
+              action:realtimeWorldState.action
+            });
           } else {
             if (elapsedHours > 0.0001) {
               setPhase("entity.gap.catchup");
@@ -378,6 +539,21 @@ class SimulationEngine {
               activeActionType: started.actionType||decision.actionType
             });
             this.hub.publish(sim.id, "action.created", { entityId, decision, action: started });
+            publishWorldActorState(this.hub,sim.id,{
+              entityId,
+              simulationAt:nextTime,
+              locationId:started.movement?.originLocationId||null,
+              moving:Boolean(started.movement),
+              movement:started.movement||null,
+              action:{
+                id:started.actionId,
+                actionType:started.actionType||decision.actionType,
+                status:"ACTIVE",
+                startedSimulationAt:nextTime,
+                targetLocationId:started.targetLocationId||decision.targetLocationId||null,
+                targetEntityId:started.targetEntityId||decision.targetEntityId||null
+              }
+            });
           }
           } catch (err) {
             const errorContext={simulationId:sim.id,entityId,actionType,phase};
@@ -431,6 +607,21 @@ class SimulationEngine {
                     entityId: id,
                     decision: retry.decision,
                     action: retry.started
+                  });
+                  publishWorldActorState(this.hub,sim.id,{
+                    entityId:id,
+                    simulationAt:nextTime,
+                    locationId:retry.started.movement?.originLocationId||null,
+                    moving:Boolean(retry.started.movement),
+                    movement:retry.started.movement||null,
+                    action:{
+                      id:retry.started.actionId,
+                      actionType:retry.started.actionType||retry.decision.actionType,
+                      status:"ACTIVE",
+                      startedSimulationAt:nextTime,
+                      targetLocationId:retry.started.targetLocationId||retry.decision.targetLocationId||null,
+                      targetEntityId:retry.started.targetEntityId||retry.decision.targetEntityId||null
+                    }
                   });
                   continue;
                 }
