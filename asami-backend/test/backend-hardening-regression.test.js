@@ -489,7 +489,8 @@ test('Gemini transient failures open an exponential backoff breaker',()=>{
   assert.match(source,/AI_TIMEOUT/);
   assert.match(source,/providerFailureStreak/);
   assert.match(source,/computeProviderBackoffMs/);
-  assert.match(source,/blockedUntil=Date\.now\(\)\+delay/);\n  assert.match(source,/computeProviderBackoffMs/);
+  assert.match(source,/blockedUntil=Date\.now\(\)\+delay/);
+  assert.match(source,/computeProviderBackoffMs/);
 });
 
 test('Gemini autonomy receives a bounded context',()=>{
