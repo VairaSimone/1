@@ -411,7 +411,11 @@ const configuredDurationMinutes=Number(before.durationMinutes);
 const startedAtMs=new Date(lockedRows[0].startedSimulationAt).getTime();
 const completedAtMs=new Date(simulationTime).getTime();
 const fallbackDurationMinutes=Number.isFinite(startedAtMs)&&Number.isFinite(completedAtMs)?Math.max(0,(completedAtMs-startedAtMs)/60000):0;
-const durationMinutes=Number.isFinite(configuredDurationMinutes)&&configuredDurationMinutes>0?configuredDurationMinutes:fallbackDurationMinutes;
+const durationMinutes=Number.isFinite(configuredDurationMinutes)&&configuredDurationMinutes>0
+  ?configuredDurationMinutes
+  :fallbackDurationMinutes>0
+    ?fallbackDurationMinutes
+    :getActionDurationMinutes(normalizedAction);
 const needEffect=await applyOutcomeDependentNeed({conn,simulationId,entityId,actionId,actionType:normalizedAction,simulationTime,durationMinutes,physical});
 let movementCompleted=true;if(MOVE_ACTIONS.has(String(actionType||"").toUpperCase())&&before.movement?.movementId){movementCompleted=await completeMovement({simulationId,entityId,destination:before.movement.destinationLocationId,movementId:before.movement.movementId,simulationTime,db:conn});if(!movementCompleted)throw Object.assign(new Error("Movement completion failed"),{code:"MOVEMENT_COMPLETION_FAILED"});}assertTransition("action","ACTIVE","COMPLETED");
 const result={...before,eventId,actionType,outcome:outcome.outcome,success:outcome.success,failureReason:outcome.failureReason,resource:physical,needEffect, targetEntityId,targetLocationId,relationshipIntent,resourceFinalized:true,postProcessingStatus:"PENDING"};const[updated]=await conn.query(`UPDATE actions SET status='COMPLETED',completed_simulation_at=?,result=?,post_processing_status='PENDING',version=version+1 WHERE id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?) AND status='ACTIVE'`,[simulationTime,JSON.stringify(result),actionId,entityId,simulationId]);if(updated.affectedRows)committed={physical,outcome,needEffect,resourceFinalized:true};});
