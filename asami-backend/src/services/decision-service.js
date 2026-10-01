@@ -1,4 +1,4 @@
-const {pool}=require("../db/pool");
+const {pool,withTransaction}=require("../db/pool");
 const {uuid}=require("../lib/ids");
 const {ACTIONS,scoreAction,RESOURCE_REQUIREMENTS,needPriorityState,CRITICAL_NEED_ACTIONS,activityDiversityBonus}=require("./decision-rules");
 const {getCognitiveProfile,getCognitiveProfiles,cognitiveDecisionModifier}=require("./personality-service");
@@ -994,103 +994,123 @@ async function makeDecision({
     reason = "deterministic needs, personality, experience and recent-action diversity";
   }
 
-  await pool.query(
-    `INSERT INTO decisions(id,simulation_id,entity_id,simulation_time,trigger_event_id,trigger_type,context,status,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,UUID_TO_BIN(?),?,?,?,'CREATED',1)`,
-    [
-      decisionId,
-      simulationId,
-      entityId,
-      mysqlSimulationTime,
-      triggerEventId,
-      triggerType || proactivity.trigger || proactivity.mode || "AUTONOMOUS",
-      JSON.stringify(
-        compactDecisionContext({
-          ...context,
-          proactivity,
-          needPriority,
-          selectionMode,
-          chosenAction: chosen,
-          criticalNeed: criticalNeedCode,
-          criticalAction,
-          criticalResourceRecovery: criticalResourceRecovery
-            ? {
-                code: criticalResourceRecovery.critical.code,
-                resource: criticalResourceRecovery.critical.resource,
-                mode: criticalResourceRecovery.mode,
-                targetLocationId: criticalResourceRecovery.candidate?.targetLocationId || null
-              }
-            : null,
-          individuality: individualityBias(entityId, chosen),
-          candidates,
-          aiProposal: aiProposalSnapshot,
-          validatedDecision: {
-            actionType: chosen,
-            targetEntityId: selectedTargetEntityId,
-            targetLocationId: selectedTargetLocationId,
-            selectionMode,
-            transformation
-          },
-          aiChoice: aiChoice || null
-        })
-      )
-    ]
-  );
-
   const predictedSuccessProbability=calibratedSuccessProbability({action:chosen,candidates,context});
   const expectedOutcome={actionType:chosen,targetEntityId:selectedTargetEntityId,targetLocationId:selectedTargetLocationId,strategy:selectedStrategy,planProposal:selectedPlanProposal,predictedSuccessProbability,calibrationSamples:0,lastObservedOutcome:null,calibrationErrorEma:0};
   const optionId = uuid();
-  await pool.query(
-    `INSERT INTO decision_options(id,decision_id,option_code,description,action_definition,evaluation,expected_outcome) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?, ?,?)`,
-    [
-      optionId,
-      decisionId,
-      chosen,
-      "Autonomously selected " + chosen,
-      JSON.stringify({
+  const decisionContext = JSON.stringify(
+    compactDecisionContext({
+      ...context,
+      proactivity,
+      needPriority,
+      selectionMode,
+      chosenAction: chosen,
+      criticalNeed: criticalNeedCode,
+      criticalAction,
+      criticalResourceRecovery: criticalResourceRecovery
+        ? {
+            code: criticalResourceRecovery.critical.code,
+            resource: criticalResourceRecovery.critical.resource,
+            mode: criticalResourceRecovery.mode,
+            targetLocationId: criticalResourceRecovery.candidate?.targetLocationId || null
+          }
+        : null,
+      individuality: individualityBias(entityId, chosen),
+      candidates,
+      aiProposal: aiProposalSnapshot,
+      validatedDecision: {
         actionType: chosen,
         targetEntityId: selectedTargetEntityId,
         targetLocationId: selectedTargetLocationId,
-        strategy: selectedStrategy
-      }),
-      JSON.stringify({
-        score: Number(chosenCandidate.score || 0),
-        resourceIntent: chosenCandidate.resourceIntent || null,
-        proactivity,
-        aiAccepted:
-          validAiAction &&
-          !aiBlockedByCritical &&
-          selectionMode === "AI_DELIBERATION",
-        criticalNeed: criticalNeedCode,
-        criticalAction,
-        criticalResourceRecovery: criticalResourceRecovery
-          ? {
-              code: criticalResourceRecovery.critical.code,
-              resource: criticalResourceRecovery.critical.resource,
-              mode: criticalResourceRecovery.mode,
-              targetLocationId: criticalResourceRecovery.candidate?.targetLocationId || null
-            }
-          : null,
-        needPriority,
         selectionMode,
-        planCommitted: selectionMode === "PLAN_COMMITMENT",
-        socialTarget:
-          selectedTargetEntityId && chosen === "TALKING"
-            ? chosenCandidate.targetName || null
-            : null
-      }),
-      JSON.stringify(expectedOutcome)
-    ]
+        transformation
+      },
+      aiChoice: aiChoice || null
+    })
   );
+  const actionDefinition = {
+    actionType: chosen,
+    targetEntityId: selectedTargetEntityId,
+    targetLocationId: selectedTargetLocationId,
+    strategy: selectedStrategy
+  };
+  const evaluation = {
+    score: Number(chosenCandidate.score || 0),
+    resourceIntent: chosenCandidate.resourceIntent || null,
+    proactivity,
+    aiAccepted:
+      validAiAction &&
+      !aiBlockedByCritical &&
+      selectionMode === "AI_DELIBERATION",
+    criticalNeed: criticalNeedCode,
+    criticalAction,
+    criticalResourceRecovery: criticalResourceRecovery
+      ? {
+          code: criticalResourceRecovery.critical.code,
+          resource: criticalResourceRecovery.critical.resource,
+          mode: criticalResourceRecovery.mode,
+          targetLocationId: criticalResourceRecovery.candidate?.targetLocationId || null
+        }
+      : null,
+    needPriority,
+    selectionMode,
+    planCommitted: selectionMode === "PLAN_COMMITMENT",
+    socialTarget:
+      selectedTargetEntityId && chosen === "TALKING"
+        ? chosenCandidate.targetName || null
+        : null
+  };
+  const selectedOptionSnapshot = JSON.stringify({
+    optionId,
+    decisionId,
+    optionCode: chosen,
+    description: "Autonomously selected " + chosen,
+    actionDefinition,
+    evaluation,
+    expectedOutcome,
+    selectedSimulationAt: mysqlSimulationTime,
+    source: "DECISION_EVALUATION"
+  });
 
-  assertTransition("decision","CREATED","EVALUATED");
-  await pool.query(
-    `UPDATE decisions SET selected_option_id=UUID_TO_BIN(?),status='EVALUATED',expected_outcome=? WHERE id=UUID_TO_BIN(?)`,
-    [
-      optionId,
-      JSON.stringify(expectedOutcome),
-      decisionId
-    ]
-  );
+  await withTransaction(async conn => {
+    await conn.query(
+      `INSERT INTO decisions(id,simulation_id,entity_id,simulation_time,trigger_event_id,trigger_type,context,status,version)
+       VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,UUID_TO_BIN(?),?,?,?,'CREATED',1)`,
+      [
+        decisionId,
+        simulationId,
+        entityId,
+        mysqlSimulationTime,
+        triggerEventId,
+        triggerType || proactivity.trigger || proactivity.mode || "AUTONOMOUS",
+        decisionContext
+      ]
+    );
+
+    await conn.query(
+      `INSERT INTO decision_options(id,decision_id,option_code,description,action_definition,evaluation,expected_outcome)
+       VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,?,?)`,
+      [
+        optionId,
+        decisionId,
+        chosen,
+        "Autonomously selected " + chosen,
+        JSON.stringify(actionDefinition),
+        JSON.stringify(evaluation),
+        JSON.stringify(expectedOutcome)
+      ]
+    );
+
+    assertTransition("decision","CREATED","EVALUATED");
+    await conn.query(
+      `UPDATE decisions
+       SET selected_option_id=UUID_TO_BIN(?),
+           selected_option_snapshot=?,
+           status='EVALUATED',
+           expected_outcome=?
+       WHERE id=UUID_TO_BIN(?)`,
+      [optionId, selectedOptionSnapshot, JSON.stringify(expectedOutcome), decisionId]
+    );
+  });
 
   return {
     decisionId,
