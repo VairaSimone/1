@@ -431,7 +431,7 @@ async function updateNeeds(entityId,simulationTime,deltaHours,causeEventId=null,
       if(PRESSURE_NEEDS.has(r.code)&&floor!==undefined&&action)next=Math.max(next,floor);
       const historyDelta=round5(next-oldValue);
       if(Math.abs(historyDelta)<0.000001)continue;
-      updates.push({needId:r.needId,oldValue,next,code:r.code,delta:historyDelta});
+      updates.push({needId:r.needId,oldValue,next,code:r.code,delta:historyDelta,individualization:r.individualization||null});
     }
     if(updates.length){
       const cases=updates.map(()=> "WHEN UUID_TO_BIN(?) THEN ?").join(" ");
@@ -453,7 +453,7 @@ async function updateNeeds(entityId,simulationTime,deltaHours,causeEventId=null,
           oldValue:item.oldValue,newValue:item.next,simulationTime,
           causeEventId,causeActionId,significant,db
         });
-        changes.push({code:item.code,old:item.oldValue,new:item.next,delta:item.delta,individualization:r?.individualization||null});
+        changes.push({code:item.code,old:item.oldValue,new:item.next,delta:item.delta,individualization:item.individualization||null});
       }
     }
     if(significant&&causeActionId)await flushPendingNeedHistory(entityId,causeActionId,db);
