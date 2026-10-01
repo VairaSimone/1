@@ -788,18 +788,23 @@ async function runSafeRetention(simulationId, simulationTime) {
     };
     observability.recordRetentionSummary(simulationId,summary);
     if (summary.retentionBacklogTotal > 0) {
-      logger.warn({
-        simulationId,
-        simulationTime,
-        event:"RETENTION_BACKLOG",
-        backlogRows:summary.retentionBacklogTotal,
-        needHistoryBacklog:summary.needHistoryBacklog,
-        emotionHistoryBacklog:summary.emotionHistoryBacklog,
-        relationshipHistoryBacklog:summary.relationshipHistoryBacklog,
-        actionBacklog:summary.actionBacklog,
-        actionDecisionSummaryBacklog:summary.actionDecisionSummaryBacklog,
-        retentionBudgetMs:summary.retentionBudgetMs
-      },"retention backlog remains after bounded cleanup");
+      logger.warnThrottled(
+        `retention:backlog:${simulationId}`,
+        300000,
+        {
+          simulationId,
+          simulationTime,
+          event:"RETENTION_BACKLOG",
+          backlogRows:summary.retentionBacklogTotal,
+          needHistoryBacklog:summary.needHistoryBacklog,
+          emotionHistoryBacklog:summary.emotionHistoryBacklog,
+          relationshipHistoryBacklog:summary.relationshipHistoryBacklog,
+          actionBacklog:summary.actionBacklog,
+          actionDecisionSummaryBacklog:summary.actionDecisionSummaryBacklog,
+          retentionBudgetMs:summary.retentionBudgetMs
+        },
+        "retention backlog remains after bounded cleanup"
+      );
     }
     if (
       summary.decisionContextsCompacted ||
@@ -847,7 +852,7 @@ async function runSafeRetention(simulationId, simulationTime) {
       for (const [key,value] of changeFields) {
         if (Number(value) > 0) changes[key]=Number(value);
       }
-      logger.info({
+      logger.debug({
         simulationId,
         simulationTime,
         changes,
