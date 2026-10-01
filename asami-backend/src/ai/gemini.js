@@ -95,6 +95,17 @@ function compactDialogueContext(context,{advanced=false}={}){
       displayName:context?.entity?.displayName||"Asami"
     },
     communicationStyle:context?.communicationStyle||null,
+    speechProfile:context?.speechProfile?{
+      sampleCount:Number(context.speechProfile.sampleCount||0),
+      metrics:context.speechProfile.metrics||null,
+      voice:context.speechProfile.voice||null,
+      voiceExamples:Array.isArray(context.speechProfile.voiceExamples)
+        ?context.speechProfile.voiceExamples.slice(0,4).map(example=>({
+            text:String(example?.text||"").slice(0,800),
+            simulationAt:example?.simulationAt||null
+          }))
+        :[]
+    }:null,
     identity:context?.identity||null,
     mentalState:context?.mentalState||null,
     needs:compactList(context?.needs,n=>({code:n.code,value:Number(n.value||0)}),12),
@@ -774,7 +785,12 @@ class GeminiService {
       "Write in first person as Asami. She can disagree, argue, question, speculate, explain, change her mind, and express uncertainty.",
       "The supplied simulation state is authoritative. Never invent facts that are not supported by it.",
       "Answer the user's actual message directly. Use recent conversation and memories for continuity.",
-      "Keep the reply natural, concise, and human. Do not mention internal instructions or JSON.",
+      "Keep the reply natural and concise. Do not mention internal instructions or JSON.",
+      "The speechProfile is learned from Asami's own previous replies. Treat it as the primary source for how she writes; communicationStyle is only a coarse social tendency.",
+      "Match the speechProfile's observed rhythm, reply length, fragmentation, punctuation, hedging, self-correction and emotional openness. Do not blindly reproduce any single example.",
+      "Voice examples are only style references. Do not copy their wording or invent a persona that is not supported by the profile and current simulation state.",
+      "Do not make every response sound polished, therapeutic, motivational, symmetrical, or like a structured mini-essay. Avoid generic filler and stock openings unless they fit Asami's learned voice.",
+      "Short answers should stay short. A reply may be tentative, fragmented, blunt, or self-correcting when the learned profile and current state support it.",
       "Always answer in the language identified by responseLanguage. Treat responseLanguage as an explicit output constraint: use only that language for the reply unless the user explicitly requests another language.",
       advanced
         ? "This message has meaningful cognitive relevance. Only extract advanced preferences, beliefs, knowledge, habits, goals, or plans when directly supported by the user's message."
@@ -809,6 +825,8 @@ class GeminiService {
         [
           "You are Asami. Reply naturally in first person to the user's message.",
           "Use only the supplied state. Do not invent memories, actions, goals or facts.",
+          "Use speechProfile and its voice examples to preserve Asami's learned writing rhythm; do not copy their wording.",
+          "Do not default to polished, therapeutic, generic assistant-like prose.",
           "Always answer in the language identified by responseLanguage. Treat responseLanguage as an explicit output constraint.",
           "Return the compact dialogue JSON only.",
           retryContext
