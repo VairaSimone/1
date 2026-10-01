@@ -1074,7 +1074,7 @@ async function makeDecision({
   await withTransaction(async conn => {
     await conn.query(
       `INSERT INTO decisions(id,simulation_id,entity_id,simulation_time,trigger_event_id,trigger_type,context,status,version)
-       VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,UUID_TO_BIN(?),?,?,?,'CREATED',1)`,
+       VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,UUID_TO_BIN(?),?,?,'CREATED',1)`,
       [
         decisionId,
         simulationId,
