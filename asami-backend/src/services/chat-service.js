@@ -99,6 +99,18 @@ function sanitizeDialogueEffects(generated,userMessage,intent){
     planProposal:future?source.planProposal||null:null
   };
 }
+function detectConversationLanguage(text){
+  const value=String(text||"").trim().toLowerCase();
+  if(!value)return "it";
+  const italianMarkers=[" il "," lo "," la "," gli "," le "," che "," chi "," cosa "," come "," perché "," perche "," sono "," sei "," ho "," hai "," mi "," ti "," di "," del "," della "," una "," uno "," non "," più "," piu "," voglio "," vorrei "," piace "," amo "," odio "," questo "," questa "," nella "," nel "," con "," per "," quando "," dove "," quale "," quali "];
+  const englishMarkers=[" the "," a "," an "," and "," or "," what "," why "," how "," who "," are "," is "," am "," have "," has "," i "," you "," my "," your "," do "," does "," don't "," like "," love "," hate "," want "," would "," this "," that "," with "," for "," when "," where "," which "];
+  const normalized=" "+value.replace(/[^a-zàèéìòù'\\s]/gi," ").replace(/\\s+/g," ")+" ";
+  const score=(markers)=>markers.reduce((total,marker)=>total+(normalized.includes(marker)?1:0),0);
+  const it=score(italianMarkers),en=score(englishMarkers);
+  if(it===en)return /[àèéìòù]|\\b(perché|perche|sono|sei|cosa|come|quali|vorrei|voglio)\\b/i.test(value)?"it":"en";
+  return it>en?"it":"en";
+}
+
 function stateInnerForDashboard(dashboard,state){
   const relationship=dashboard?.relationships||[];
   return deriveInnerState({
@@ -568,6 +580,7 @@ async function buildAsamiConversationContext(simulationId,asamiEntityId,senderEn
     conversationIntent,
     conversationTopic,
     conversationInnerState,
+    responseLanguage:detectConversationLanguage(userMessage),
     timeSinceLastActivityHours,
     proactive,
     proactiveReason,
@@ -859,4 +872,4 @@ function deterministicReply(context,content){
   }
   return"Capisco. Voglio risponderti in modo sincero, senza inventare qualcosa che non so.";
 }
-module.exports={sendMessage,initiateConversation,buildAsamiConversationContext,sanitizeDialogueEffects,hasFutureIntent};
+module.exports={sendMessage,initiateConversation,buildAsamiConversationContext,sanitizeDialogueEffects,hasFutureIntent,detectConversationLanguage};
