@@ -2,6 +2,7 @@ const { pool, withTransaction } = require("../db/pool");
 const { uuid } = require("../lib/ids");
 const { env } = require("../config/env");
 const { assertTransition } = require("../services/state-machine");
+const { personalizeExistingNeedDefaults } = require("../services/need-individualization-service");
 
 const DEFAULT_ASAMI_PERSONALITY = {
   OPENNESS: .72,
@@ -117,6 +118,8 @@ async function createSimulation({ name, startedSimulationAt, asami }) {
          VALUES(UUID_TO_BIN(?),?,?,?,1)`,[asamiEntityId,d.id,initialValue,t]
       );
     }
+    await personalizeExistingNeedDefaults(asamiEntityId,t,conn);
+
     for (const d of skillDefs) await conn.query(
       `INSERT INTO entity_skills(entity_id,skill_id,updated_simulation_at,version)
        VALUES(UUID_TO_BIN(?),?, ?,1)`,
