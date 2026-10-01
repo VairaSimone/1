@@ -57,7 +57,7 @@ const Env = z.object({
     const n=Number(value);
     return Number.isFinite(n)?Math.max(2048,n):value;
   },z.coerce.number().int().min(2048).max(20000).default(2048)),
-  GEMINI_AUTONOMY_COMPACT_OUTPUT_TOKEN_CEILING: z.coerce.number().int().min(512).max(4096).default(768),
+  GEMINI_AUTONOMY_COMPACT_OUTPUT_TOKEN_CEILING: z.coerce.number().int().min(2048).max(4096).default(2048),
   GEMINI_DIALOGUE_OUTPUT_TOKEN_CEILING: z.coerce.number().int().min(256).max(20000).default(1536),
   GEMINI_INPUT_PRICE_USD_PER_1M: z.coerce.number().nonnegative().default(0.75),
   GEMINI_OUTPUT_PRICE_USD_PER_1M: z.coerce.number().nonnegative().default(3.75),
