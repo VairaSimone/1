@@ -485,7 +485,12 @@ class GeminiService {
       }
       if(remainingBudgetMs<=0){
         this.lastRequestStatus={status:"FALLBACK",source:"DETERMINISTIC_FALLBACK",reason:"GEMINI_HARD_DEADLINE",attempted:modelIndex>0,retryAfterMs:0,kind};
-        logger.warn({kind,models},"Gemini total request deadline reached; deterministic fallback used");
+        logger.warnThrottled(
+          `gemini:deadline:${kind}`,
+          60000,
+          {kind,models},
+          "Gemini total request deadline reached; deterministic fallback used"
+        );
         return null;
       }
       const model=models[modelIndex];
@@ -499,13 +504,18 @@ class GeminiService {
           retryAfterMs:Number(reservation.retryAfterMs||0),
           kind
         };
-        logger.warn({
-          kind,
-          reason:reservation.reason,
-          retryAfterMs:Number(reservation.retryAfterMs||0),
-          estimatedUsd:Number(reservation.estimatedUsd||0),
-          pacedDailyLimit:Number(reservation.pacedDailyLimit||0)
-        },"Gemini request skipped by local budget/provider gate; deterministic fallback used");
+        logger.debugThrottled(
+          `gemini:budget:${kind}:${reservation.reason}`,
+          60000,
+          {
+            kind,
+            reason:reservation.reason,
+            retryAfterMs:Number(reservation.retryAfterMs||0),
+            estimatedUsd:Number(reservation.estimatedUsd||0),
+            pacedDailyLimit:Number(reservation.pacedDailyLimit||0)
+          },
+          "Gemini request skipped by local budget/provider gate; deterministic fallback used"
+        );
         return null;
       }
 
@@ -638,15 +648,20 @@ class GeminiService {
             model,
             fallbackDepth:modelIndex
           };
-          logger.warn({
-            kind,
-            model,
-            finishReason:err?.finishReason||null,
-            error:err?.message||String(err),
-            rawPreview:typeof raw==="string"?raw.slice(0,500):"",
-            fallbackTo:fallbackModel,
-            latencyMs:Date.now()-startedAt
-          },"Gemini produced invalid structured output; trying fallback model");
+          logger.warnThrottled(
+            `gemini:invalid-output:${kind}:${model}`,
+            60000,
+            {
+              kind,
+              model,
+              finishReason:err?.finishReason||null,
+              error:err?.message||String(err),
+              rawPreview:typeof raw==="string"?raw.slice(0,500):"",
+              fallbackTo:fallbackModel,
+              latencyMs:Date.now()-startedAt
+            },
+            "Gemini produced invalid structured output; trying fallback model"
+          );
           continue;
         }
 
@@ -669,13 +684,18 @@ class GeminiService {
             fallbackDepth:modelIndex
           };
           const fallbackModel=models[modelIndex+1]||null;
-          logger.warn({
-            kind,
-            model,
-            reason:fallbackReason,
-            retryAfterMs:modelCooldown,
-            fallbackTo:fallbackModel
-          },"Gemini model limit reached; trying fallback model");
+          logger.warnThrottled(
+            `gemini:provider-limit:${kind}:${model}:${fallbackReason}`,
+            60000,
+            {
+              kind,
+              model,
+              reason:fallbackReason,
+              retryAfterMs:modelCooldown,
+              fallbackTo:fallbackModel
+            },
+            "Gemini model limit reached; trying fallback model"
+          );
           continue;
         }
 
@@ -694,16 +714,21 @@ class GeminiService {
             model
           };
           const fallbackModel=models[modelIndex+1]||null;
-          logger.warn({
-            kind,
-            model,
-            status:failure.status||null,
-            reason:fallbackReason,
-            failureStreak:state.failureStreak,
-            retryAfterMs:transientCooldown,
-            fallbackTo:fallbackModel,
-            latencyMs:Date.now()-startedAt
-          },"Gemini model unavailable; trying fallback model");
+          logger.warnThrottled(
+            `gemini:provider-failure:${kind}:${model}:${fallbackReason}`,
+            60000,
+            {
+              kind,
+              model,
+              status:failure.status||null,
+              reason:fallbackReason,
+              failureStreak:state.failureStreak,
+              retryAfterMs:transientCooldown,
+              fallbackTo:fallbackModel,
+              latencyMs:Date.now()-startedAt
+            },
+            "Gemini model unavailable; trying fallback model"
+          );
           continue;
         }
 
@@ -717,7 +742,12 @@ class GeminiService {
           model,
           fallbackDepth:modelIndex
         };
-        logger.warn({err,kind,model},"Gemini request failed; deterministic fallback will be used");
+        logger.warnThrottled(
+          `gemini:request-failed:${kind}:${model}`,
+          60000,
+          {err,kind,model},
+          "Gemini request failed; deterministic fallback will be used"
+        );
         return null;
       }finally{
         clearTimeout(timeoutId);
@@ -735,12 +765,17 @@ class GeminiService {
       model:lastTransientFailure?.model||null,
       fallbackDepth:models.length
     };
-    logger.warn({
-      kind,
-      models,
-      reason:lastTransientFailure?.reason||"ALL_GEMINI_MODELS_FAILED",
-      retryAfterMs:Number(lastTransientFailure?.retryAfterMs||0)
-    },"all Gemini models unavailable; deterministic fallback used");
+    logger.warnThrottled(
+      `gemini:all-failed:${kind}`,
+      60000,
+      {
+        kind,
+        models,
+        reason:lastTransientFailure?.reason||"ALL_GEMINI_MODELS_FAILED",
+        retryAfterMs:Number(lastTransientFailure?.retryAfterMs||0)
+      },
+      "all Gemini models unavailable; deterministic fallback used"
+    );
     return null;
   }
   async chooseDecision(context){
