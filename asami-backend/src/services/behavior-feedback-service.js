@@ -1,5 +1,6 @@
 const { pool } = require("../db/pool");
 const { persistNeedTransition } = require("./state-service");
+const { loadNeedIndividualization } = require("./need-individualization-service");
 
 const SUCCESS_NEED_FEEDBACK = {
   DRINKING: { THIRST: 0.08 },
@@ -30,8 +31,11 @@ async function applyActionOutcomeNeedFeedback({ simulationId, entityId, actionId
   );
 
   const changes = [];
+  const individualization = await loadNeedIndividualization(entityId, simulationTime, null, pool);
   for (const row of rows) {
-    const relief = Math.max(0, Number(feedback[row.code]) || 0);
+    const baseRelief = Math.max(0, Number(feedback[row.code]) || 0);
+    const reliefMultiplier = Math.max(0.60, Math.min(1.55, Number(individualization.get(String(row.code || "").toUpperCase())?.relief) || 1));
+    const relief = baseRelief * reliefMultiplier;
     if (!relief) continue;
     const oldValue = clamp(row.value);
     const nextValue = clamp(oldValue - relief);
