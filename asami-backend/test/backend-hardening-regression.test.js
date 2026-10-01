@@ -162,7 +162,8 @@ test('movement start normalizes ISO simulation timestamps before using a raw DB 
 test('raw mysql connections normalize simulation timestamps like pool.query',()=>{
   const source=read('db/pool.js');
   assert.match(source,/originalGetConnection = pool\.getConnection\.bind\(pool\)/);
-  assert.match(source,/conn\.query = async \(sql, values\) => \{/);\n  assert.match(source,/originalConnectionQuery\(sql, normalizeMysqlValues\(values\)\)/);
+  assert.match(source,/conn\.query = async \(sql, values\) => \{/);
+  assert.match(source,/originalConnectionQuery\(sql, normalizeMysqlValues\(values\)\)/);
 });
 
 test('entity need persistence is serialized and current plus history share one transaction',()=>{
