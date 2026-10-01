@@ -1,6 +1,7 @@
 const { pool } = require("../db/pool");
 const { uuid } = require("../lib/ids");
 const { ensureEntityState } = require("./state-service");
+const { personalizeExistingNeedDefaults } = require("./need-individualization-service");
 
 const MIN_WORLD_PEOPLE = 6;
 const MAX_WORLD_PEOPLE = 10;
@@ -92,6 +93,7 @@ async function createPerson(simulationId,simulationTime,profile,randomSpawn=fals
   await pool.query(`INSERT INTO autonomy_policies(id,simulation_id,entity_id,policy_type,enabled,configuration,scope_entity_id,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),'AUTONOMY',1,?,UUID_TO_BIN(?),1)`,[uuid(),simulationId,entityId,JSON.stringify({deterministicFallback:true,decisionMode:"deterministic_npc"}),entityId]);
   await ensureEntityState(entityId,simulationTime);
   if(profile?.traits){ for(const [code,value] of Object.entries(profile.traits)){ const [trait]=await pool.query(`SELECT BIN_TO_UUID(id) AS id FROM trait_definitions WHERE code=? AND active=1 LIMIT 1`,[code]); if(trait.length)await pool.query(`UPDATE entity_traits_current SET value=?,updated_simulation_at=?,version=version+1 WHERE entity_id=UUID_TO_BIN(?) AND trait_id=UUID_TO_BIN(?)`,[Math.max(0,Math.min(1,Number(value))),simulationTime,entityId,trait[0].id]); } }
+  await personalizeExistingNeedDefaults(entityId,simulationTime);
   await pool.query(`INSERT INTO entity_development(entity_id,development_stage_id,physical_score,cognitive_score,social_score,emotional_score,education_score,updated_simulation_at,version) VALUES(UUID_TO_BIN(?),NULL,?,?,?,?,?, ?,1)`,[entityId,.5,.5,.5,.5,.5,simulationTime]);
   return {id:entityId,displayName};
 }
