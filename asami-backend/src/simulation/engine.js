@@ -213,7 +213,7 @@ function getInterruptionReason(activeActionType, needs, perception) {
 
 async function interruptActiveAction({ simulationId, entityId, active, simulationTime, interruption, needChanges = [], perception = null }) {
   const actionId = active.id, actionType = String(active.actionType || "ACTION").toUpperCase(), eventId = active.metadata?.eventId || null;
-  const result = { eventId, actionType, outcome: "PARTIAL", success: false, failureReason: "ACTION_INTERRUPTED", interrupted: true, interruption, targetEntityId: active.metadata?.targetEntityId || null, targetLocationId: active.metadata?.targetLocationId || null, relationshipIntent: active.metadata?.relationshipIntent || "NONE" };
+  const result = { actionId, eventId, actionType, outcome: "PARTIAL", success: false, failureReason: "ACTION_INTERRUPTED", interrupted: true, interruption, needChanges, targetEntityId: active.metadata?.targetEntityId || null, targetLocationId: active.metadata?.targetLocationId || null, relationshipIntent: active.metadata?.relationshipIntent || "NONE" };
   const [updated] = await pool.query(`UPDATE actions SET status='INTERRUPTED',completed_simulation_at=?,result=? WHERE id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?) AND status='ACTIVE'`, [simulationTime, JSON.stringify(result), actionId, entityId, simulationId]);
   if (!updated.affectedRows) return false;
   const movementId = active.metadata?.movement?.movementId || null;
@@ -526,7 +526,7 @@ class SimulationEngine {
               const expectedOutcome = active.decisionId ? await getDecisionExpectedOutcome(active.decisionId) : null;
               const needRelief = needChanges.filter(change => Number(change.delta) < 0).reduce((sum, change) => sum + Math.abs(Number(change.delta)), 0);
               outcomeEmotionChanges=await applyEmotions(entityId, completionAt, needChanges, eventId, active.id, active.actionType, 0, { event: true, outcome, expectedOutcome, targetEntityId, targetLocationId, relationshipIntent, failureReason: completion.failureReason || null, meaning: active.metadata?.goalId ? (outcome === "SUCCESS" ? "GOAL_PROGRESS" : "GOAL_BLOCKED") : null, needRelief: Math.min(1, needRelief), traits: batchTraits });
-              setPhase("entity.goal"); await autonomyService.completeGoalForAction(active.metadata?.goalId || null, active.actionType, completionAt, outcome, { simulationId: sim.id, entityId, actionId: active.id, targetEntityId, targetLocationId, ...completion });
+              setPhase("entity.goal"); await autonomyService.completeGoalForAction(active.metadata?.goalId || null, active.actionType, completionAt, outcome, { simulationId: sim.id, entityId, actionId: active.id, targetEntityId, targetLocationId, needChanges, ...completion });
               setPhase("entity.learning"); if (successful) await actionService.learnFromAction(entityId, active.actionType, completionAt);
               setPhase("entity.development"); if (successful) developmentUpdate=await updateDevelopment(sim.id, entityId, completionAt, active.actionType);
               setPhase("entity.traits"); traitChanges=await developTraits(entityId, completionAt, { actionType: active.actionType, outcome, targetEntityId, relationshipIntent, goalId: active.metadata?.goalId || null, planId: active.metadata?.planId || null, planStepId: active.metadata?.planStepId || null, intentionId: active.intentionId, decisionId: active.decisionId }, eventId, active.id);
