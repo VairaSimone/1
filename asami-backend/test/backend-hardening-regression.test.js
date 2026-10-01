@@ -262,7 +262,7 @@ test('critical resource invariant checks reachability from actor locations and v
   assert.ok(start>=0&&end>start);
   assert.match(section,/loadActorLocationIds\(simulationId,entityId\)/);
   assert.match(section,/findReachableResource\(locations,origin\.locationId,resource\)/);
-  assert.match(section,/ensureResourceReserveAtLocation\([\s\S]*locationId:originId/);
+  assert.match(section,/ensureResourceReserveAtLocation\([\s\S]*locationId:origin\.locationId/);
   assert.match(section,/const refreshed=await loadActiveLocations\(simulationId\)/);
   assert.match(section,/const stillReachable=findReachableResource\(nextLocations,originId,resource\)/);
   assert.match(section,/code:"CRITICAL_RESOURCE_RECOVERY_UNAVAILABLE"/);
@@ -293,7 +293,7 @@ test('engine enforces critical resource invariant before actors are selected',()
   const invariantIndex=source.indexOf('setPhase("world.resource_invariant")');
   const actorIndex=source.indexOf('findAutonomousActors',invariantIndex);
   assert.ok(invariantIndex>=0&&actorIndex>invariantIndex);
-  assert.match(source.slice(invariantIndex,actorIndex),/ensureCriticalResourceAvailability\(sim\.id,nextTime\.toISOString\(\)\)/);
+  assert.match(source.slice(invariantIndex,actorIndex),/ensureCriticalResourceAvailability\(sim\.id,\s*nextTime\.toISOString\(\)\)/);
 });
 
 test('critical resource recovery is WARN-level and retried, not classified as an expected debug-only condition',()=>{
@@ -439,7 +439,7 @@ test('need and emotion retention stop cooperatively when the cycle time budget i
     const section=source.slice(start,end>start?end:source.length);
     assert.match(section,/deleteHistoryDirectBatch\(conn/);
   }
-  assert.match(source,/while \(deleted < POLICY\.maxDeletesPerTable && retentionBudgetAvailable\(simulationId\)/);
+  assert.match(source,/while\(deleted<maxDeletes&&retentionBudgetAvailable\(simulationId\)/);
 });
 
 
