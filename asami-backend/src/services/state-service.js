@@ -2,6 +2,7 @@ const { pool, withTransaction } = require("../db/pool");
 const { uuid } = require("../lib/ids");
 const crypto = require("crypto");
 const { clamp } = require("./state-rules");
+const { loadNeedIndividualization } = require("./need-individualization-service");
 
 function round5(value) { return Math.round((Number(value) + Number.EPSILON) * 100000) / 100000; }
 function parseJson(value, fallback = {}) { if (value === null || value === undefined) return fallback; if (typeof value === "object") return value; try { return JSON.parse(value); } catch { return fallback; } }
@@ -390,14 +391,28 @@ async function ensureEntityState(entityId,simulationTime){
   ]);
   initializedEntityState.add(key);
 }
-async function readNeeds(entityId, db = pool){const [rows]=await db.query(`SELECT BIN_TO_UUID(enc.need_id) AS needId,nd.code,nd.name,enc.value,enc.version,nd.decay_rate AS decayRate,nd.recovery_rate AS recoveryRate,nd.priority_weight AS priorityWeight,nd.parameters FROM entity_needs_current enc JOIN need_definitions nd ON nd.id=enc.need_id WHERE enc.entity_id=UUID_TO_BIN(?) AND nd.active=1`,[entityId]);return rows;}
+async function readNeeds(entityId, db = pool, simulationTime = null, perception = null){
+  const [rows] = await db.query(`SELECT BIN_TO_UUID(enc.need_id) AS needId,nd.code,nd.name,enc.value,enc.version,nd.decay_rate AS decayRate,nd.recovery_rate AS recoveryRate,nd.priority_weight AS priorityWeight,nd.parameters FROM entity_needs_current enc JOIN need_definitions nd ON nd.id=enc.need_id WHERE enc.entity_id=UUID_TO_BIN(?) AND nd.active=1`,[entityId]);
+  if (!rows.length) return rows;
+  const individualization = await loadNeedIndividualization(entityId, simulationTime, perception, db);
+  return rows.map(row => {
+    const modifiers = individualization.get(String(row.code || "").toUpperCase());
+    if (!modifiers) return row;
+    return {
+      ...row,
+      decayRate: Number(row.decayRate || 0) * modifiers.decay,
+      priorityWeight: Number(row.priorityWeight || 1) * modifiers.priority,
+      individualization: modifiers
+    };
+  });
+}
 function actionDecayMultiplier(actionType,needCode){return Number(ACTION_DECAY_MULTIPLIERS[String(actionType||"").toUpperCase()]?.[needCode]??1);}
-function saturatedActionDelta(actionType,needCode,currentValue,hours){const rate=Number((ACTION_NEED_GAINS[actionType]||{})[needCode]||0);const durationHours=Math.max(0,Number(hours)||0);if(!rate||durationHours<=0)return 0;const value=clamp(currentValue),amount=Math.abs(rate)*durationHours;if(rate<0){const pressureFactor=.30+.70*value;return-amount*pressureFactor;}return amount*(1-value);}
+function saturatedActionDelta(actionType,needCode,currentValue,hours,reliefMultiplier=1){const rate=Number((ACTION_NEED_GAINS[actionType]||{})[needCode]||0);const durationHours=Math.max(0,Number(hours)||0);if(!rate||durationHours<=0)return 0;const value=clamp(currentValue),amount=Math.abs(rate)*durationHours*Math.max(0,Number(reliefMultiplier)||1);if(rate<0){const pressureFactor=.30+.70*value;return-amount*pressureFactor;}return amount*(1-value);}
 async function updateNeeds(entityId,simulationTime,deltaHours,causeEventId=null,causeActionId=null,activeActionType=null,historyContext=null){
   return withEntityStateLock(entityId, async db => {
-    const rows=await readNeeds(entityId,db),changes=[],updates=[],hours=Math.min(Math.max(Number(deltaHours)||0,0),168),action=String(activeActionType||"").toUpperCase(),significant=Boolean(historyContext?.significant);
+    const rows=await readNeeds(entityId,db,simulationTime,historyContext?.perception||null),changes=[],updates=[],hours=Math.min(Math.max(Number(deltaHours)||0,0),168),action=String(activeActionType||"").toUpperCase(),significant=Boolean(historyContext?.significant);
     for(const r of rows){
-      const decayRate=Math.max(0,Number(r.decayRate)||0),recoveryRate=Math.max(0,Number(r.recoveryRate)||0),multiplier=actionDecayMultiplier(action,r.code);
+      const decayRate=Math.max(0,Number(r.decayRate)||0),recoveryRate=Math.max(0,Number(r.recoveryRate)||0),multiplier=actionDecayMultiplier(action,r.code),reliefMultiplier=Math.max(0.60,Math.min(1.55,Number(r.individualization?.relief)||1));
       let delta;
       if(PRESSURE_NEEDS.has(r.code))delta=decayRate*hours*multiplier;
       else if(r.code==="ENERGY")delta=-decayRate*hours*multiplier;
@@ -405,7 +420,7 @@ async function updateNeeds(entityId,simulationTime,deltaHours,causeEventId=null,
       else if(r.code==="COMFORT")delta=(recoveryRate*0.12*(1-clamp(r.value))-decayRate*0.04)*hours;
       else delta=-decayRate*hours;
       if(action && !isOutcomeDependentNeed(action,r.code)){
-        const rawGain=saturatedActionDelta(action,r.code,r.value,hours),floor=ACTION_PRESSURE_FLOORS[action]?.[r.code];
+        const rawGain=saturatedActionDelta(action,r.code,r.value,hours,reliefMultiplier),floor=ACTION_PRESSURE_FLOORS[action]?.[r.code];
         if(PRESSURE_NEEDS.has(r.code)&&rawGain<0&&floor!==undefined)delta+=Math.max(rawGain,-Math.max(0,Number(r.value)-floor));
         else if(PRESSURE_NEEDS.has(r.code)&&rawGain<0)delta+=Math.max(rawGain,-Number(r.value)*0.60);
         else delta+=rawGain;
@@ -438,7 +453,7 @@ async function updateNeeds(entityId,simulationTime,deltaHours,causeEventId=null,
           oldValue:item.oldValue,newValue:item.next,simulationTime,
           causeEventId,causeActionId,significant,db
         });
-        changes.push({code:item.code,old:item.oldValue,new:item.next,delta:item.delta});
+        changes.push({code:item.code,old:item.oldValue,new:item.next,delta:item.delta,individualization:r?.individualization||null});
       }
     }
     if(significant&&causeActionId)await flushPendingNeedHistory(entityId,causeActionId,db);
