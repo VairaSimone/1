@@ -147,6 +147,85 @@ async function ensureActionIdempotencyMigration(db) {
   }
 }
 
+async function ensureDecisionOptionIntegrityMigration(db) {
+  const [columns] = await db.query(
+    `SELECT COUNT(*) AS count
+     FROM INFORMATION_SCHEMA.COLUMNS
+     WHERE TABLE_SCHEMA=DATABASE()
+       AND TABLE_NAME='decisions'
+       AND COLUMN_NAME='selected_option_snapshot'`
+  );
+  if (Number(columns[0]?.count || 0) === 0) {
+    await db.query(
+      `ALTER TABLE decisions
+       ADD COLUMN selected_option_snapshot JSON NULL
+       AFTER selected_option_id`
+    );
+  }
+
+  // Preserve the full selected option before enforcing the FK. This also makes
+  // old databases auditable even if an option was already lost.
+  await db.query(
+    `UPDATE decisions d
+     JOIN decision_options o ON o.id=d.selected_option_id
+     SET d.selected_option_snapshot=JSON_OBJECT(
+       'optionId',BIN_TO_UUID(o.id),
+       'decisionId',BIN_TO_UUID(o.decision_id),
+       'optionCode',o.option_code,
+       'description',o.description,
+       'actionDefinition',o.action_definition,
+       'evaluation',o.evaluation,
+       'expectedOutcome',o.expected_outcome,
+       'source','MIGRATION_BACKFILL'
+     )
+     WHERE d.selected_option_id IS NOT NULL
+       AND d.selected_option_snapshot IS NULL`
+  );
+
+  // Existing orphan references cannot satisfy the new FK. Do not silently
+  // discard the audit trail: preserve what can still be reconstructed from
+  // the decision context, then clear only the invalid pointer.
+  await db.query(
+    `UPDATE decisions d
+     LEFT JOIN decision_options o ON o.id=d.selected_option_id
+     SET
+       d.selected_option_snapshot=COALESCE(
+         d.selected_option_snapshot,
+         JSON_OBJECT(
+           'optionId',BIN_TO_UUID(d.selected_option_id),
+           'decisionId',BIN_TO_UUID(d.id),
+           'optionCode',JSON_UNQUOTE(JSON_EXTRACT(d.context,'$.chosenAction')),
+           'actionDefinition',JSON_OBJECT(
+             'actionType',JSON_UNQUOTE(JSON_EXTRACT(d.context,'$.chosenAction'))
+           ),
+           'source','MIGRATION_ORPHAN_REPAIR'
+         )
+       ),
+       d.selected_option_id=NULL
+     WHERE d.selected_option_id IS NOT NULL
+       AND o.id IS NULL`
+  );
+
+  const [constraints] = await db.query(
+    `SELECT COUNT(*) AS count
+     FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS
+     WHERE CONSTRAINT_SCHEMA=DATABASE()
+       AND TABLE_NAME='decisions'
+       AND CONSTRAINT_NAME='fk_decisions_selected_option'`
+  );
+  if (Number(constraints[0]?.count || 0) === 0) {
+    await db.query(
+      `ALTER TABLE decisions
+       ADD CONSTRAINT fk_decisions_selected_option
+       FOREIGN KEY (selected_option_id)
+       REFERENCES decision_options(id)
+       ON DELETE RESTRICT
+       ON UPDATE RESTRICT`
+    );
+  }
+  return true;
+}
+
 async function ensurePlanningStatusMigrations() {
   const conn = await pool.getConnection();
   const lockName = "asami:schema-planning-status";
@@ -159,7 +238,7 @@ async function ensurePlanningStatusMigrations() {
     for (const migration of PLANNING_STATUS_MIGRATIONS) {
       if (await ensureStatusConstraint(migration, conn)) changed.push(migration.table);
     }
-    await ensureActionIdempotencyMigration(conn);
+    await ensureActionIdempotencyMigration(conn);\n    await ensureDecisionOptionIntegrityMigration(conn);
     await ensureActionLifecycleMigration(conn);
     const memoryRetention=await ensureMemoryRetentionMigration(conn);
     return { changed, actionIdempotency: true, actionLifecycle: true, memoryRetention };
