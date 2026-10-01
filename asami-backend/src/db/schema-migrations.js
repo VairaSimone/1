@@ -238,7 +238,8 @@ async function ensurePlanningStatusMigrations() {
     for (const migration of PLANNING_STATUS_MIGRATIONS) {
       if (await ensureStatusConstraint(migration, conn)) changed.push(migration.table);
     }
-    await ensureActionIdempotencyMigration(conn);\n    await ensureDecisionOptionIntegrityMigration(conn);
+    await ensureActionIdempotencyMigration(conn);
+    await ensureDecisionOptionIntegrityMigration(conn);
     await ensureActionLifecycleMigration(conn);
     const memoryRetention=await ensureMemoryRetentionMigration(conn);
     return { changed, actionIdempotency: true, actionLifecycle: true, memoryRetention };
