@@ -7,6 +7,8 @@ const { createMemory } = require("./memory-service");
 const { upsertKnowledge } = require("./personality-service");
 const { validateCriticalDecision } = require("./decision-service");
 const { assertTransition } = require("./state-machine");
+const { calculateOutcomeDependentNeedDelta, persistNeedTransition, OUTCOME_DEPENDENT_NEED_EFFECTS } = require("./state-service");
+const logger = require("../lib/logger");
 
 const ACTION_DURATIONS_MINUTES={SLEEPING:480,RESTING:60,EATING:30,DRINKING:10,TALKING:20,PLAYING:60,STUDYING:90,READING:45,WORKING:240,EXPLORING:60,WALKING:30,WATCHING:45};
 const skillByAction={READING:"READING",STUDYING:"WRITING",TALKING:"COMMUNICATION",EXPLORING:"NAVIGATION",PLAYING:"SPORTS",EATING:"COOKING",WALKING:"NAVIGATION"};
@@ -372,10 +374,47 @@ function buildDecisionActionSummary({actionId,decisionId=null,actionType,status=
     result: result || null
   };
 }
+async function applyOutcomeDependentNeed({conn,simulationId,entityId,actionId,actionType,simulationTime,durationMinutes,physical}){
+  const action=String(actionType||"").toUpperCase(),effect=OUTCOME_DEPENDENT_NEED_EFFECTS[action];
+  const consumed=Number(physical?.consumed||0);
+  if(!effect||!Number.isFinite(consumed)||consumed<=0)return null;
+  const [rows]=await conn.query(
+    `SELECT BIN_TO_UUID(enc.need_id) AS needId,nd.code,enc.value,enc.version
+     FROM entity_needs_current enc
+     JOIN need_definitions nd ON nd.id=enc.need_id
+     WHERE enc.entity_id=UUID_TO_BIN(?) AND nd.code=? AND nd.active=1
+     LIMIT 1 FOR UPDATE`,
+    [entityId,effect.needCode]
+  );
+  if(!rows.length){
+    throw Object.assign(new Error(`Required need ${effect.needCode} is missing for completed ${action} action`),{code:"RESOURCE_NEED_EFFECT_MISSING",needCode:effect.needCode,actionType:action,resource:effect.resource,actionId});
+  }
+  const row=rows[0];
+  const effectResult=calculateOutcomeDependentNeedDelta({actionType:action,needCode:row.code,currentValue:row.value,durationMinutes,consumed});
+  if(!effectResult.applied)return null;
+  const transition=await persistNeedTransition({entityId,needId:row.needId,code:row.code,oldValue:effectResult.old,nextValue:effectResult.new,version:row.version,simulationTime,causeActionId:actionId,significant:true,db:conn});
+  if(!transition){
+    throw Object.assign(new Error(`Failed to persist ${action} -> ${effect.needCode} physiological effect`),{code:"RESOURCE_NEED_EFFECT_PERSIST_FAILED",needCode:effect.needCode,actionType:action,actionId});
+  }
+  if(effectResult.old>0 && consumed>0 && effectResult.new>=effectResult.old){
+    throw Object.assign(new Error(`Invariant violated: ${action} consumed ${effect.resource} but ${effect.needCode} did not decrease`),{code:"RESOURCE_NEED_INVARIANT_VIOLATION",needCode:effect.needCode,resource:effect.resource,actionId});
+  }
+  logger.info({event:"RESOURCE_NEED_EFFECT_APPLIED",simulationId,entityId,actionId,actionType:action,resource:effect.resource,consumed,needCode:effect.needCode,oldNeed:effectResult.old,actionDelta:effectResult.delta,newNeed:effectResult.new,durationMinutes:effectResult.durationMinutes,consumptionRatio:effectResult.consumptionRatio},"resource consumption updated physiological need");
+  return {...effectResult,code:row.code,needId:row.needId,resource:effect.resource,actionId};
+}
+
 function classifyPhysicalOutcome(physical){if(!physical||typeof physical!=="object"||!Object.prototype.hasOwnProperty.call(physical,"ok"))return{outcome:"SUCCESS",success:true,failureReason:null};if(physical.ok)return{outcome:"SUCCESS",success:true,failureReason:null};const consumed=Number(physical.consumed||0);return{outcome:consumed>0?"PARTIAL":"FAILURE",success:false,failureReason:consumed>0?"RESOURCE_PARTIALLY_AVAILABLE":"RESOURCE_UNAVAILABLE"};}
 async function recordResourceFailureKnowledge({simulationId,entityId,locationId,simulationTime,physical}){if(!locationId||!physical?.resource||physical.ok)return null;const resource=String(physical.resource).trim().toLowerCase(),remaining=Number(physical.remaining);if(!resource||!Number.isFinite(remaining)||remaining>0)return null;const knowledgePayload={type:"RESOURCE_UNAVAILABLE",resource,locationId,simulationAt:simulationTime};const knowledgeId=await upsertKnowledge({simulationId,entityId,simulationTime,item:{knowledgeType:"WORLD_EXPERIENCE",content:JSON.stringify(knowledgePayload),subjectEntityId:entityId,objectEntityId:locationId,predicate:"RESOURCE_UNAVAILABLE",confidence:.98,importance:.85}});await createMemory({simulationId,entityId,eventId:null,locationId,type:"EPISODIC",content:`I tried to ${String(physical.actionType||"perform an action").toLowerCase()} here, but ${resource} was unavailable. I should consider another location or strategy next time.`,importance:.82,strength:.98,confidence:.98,emotionalIntensity:.35,simulationAt:simulationTime,metadata:{kind:"resource_failure",resource,locationId,remaining,learning:"RESOURCE_UNAVAILABLE"}});return{knowledgeId,resource,locationId,type:"RESOURCE_UNAVAILABLE"};}
-async function completeAction({simulationId,entityId,actionId,decisionId=null,eventId,intentionId=null,actionType,simulationTime,targetEntityId=null,targetLocationId=null,relationshipIntent="NONE"}){const[activeRows]=await pool.query(`SELECT status,result,version FROM actions WHERE id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?) LIMIT 1`,[actionId,entityId,simulationId]);if(!activeRows.length)return{completed:false,outcome:"FAILURE",success:false,failureReason:"ACTION_NOT_FOUND"};if(activeRows[0].status==="COMPLETED"){const stored=parseJson(activeRows[0].result,{})||{};return{completed:true,outcome:stored.outcome||"SUCCESS",success:stored.success!==false,failureReason:stored.failureReason||null,resource:stored.resource||null,resourceLearning:stored.resourceLearning||null,eventId:stored.eventId||eventId,socialInteraction:stored.socialInteraction||null};}let committed=null;await withTransaction(async conn=>{const[lockedRows]=await conn.query(`SELECT status,result,version FROM actions WHERE id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?) LIMIT 1 FOR UPDATE`,[actionId,entityId,simulationId]);if(!lockedRows.length||lockedRows[0].status!=="ACTIVE")return;const before=parseJson(lockedRows[0].result,{})||{},physicalLocation=await currentLocation(entityId,simulationId,conn),physical=before.resourceFinalized?before.resource:await resolveActionResource({simulationId,locationId:physicalLocation,actionType,simulationTime,conn});physical.actionType=actionType;const outcome=classifyPhysicalOutcome(physical);let movementCompleted=true;if(MOVE_ACTIONS.has(String(actionType||"").toUpperCase())&&before.movement?.movementId){movementCompleted=await completeMovement({simulationId,entityId,destination:before.movement.destinationLocationId,movementId:before.movement.movementId,simulationTime,db:conn});if(!movementCompleted)throw Object.assign(new Error("Movement completion failed"),{code:"MOVEMENT_COMPLETION_FAILED"});}assertTransition("action","ACTIVE","COMPLETED");
-const result={...before,eventId,actionType,outcome:outcome.outcome,success:outcome.success,failureReason:outcome.failureReason,resource:physical,targetEntityId,targetLocationId,relationshipIntent,resourceFinalized:true,postProcessingStatus:"PENDING"};const[updated]=await conn.query(`UPDATE actions SET status='COMPLETED',completed_simulation_at=?,result=?,post_processing_status='PENDING',version=version+1 WHERE id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?) AND status='ACTIVE'`,[simulationTime,JSON.stringify(result),actionId,entityId,simulationId]);if(updated.affectedRows)committed={physical,outcome,resourceFinalized:true};});
+async function completeAction({simulationId,entityId,actionId,decisionId=null,eventId,intentionId=null,actionType,simulationTime,targetEntityId=null,targetLocationId=null,relationshipIntent="NONE"}){const[activeRows]=await pool.query(`SELECT status,result,version,started_simulation_at AS startedSimulationAt FROM actions WHERE id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?) LIMIT 1`,[actionId,entityId,simulationId]);if(!activeRows.length)return{completed:false,outcome:"FAILURE",success:false,failureReason:"ACTION_NOT_FOUND"};if(activeRows[0].status==="COMPLETED"){const stored=parseJson(activeRows[0].result,{})||{};return{completed:true,outcome:stored.outcome||"SUCCESS",success:stored.success!==false,failureReason:stored.failureReason||null,resource:stored.resource||null,resourceLearning:stored.resourceLearning||null,eventId:stored.eventId||eventId,socialInteraction:stored.socialInteraction||null};}let committed=null;await withTransaction(async conn=>{const[lockedRows]=await conn.query(`SELECT status,result,version FROM actions WHERE id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?) LIMIT 1 FOR UPDATE`,[actionId,entityId,simulationId]);if(!lockedRows.length||lockedRows[0].status!=="ACTIVE")return;const before=parseJson(lockedRows[0].result,{})||{},physicalLocation=await currentLocation(entityId,simulationId,conn),physical=before.resourceFinalized?before.resource:await resolveActionResource({simulationId,locationId:physicalLocation,actionType,simulationTime,conn});physical.actionType=actionType;const outcome=classifyPhysicalOutcome(physical);
+const normalizedAction=String(actionType||"").toUpperCase();
+const configuredDurationMinutes=Number(before.durationMinutes);
+const startedAtMs=new Date(lockedRows[0].startedSimulationAt).getTime();
+const completedAtMs=new Date(simulationTime).getTime();
+const fallbackDurationMinutes=Number.isFinite(startedAtMs)&&Number.isFinite(completedAtMs)?Math.max(0,(completedAtMs-startedAtMs)/60000):0;
+const durationMinutes=Number.isFinite(configuredDurationMinutes)&&configuredDurationMinutes>0?configuredDurationMinutes:fallbackDurationMinutes;
+const needEffect=await applyOutcomeDependentNeed({conn,simulationId,entityId,actionId,actionType:normalizedAction,simulationTime,durationMinutes,physical});
+let movementCompleted=true;if(MOVE_ACTIONS.has(String(actionType||"").toUpperCase())&&before.movement?.movementId){movementCompleted=await completeMovement({simulationId,entityId,destination:before.movement.destinationLocationId,movementId:before.movement.movementId,simulationTime,db:conn});if(!movementCompleted)throw Object.assign(new Error("Movement completion failed"),{code:"MOVEMENT_COMPLETION_FAILED"});}assertTransition("action","ACTIVE","COMPLETED");
+const result={...before,eventId,actionType,outcome:outcome.outcome,success:outcome.success,failureReason:outcome.failureReason,resource:physical,needEffect, targetEntityId,targetLocationId,relationshipIntent,resourceFinalized:true,postProcessingStatus:"PENDING"};const[updated]=await conn.query(`UPDATE actions SET status='COMPLETED',completed_simulation_at=?,result=?,post_processing_status='PENDING',version=version+1 WHERE id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?) AND status='ACTIVE'`,[simulationTime,JSON.stringify(result),actionId,entityId,simulationId]);if(updated.affectedRows)committed={physical,outcome,needEffect,resourceFinalized:true};});
 if(committed&&!eventId){
   eventId=await ensureEventId({simulationId,entityId,actionId,eventId:null,actionType,simulationTime,targetEntityId,targetLocationId,relationshipIntent});
   const refreshedResult={eventId,actionType,outcome:committed.outcome.outcome,success:committed.outcome.success,failureReason:committed.outcome.failureReason,resource:committed.physical,targetEntityId,targetLocationId,relationshipIntent,resourceFinalized:true};
@@ -392,6 +431,7 @@ const finalResult={
   success:committed.outcome.success,
   failureReason:committed.outcome.failureReason,
   resource:committed.physical,
+  needEffect:committed.needEffect||null,
   targetEntityId,
   targetLocationId,
   relationshipIntent,
@@ -441,7 +481,7 @@ await addEffect({simulationId,eventId,effectType:"ACTION_COMPLETED",targetAction
       result: finalResult
     })
   }),decisionId]
-);return{completed:true,outcome:committed.outcome.outcome,success:committed.outcome.success,failureReason:committed.outcome.failureReason,resource:committed.physical,resourceLearning:learning,socialInteraction};}}
+);return{completed:true,outcome:committed.outcome.outcome,success:committed.outcome.success,failureReason:committed.outcome.failureReason,resource:committed.physical,needEffect:committed.needEffect||null,resourceLearning:learning,socialInteraction};}}
 async function markActionPostProcessingComplete(actionId,db=pool){
   if(!actionId)return false;
   const [result]=await db.query(
