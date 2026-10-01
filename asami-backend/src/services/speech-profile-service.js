@@ -89,13 +89,13 @@ function countMatches(text, regex) {
 }
 
 function extractWords(text) {
-  return String(text || "").match(/[\\p{L}\\p{N}]+(?:['’][\\p{L}\\p{N}]+)*/gu) || [];
+  return String(text || "").match(/[\p{L}\p{N}]+(?:['’][\p{L}\p{N}]+)*/gu) || [];
 }
 
 function splitSentences(text) {
   const normalized = String(text || "")
-    .replace(/\\r/g, "")
-    .replace(/\\n+/g, ". ")
+    .replace(/\r/g, "")
+    .replace(/\n+/g, ". ")
     .trim();
   if (!normalized) return [];
   return normalized.split(/[.!?…]+/u).map(item => item.trim()).filter(Boolean);
@@ -119,28 +119,28 @@ function analyzeSpeech(text) {
     averageReplyWords: words.length,
     averageSentenceWords,
     fragmentation: shortSentences / sentenceCount,
-    questionFrequency: countMatches(value, /\\?/g) / sentenceCount,
+    questionFrequency: countMatches(value, /\?/g) / sentenceCount,
     exclamationFrequency: countMatches(value, /!/g) / sentenceCount,
-    ellipsisFrequency: countMatches(value, /(…|\\.{2,})/gu) / sentenceCount,
-    emojiFrequency: countMatches(value, /[\\u{1F300}-\\u{1FAFF}\\u{2600}-\\u{27BF}]/gu) / Math.max(1, words.length),
+    ellipsisFrequency: countMatches(value, /(…|\.{2,})/gu) / sentenceCount,
+    emojiFrequency: countMatches(value, /[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu) / Math.max(1, words.length),
     firstPersonFrequency: countMatches(
       value,
-      /\\b(io|me|mi|mio|mia|miei|mie|sono|ho|credo|penso|I|me|my|mine|i'm|i've|i'll)\\b/giu
+      /\b(io|me|mi|mio|mia|miei|mie|sono|ho|credo|penso|I|me|my|mine|i'm|i've|i'll)\b/giu
     ) / Math.max(1, words.length),
     hedgingFrequency: countMatches(
       value,
-      /\\b(forse|magari|credo|penso|mi sembra|non lo so|non sono sicur[oa]|potrei|direi|suppongo|maybe|perhaps|i think|i guess|i'm not sure|not sure|might|could be)\\b/giu
+      /\b(forse|magari|credo|penso|mi sembra|non lo so|non sono sicur[oa]|potrei|direi|suppongo|maybe|perhaps|i think|i guess|i'm not sure|not sure|might|could be)\b/giu
     ) / sentenceCount,
     selfCorrectionFrequency: countMatches(
       value,
-      /\\b(no,?\\s*(?:aspetta|cioè|anzi)|aspetta,?\\s*no|anzi|cioè|intendo|mi correggo|actually|wait|no wait|I mean|let me rephrase)\\b/giu
+      /\b(no,?\s*(?:aspetta|cioè|anzi)|aspetta,?\s*no|anzi|cioè|intendo|mi correggo|actually|wait|no wait|I mean|let me rephrase)\b/giu
     ) / sentenceCount,
     emotionalDisclosureFrequency: countMatches(
       value,
-      /\\b(mi sento|sento|ho paura|sono felice|sono triste|mi fa arrabbiare|mi irrita|mi preoccupa|mi piace|mi manca|I feel|I'm sad|I'm happy|I'm afraid|I'm worried|I miss|I love|I hate|it hurts)\\b/giu
+      /\b(mi sento|sento|ho paura|sono felice|sono triste|mi fa arrabbiare|mi irrita|mi preoccupa|mi piace|mi manca|I feel|I'm sad|I'm happy|I'm afraid|I'm worried|I miss|I love|I hate|it hurts)\b/giu
     ) / sentenceCount,
     lowercaseStartFrequency: lowercaseStarts / sentenceCount,
-    parentheticalFrequency: countMatches(value, /\\(/g) / sentenceCount
+    parentheticalFrequency: countMatches(value, /\(/g) / sentenceCount
   };
 }
 
