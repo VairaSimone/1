@@ -6,6 +6,7 @@ const { getDashboard, ensureObserver } = require("../repositories/entity-repo");
 const { createEvent, addEffect } = require("./event-service");
 const { applyNeedDeltas, applyEmotionDeltas, applyTraitDeltas, applyRelationshipDeltas, updateCommunicationStyle, createGoalFromProposal } = require("./conversation-cognition-service");
 const { getCognitiveProfile, applyDialogueCognition, recordHabitEvidence, updateMentalState } = require("./personality-service");
+const { getSpeechProfile, recordSpeechSample } = require("./speech-profile-service");
 const { learnFromAction } = require("./action-service");
 const logger = require("../lib/logger");
 const {
@@ -400,6 +401,7 @@ async function sendMessage({
     conversationTopic:context.conversationTopic,
     conversationState,
     conversationInnerState:innerStateAfter,
+    speechProfile:updatedSpeechProfile,
     significance:significance.score,
     significanceReasons:significance.reasons,
     significanceBefore:significanceBefore.score,
@@ -411,6 +413,13 @@ async function sendMessage({
     "INSERT INTO messages(id,simulation_id,conversation_id,sender_entity_id,message_type,content,simulation_created_at,status,metadata,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),'ASSISTANT',?,?,'DELIVERED',?,1)",
     [assistantId,simulationId,cid,asamiEntityId,reply,simulationTime,JSON.stringify({...aiMeta,turnSequence,messageOrder:1})]
   );
+  const updatedSpeechProfile=await recordSpeechSample({
+    simulationId,
+    entityId:asamiEntityId,
+    simulationTime,
+    text:reply,
+    source:generated?"GEMINI":"DETERMINISTIC"
+  });
   await pool.query(
     "UPDATE communication_intents SET status='SENT',version=version+1 WHERE id=UUID_TO_BIN(?) AND status='ATTEMPTING'",
     [intentId]
@@ -436,6 +445,7 @@ async function sendMessage({
     memoryId,
     goalId:cognition.goalId,
     communicationStyle:cognition.communicationStyle,
+    speechProfile:updatedSpeechProfile,
     traitChanges:cognition.traitChanges,
     cognitiveProfile:deepCognition,
     conversationState,
@@ -531,6 +541,7 @@ async function buildAsamiConversationContext(simulationId,asamiEntityId,senderEn
   const entity=dashboard?.entity||{id:asamiEntityId,displayName:"Asami",attributes:{}};
   const attributes=entity.attributes&&typeof entity.attributes==="object"?entity.attributes:{};
   const style=attributes.communicationStyle||{formality:.45,warmth:.6,directness:.55,verbosity:.45,humor:.25,emojiUse:.08,emotionalOpenness:.55,argumentativeDepth:.6};
+  const speechProfile=getSpeechProfile(attributes);
   const [interlocutorRows]=await pool.query(
     "SELECT BIN_TO_UUID(id) AS id,display_name AS displayName,description,attributes FROM entities WHERE simulation_id=UUID_TO_BIN(?) AND id=UUID_TO_BIN(?) LIMIT 1",
     [simulationId,senderEntityId]
@@ -562,6 +573,7 @@ async function buildAsamiConversationContext(simulationId,asamiEntityId,senderEn
     entity,
     identity:buildIdentity(entity,effectiveTime),
     communicationStyle:style,
+    speechProfile,
     mentalState:cognitiveProfile.mentalState,
     cognitiveProfile,
     needs:dashboard?.needs||[],
@@ -790,6 +802,7 @@ async function initiateConversation({simulationId,asamiEntityId,simulationTime,g
     conversationTopic:topic,
     conversationState,
     conversationInnerState:updatedInnerState,
+    speechProfile:updatedSpeechProfile,
     significance:significance.score,
     significanceReasons:significance.reasons,
     memoryCreated:Boolean(memoryId)
@@ -798,6 +811,13 @@ async function initiateConversation({simulationId,asamiEntityId,simulationTime,g
     "INSERT INTO messages(id,simulation_id,conversation_id,sender_entity_id,message_type,content,simulation_created_at,status,metadata,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),'ASSISTANT',?,?,'DELIVERED',?,1)",
     [assistantId,simulationId,cid,asamiEntityId,reply,simulationTime,JSON.stringify({...metadata,turnSequence,messageOrder:1})]
   );
+  const updatedSpeechProfile=await recordSpeechSample({
+    simulationId,
+    entityId:asamiEntityId,
+    simulationTime,
+    text:reply,
+    source:generated?"GEMINI":"DETERMINISTIC"
+  });
   await pool.query(
     "UPDATE communication_attempts SET status='DELIVERED',message_id=UUID_TO_BIN(?),result=? WHERE id=UUID_TO_BIN(?) AND status='STARTED'",
     [assistantId,JSON.stringify({messageId:assistantId}),attemptId]
@@ -826,6 +846,7 @@ async function initiateConversation({simulationId,asamiEntityId,simulationTime,g
     needs:[...needChanges,...cognition.needChanges],
     emotions:[...emotionChanges,...cognition.emotionChanges],
     communicationStyle:cognition.communicationStyle,
+    speechProfile:updatedSpeechProfile,
     cognitiveProfile:deepCognition,
     memoryId,
     conversationState,
