@@ -216,7 +216,7 @@ function compactSnapshot(metrics={}) {
 
 function logSnapshot(simulationId,simulationTime) {
   const metrics=snapshot(simulationId);
-  logger.info({
+  logger.debug({
     simulationId,
     simulationTime,
     metrics:compactSnapshot(metrics)
