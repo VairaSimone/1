@@ -7,6 +7,21 @@ const { assertTransition } = require("./state-machine");
 const GOAL_PRESSURE_CODES=new Set(["HUNGER","THIRST","SLEEPINESS","SOCIAL_NEED","FUN","CURIOSITY","ACHIEVEMENT","BELONGING"]);
 const GOAL_TEMPLATES={HUNGER:{title:"Find food",description:"Get food and satisfy the current hunger pressure.",goalType:"NEED",steps:[{title:"Go somewhere with food",description:"Travel to a reachable place where food is available.",actionType:"WALKING"},{title:"Eat",description:"Consume available food and verify the result.",actionType:"EATING"}]},THIRST:{title:"Find water",description:"Find accessible water and satisfy the current thirst pressure.",goalType:"NEED",steps:[{title:"Go somewhere with water",description:"Travel to a reachable place where water is available.",actionType:"WALKING"},{title:"Drink",description:"Consume available water and verify the result.",actionType:"DRINKING"}]},SOCIAL_NEED:{title:"Connect with someone",description:"Have a meaningful social interaction to reduce social pressure.",goalType:"NEED",steps:[{title:"Talk with someone",description:"Find an appropriate person and have a social interaction.",actionType:"TALKING"}]},BELONGING:{title:"Strengthen belonging",description:"Build or reinforce a meaningful social connection.",goalType:"NEED",steps:[{title:"Talk with someone",description:"Have an interaction that can contribute to belonging.",actionType:"TALKING"}]},FUN:{title:"Do something enjoyable",description:"Choose an enjoyable activity and follow through with it.",goalType:"NEED",steps:[{title:"Go somewhere interesting",description:"Travel to a suitable place for leisure.",actionType:"WALKING"},{title:"Have fun",description:"Perform an activity that meaningfully satisfies fun.",actionType:"PLAYING"}]},CURIOSITY:{title:"Learn something new",description:"Seek a novel experience and turn it into learning.",goalType:"NEED",steps:[{title:"Explore somewhere new",description:"Visit a location that is interesting and not recently visited.",actionType:"EXPLORING"},{title:"Learn from the experience",description:"Read or study something connected to the experience.",actionType:"READING"}]},ACHIEVEMENT:{title:"Accomplish something",description:"Complete a meaningful productive activity.",goalType:"NEED",steps:[{title:"Work toward the objective",description:"Perform a productive activity that advances the objective.",actionType:"STUDYING"},{title:"Complete the objective",description:"Continue with a productive activity until the goal is complete.",actionType:"WORKING"}]},SLEEPINESS:{title:"Get enough sleep",description:"Restore sleep and energy when sleep pressure is high.",goalType:"NEED",steps:[{title:"Sleep",description:"Get enough uninterrupted sleep and verify recovery.",actionType:"SLEEPING"}]}};
 const MAX_STEP_ATTEMPTS=1,MAX_GOAL_AGE_HOURS=24,MAX_PLAN_REPLANS=3;
+const PERSONAL_GOAL_INTERVAL_HOURS=24;
+const LONG_TERM_GOAL_INTERVAL_HOURS=72;
+const PERSISTENT_GOAL_TYPES=new Set(["PERSONAL","LONG_TERM"]);
+
+const PERSONAL_GOAL_TEMPLATES=[
+  {key:"SOCIAL_CONNECTION",title:"Build a meaningful connection",description:"Spend time developing a genuine relationship with someone you value.",goalType:"PERSONAL",actionType:"TALKING",motivation:{source:"AUTONOMOUS_PERSONAL",domain:"RELATIONSHIPS"}},
+  {key:"CREATIVE_EXPRESSION",title:"Create something of your own",description:"Make something that expresses an idea, interest or feeling and follow it through.",goalType:"PERSONAL",actionType:"WRITING",motivation:{source:"AUTONOMOUS_PERSONAL",domain:"CREATIVITY"}},
+  {key:"EXPLORATION",title:"Discover something new",description:"Seek a new experience and turn it into something personally meaningful.",goalType:"PERSONAL",actionType:"EXPLORING",motivation:{source:"AUTONOMOUS_PERSONAL",domain:"EXPLORATION"}}
+];
+
+const LONG_TERM_GOAL_TEMPLATES=[
+  {key:"GROWTH",title:"Develop a skill",description:"Gradually improve a skill through repeated learning and practice.",goalType:"LONG_TERM",steps:["STUDYING","WORKING"],motivation:{source:"AUTONOMOUS_LONG_TERM",domain:"GROWTH"}},
+  {key:"KNOWLEDGE",title:"Build knowledge through exploration",description:"Explore the world, learn from experiences and turn them into lasting knowledge.",goalType:"LONG_TERM",steps:["EXPLORING","READING"],motivation:{source:"AUTONOMOUS_LONG_TERM",domain:"KNOWLEDGE"}},
+  {key:"RELATIONSHIPS",title:"Build lasting relationships",description:"Develop a meaningful social connection through repeated positive interactions.",goalType:"LONG_TERM",steps:["TALKING","TALKING"],motivation:{source:"AUTONOMOUS_LONG_TERM",domain:"RELATIONSHIPS"}}
+];
 function normalizeAction(value){return String(value||"").trim().toUpperCase();}
 function parseJson(value,fallback={}){if(value===null||value===undefined)return fallback;if(typeof value==='object')return value;try{return JSON.parse(value);}catch{return fallback;}}
 function mysqlSimulationDateTime(value){const date=value instanceof Date?value:new Date(value);if(!Number.isFinite(date.getTime()))throw Object.assign(new Error("Invalid simulation time"),{code:"INVALID_SIMULATION_TIME"});const pad=n=>String(n).padStart(2,"0"),ms=String(date.getUTCMilliseconds()).padStart(3,"0");return `${date.getUTCFullYear()}-${pad(date.getUTCMonth()+1)}-${pad(date.getUTCDate())} ${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}:${pad(date.getUTCSeconds())}.${ms}`;}
@@ -233,8 +248,152 @@ async function abandonGoal({simulationId,entityId,goalId,simulationTime,reason})
     return true;
   });
 }
+async function hasRecentPersistentGoal(simulationId,entityId,goalType,simulationTime,intervalHours){
+  const cutoff=new Date(new Date(simulationTime).getTime()-intervalHours*3600000);
+  const [rows]=await pool.query(
+    `SELECT id
+     FROM goals
+     WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?)
+       AND goal_type=? AND created_simulation_at>=?
+       AND status NOT IN ('CANCELLED','ABANDONED','FAILED')
+     ORDER BY created_simulation_at DESC
+     LIMIT 1`,
+    [simulationId,entityId,goalType,mysqlSimulationDateTime(cutoff)]
+  );
+  return rows.length>0;
+}
+
+async function hasActivePersistentGoal(simulationId,entityId,goalType){
+  const [rows]=await pool.query(
+    `SELECT id
+     FROM goals
+     WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?)
+       AND goal_type=? AND status IN ('DRAFT','ACTIVE','PAUSED','BLOCKED')
+     LIMIT 1`,
+    [simulationId,entityId,goalType]
+  );
+  return rows.length>0;
+}
+
+async function choosePersonalGoalTemplate(simulationId,entityId){
+  const [rows]=await pool.query(
+    `SELECT code,value
+     FROM entity_traits_current etc
+     JOIN trait_definitions td ON td.id=etc.trait_id
+     WHERE etc.entity_id=UUID_TO_BIN(?) AND td.active=1
+     ORDER BY value DESC
+     LIMIT 8`,
+    [entityId]
+  );
+  const traits=new Map(rows.map(row=>[String(row.code||"").toUpperCase(),Number(row.value||0)]));
+  if((traits.get("SOCIABILITY")||0)>.62 || (traits.get("EXTRAVERSION")||0)>.62) return PERSONAL_GOAL_TEMPLATES.find(t=>t.key==="SOCIAL_CONNECTION");
+  if((traits.get("CREATIVITY")||0)>.62 || (traits.get("OPENNESS")||0)>.62) return PERSONAL_GOAL_TEMPLATES.find(t=>t.key==="CREATIVE_EXPRESSION");
+  return PERSONAL_GOAL_TEMPLATES.find(t=>t.key==="EXPLORATION");
+}
+
+async function chooseLongTermGoalTemplate(entityId){
+  const [rows]=await pool.query(
+    `SELECT code,value
+     FROM entity_traits_current etc
+     JOIN trait_definitions td ON td.id=etc.trait_id
+     WHERE etc.entity_id=UUID_TO_BIN(?) AND td.active=1
+     ORDER BY value DESC
+     LIMIT 8`,
+    [entityId]
+  );
+  const traits=new Map(rows.map(row=>[String(row.code||"").toUpperCase(),Number(row.value||0)]));
+  if((traits.get("CONSCIENTIOUSNESS")||0)>.62 || (traits.get("DISCIPLINE")||0)>.62) return LONG_TERM_GOAL_TEMPLATES.find(t=>t.key==="GROWTH");
+  if((traits.get("SOCIABILITY")||0)>.62 || (traits.get("EXTRAVERSION")||0)>.62) return LONG_TERM_GOAL_TEMPLATES.find(t=>t.key==="RELATIONSHIPS");
+  return LONG_TERM_GOAL_TEMPLATES.find(t=>t.key==="KNOWLEDGE");
+}
+
+async function createPersistentGoal({simulationId,entityId,simulationTime,template,priority=.45}){
+  if(!template)return null;
+  const goalId=uuid(),mysqlTime=mysqlSimulationDateTime(simulationTime);
+  const steps=Array.isArray(template.steps)?template.steps:[template.actionType];
+  await pool.query(
+    `INSERT INTO goals (id,simulation_id,entity_id,title,description,goal_type,priority,status,progress,created_simulation_at,motivation,version)
+     VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,?,'ACTIVE',0,?,CAST(? AS JSON),1)`,
+    [
+      goalId,simulationId,entityId,template.title,template.description,template.goalType,
+      priority,mysqlTime,
+      JSON.stringify({
+        ...template.motivation,
+        goalKey:template.key,
+        createdFromPersonality:true
+      })
+    ]
+  );
+
+  if(steps.length){
+    const planId=uuid();
+    await pool.query(
+      `INSERT INTO plans (id,simulation_id,entity_id,goal_id,title,status,strategy,created_simulation_at,version)
+       VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,'ACTIVE',?,?,1)`,
+      [
+        planId,simulationId,entityId,goalId,template.title,
+        JSON.stringify({source:template.goalType,goalKey:template.key,progressDriven:true}),
+        mysqlTime
+      ]
+    );
+    for(let i=0;i<steps.length;i+=1){
+      const actionType=normalizeAction(steps[i]);
+      let activityTypeId=null;
+      if(actionType){
+        const [activityRows]=await pool.query(
+          `SELECT id FROM activity_types WHERE code=? AND active=1 LIMIT 1`,
+          [actionType]
+        );
+        activityTypeId=activityRows[0]?.id||null;
+      }
+      await pool.query(
+        `INSERT INTO plan_steps
+         (id,plan_id,sequence,title,description,status,activity_type_id,intended_start_simulation_at,deadline_simulation_at,result,version)
+         VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,'PENDING',?,NULL,NULL,?,1)`,
+        [
+          uuid(),planId,i+1,
+          `Progress: ${actionType.toLowerCase().replaceAll("_"," ")}`,
+          `Complete ${actionType.toLowerCase().replaceAll("_"," ")} as part of the persistent goal.`,
+          activityTypeId,
+          JSON.stringify({actionType,attempts:0})
+        ]
+      );
+    }
+    await pool.query(
+      `UPDATE plan_steps SET status='ACTIVE',version=version+1
+       WHERE plan_id=UUID_TO_BIN(?) AND sequence=1 AND status='PENDING'`,
+      [planId]
+    );
+  }
+
+  return goalId;
+}
+
+async function ensurePersistentGoals({simulationId,entityId,simulationTime}){
+  const created=[];
+  if(
+    !(await hasActivePersistentGoal(simulationId,entityId,"PERSONAL")) &&
+    !(await hasRecentPersistentGoal(simulationId,entityId,"PERSONAL",simulationTime,PERSONAL_GOAL_INTERVAL_HOURS))
+  ){
+    const template=await choosePersonalGoalTemplate(simulationId,entityId);
+    const goalId=await createPersistentGoal({simulationId,entityId,simulationTime,template,priority:.45});
+    if(goalId)created.push({goalId,goalType:"PERSONAL",key:template.key});
+  }
+
+  if(
+    !(await hasActivePersistentGoal(simulationId,entityId,"LONG_TERM")) &&
+    !(await hasRecentPersistentGoal(simulationId,entityId,"LONG_TERM",simulationTime,LONG_TERM_GOAL_INTERVAL_HOURS))
+  ){
+    const template=await chooseLongTermGoalTemplate(entityId);
+    const goalId=await createPersistentGoal({simulationId,entityId,simulationTime,template,priority:.35});
+    if(goalId)created.push({goalId,goalType:"LONG_TERM",key:template.key});
+  }
+  return created;
+}
+
 async function ensureGoalPlan({simulationId,entityId,simulationTime,needs}){
   let activeGoal=await getActiveGoal(simulationId,entityId);
+
   if(activeGoal){
     const motivation=parseJson(activeGoal.motivation,{})||{};
     const goalResult=parseJson(activeGoal.result,{})||{};
@@ -251,12 +410,16 @@ async function ensureGoalPlan({simulationId,entityId,simulationTime,needs}){
         activeGoal=await getActiveGoal(simulationId,entityId);
       }else{
         const plan=await getPlanForGoal(simulationId,entityId,activeGoal.id);
+        await ensurePersistentGoals({simulationId,entityId,simulationTime});
         return{goal:activeGoal,plan,created:false,blocked:true};
       }
     }
 
-    if((GOAL_PRESSURE_CODES.has(needCode)&&currentValue<.22)||
-       (ageHours>MAX_GOAL_AGE_HOURS&&Number(activeGoal.progress||0)<=0)){
+    if(
+      activeGoal.goalType==="NEED" &&
+      ((GOAL_PRESSURE_CODES.has(needCode)&&currentValue<.22) ||
+       (ageHours>MAX_GOAL_AGE_HOURS&&Number(activeGoal.progress||0)<=0))
+    ){
       await abandonGoal({
         simulationId,
         entityId,
@@ -265,6 +428,10 @@ async function ensureGoalPlan({simulationId,entityId,simulationTime,needs}){
         reason:currentValue<.22?"GOAL_OBSOLETE_NEED_SATISFIED":"GOAL_STALE"
       });
       activeGoal=null;
+    }else if(activeGoal.goalType!=="NEED"){
+      const plan=await getPlanForGoal(simulationId,entityId,activeGoal.id);
+      await ensurePersistentGoals({simulationId,entityId,simulationTime});
+      return{goal:activeGoal,plan,created:false,persistent:true};
     }else{
       let plan=await getPlanForGoal(simulationId,entityId,activeGoal.id);
       if(!plan&&GOAL_TEMPLATES[needCode]){
@@ -273,26 +440,43 @@ async function ensureGoalPlan({simulationId,entityId,simulationTime,needs}){
         const avoidTargetEntityIds=Array.isArray(goalResult.avoidTargetEntityIds)?goalResult.avoidTargetEntityIds:[];
         plan=await createPlanForGoal({simulationId,entityId,goalId:activeGoal.id,simulationTime,needCode,pressure:motivation.pressure,priority:activeGoal.priority,replanCount,avoidLocationIds,avoidTargetEntityIds});
       }
+      await ensurePersistentGoals({simulationId,entityId,simulationTime});
       return{goal:activeGoal,plan,created:false};
     }
   }
 
   const topNeed=selectTopNeed(needs);
-  if(!topNeed)return{goal:null,plan:null,created:false};
-  const template=GOAL_TEMPLATES[String(topNeed.code).toUpperCase()];
-  if(!template)return{goal:null,plan:null,created:false};
-  const goalId=uuid();
-  const priority=Math.max(.1,Math.min(1,Number(topNeed.priorityWeight||.5)));
-  const mysqlTime=mysqlSimulationDateTime(simulationTime);
-  await pool.query(
-    `INSERT INTO goals (id,simulation_id,entity_id,title,description,goal_type,priority,status,progress,created_simulation_at,motivation,version)
-     VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,?,'ACTIVE',0,?,CAST(? AS JSON),1)`,
-    [goalId,simulationId,entityId,template.title,template.description,template.goalType,priority,mysqlTime,
-      JSON.stringify({need:String(topNeed.code).toUpperCase(),pressure:Number(topNeed.value),priorityWeight:Number(topNeed.priorityWeight||1),source:"AUTONOMOUS_NEED"})]
-  );
-  const plan=await createPlanForGoal({simulationId,entityId,goalId,simulationTime,needCode:String(topNeed.code).toUpperCase(),pressure:topNeed.value,priority});
-  const[rows]=await pool.query(`SELECT BIN_TO_UUID(id) AS id,title,description,goal_type AS goalType,priority,status,progress,motivation,result,created_simulation_at AS createdAt FROM goals WHERE id=UUID_TO_BIN(?) LIMIT 1`,[goalId]);
-  return{goal:rows[0]||null,plan,created:true};
+  if(topNeed){
+    const template=GOAL_TEMPLATES[String(topNeed.code).toUpperCase()];
+    if(template){
+      const goalId=uuid();
+      const priority=Math.max(.1,Math.min(1,Number(topNeed.priorityWeight||.5)));
+      const mysqlTime=mysqlSimulationDateTime(simulationTime);
+      await pool.query(
+        `INSERT INTO goals (id,simulation_id,entity_id,title,description,goal_type,priority,status,progress,created_simulation_at,motivation,version)
+         VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,?,'ACTIVE',0,?,CAST(? AS JSON),1)`,
+        [goalId,simulationId,entityId,template.title,template.description,template.goalType,priority,mysqlTime,
+          JSON.stringify({need:String(topNeed.code).toUpperCase(),pressure:Number(topNeed.value),priorityWeight:Number(topNeed.priorityWeight||1),source:"AUTONOMOUS_NEED"})]
+      );
+      const plan=await createPlanForGoal({simulationId,entityId,goalId,simulationTime,needCode:String(topNeed.code).toUpperCase(),pressure:topNeed.value,priority});
+      await ensurePersistentGoals({simulationId,entityId,simulationTime});
+      const[rows]=await pool.query(`SELECT BIN_TO_UUID(id) AS id,title,description,goal_type AS goalType,priority,status,progress,motivation,result,created_simulation_at AS createdAt FROM goals WHERE id=UUID_TO_BIN(?) LIMIT 1`,[goalId]);
+      return{goal:rows[0]||null,plan,created:true};
+    }
+  }
+
+  const persistent=await ensurePersistentGoals({simulationId,entityId,simulationTime});
+  if(persistent.length){
+    const goalId=persistent[0].goalId;
+    const [rows]=await pool.query(
+      `SELECT BIN_TO_UUID(id) AS id,title,description,goal_type AS goalType,priority,status,progress,motivation,result,created_simulation_at AS createdAt
+       FROM goals WHERE id=UUID_TO_BIN(?) LIMIT 1`,
+      [goalId]
+    );
+    const plan=await getPlanForGoal(simulationId,entityId,goalId);
+    return{goal:rows[0]||null,plan,created:true,persistent:true};
+  }
+  return{goal:null,plan:null,created:false};
 }
 
 function selectActiveStep(plan){const steps=Array.isArray(plan?.steps)?plan.steps.slice().sort((a,b)=>Number(a.sequence)-Number(b.sequence)):[];return steps.find(step=>step.status==="ACTIVE")||steps.find(step=>step.status==="PENDING")||null;}
@@ -319,4 +503,4 @@ async function advancePlanForAction({simulationId,entityId,goalId,actionType,out
   }const[goalRows]=await pool.query(`SELECT version,status,result,progress FROM goals WHERE id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) LIMIT 1`,[goalId,entityId]);if(!goalRows.length)return{changed,completed:false,progress,planId:refreshedPlan.id};const goal=goalRows[0];if(progress>0&&progress<1&&["ACTIVE","DRAFT","PAUSED"].includes(goal.status)){const[goalUpdated]=await pool.query(`UPDATE goals SET progress=?,version=version+1 WHERE id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND version=? AND status IN ('ACTIVE','DRAFT','PAUSED')`,[progress,goalId,entityId,goal.version]);if(goalUpdated.affectedRows)goal.version+=1;}if(planCompleted){const mysqlTime=mysqlSimulationDateTime(simulationTime);await pool.query(`UPDATE goals SET progress=1,status='COMPLETED',completed_simulation_at=?,result=?,version=version+1 WHERE id=UUID_TO_BIN(?) AND version=? AND status IN ('ACTIVE','DRAFT','PAUSED')`,[mysqlTime,JSON.stringify({completionSource:"PLAN",completedAt:simulationTime}),goalId,goal.version]);return{changed:true,completed:true,progress:1,planId:refreshedPlan.id};}if(failedSteps>0){const previousGoalResult=parseJson(goal.result,{})||{},replanCount=Number(previousGoalResult.replanCount||0)+1,failedStep=refreshedPlan.steps.find(candidate=>candidate.id===step.id)||step,stepResult=parseJson(failedStep.result,{})||{},avoidLocationIds=Array.isArray(stepResult.avoidLocationIds)?stepResult.avoidLocationIds:[],avoidTargetEntityIds=Array.isArray(stepResult.avoidTargetEntityIds)?stepResult.avoidTargetEntityIds:[];if(replanCount>=MAX_PLAN_REPLANS){
         await pool.query(`UPDATE plan_steps SET status='CANCELLED',version=version+1 WHERE plan_id=UUID_TO_BIN(?) AND status IN ('PENDING','ACTIVE','BLOCKED')`,[refreshedPlan.id]);
         await pool.query(`UPDATE goals SET status='ABANDONED',result=?,version=version+1 WHERE id=UUID_TO_BIN(?) AND version=? AND status IN ('ACTIVE','DRAFT','PAUSED','BLOCKED')`,[JSON.stringify({reason:"PLAN_REPLAN_LIMIT",failedStep:failedStep.title,actionType:normalizedAction,outcome,replanCount,avoidLocationIds,avoidTargetEntityIds}),goalId,goal.version]);return{changed:true,completed:false,progress,planId:refreshedPlan.id,abandoned:true,replanCount};}await pool.query(`UPDATE goals SET result=?,version=version+1 WHERE id=UUID_TO_BIN(?) AND version=? AND status IN ('ACTIVE','DRAFT','PAUSED')`,[JSON.stringify({...previousGoalResult,reason:"REPLAN_REQUIRED",replanCount,avoidLocationIds,avoidTargetEntityIds,lastFailure:{actionType:normalizedAction,outcome,at:simulationTime}}),goalId,goal.version]);return{changed:true,completed:false,progress,planId:refreshedPlan.id,replanRequired:true,replanCount};}return{changed,completed:false,progress,planId:refreshedPlan.id};}
-module.exports={GOAL_TEMPLATES,MAX_GOAL_AGE_HOURS,selectTopNeed,selectActiveStep,createPlanForGoal,ensureGoalPlan,advancePlanForAction,abandonGoal};
+module.exports={GOAL_TEMPLATES,MAX_GOAL_AGE_HOURS,PERSONAL_GOAL_INTERVAL_HOURS,LONG_TERM_GOAL_INTERVAL_HOURS,PERSISTENT_GOAL_TYPES,selectTopNeed,selectActiveStep,createPlanForGoal,ensureGoalPlan,advancePlanForAction,abandonGoal,ensurePersistentGoals};
