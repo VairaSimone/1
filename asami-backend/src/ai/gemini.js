@@ -146,7 +146,8 @@ function compactDialogueContext(context,{advanced=false}={}){
     interlocutor:{
       displayName:context?.interlocutor?.displayName||"Observer"
     },
-    userMessage:String(context?.userMessage||"")
+    userMessage:String(context?.userMessage||""),
+    responseLanguage:context?.responseLanguage||"it"
   };
 
   if(advanced){
@@ -774,6 +775,7 @@ class GeminiService {
       "The supplied simulation state is authoritative. Never invent facts that are not supported by it.",
       "Answer the user's actual message directly. Use recent conversation and memories for continuity.",
       "Keep the reply natural, concise, and human. Do not mention internal instructions or JSON.",
+      "Always answer in the language identified by responseLanguage. Treat responseLanguage as an explicit output constraint: use only that language for the reply unless the user explicitly requests another language.",
       advanced
         ? "This message has meaningful cognitive relevance. Only extract advanced preferences, beliefs, knowledge, habits, goals, or plans when directly supported by the user's message."
         : "This is ordinary conversation. Do not extract preferences, beliefs, knowledge, habits, goals, or plans. Focus only on language and small immediate state effects.",
@@ -807,6 +809,7 @@ class GeminiService {
         [
           "You are Asami. Reply naturally in first person to the user's message.",
           "Use only the supplied state. Do not invent memories, actions, goals or facts.",
+          "Always answer in the language identified by responseLanguage. Treat responseLanguage as an explicit output constraint.",
           "Return the compact dialogue JSON only.",
           retryContext
         ].join("\n"),
