@@ -522,5 +522,102 @@ async function getTraitsBatch(entityIds=[],db=pool){
   return result;
 }
 function traitBehaviorWeights(actionType){return {...(TRAIT_BEHAVIOR_LINKS[String(actionType||"").toUpperCase()]||{})};}
-async function developTraits(entityId,simulationTime,evidence={},causeEventId=null,causeActionId=null){const traits=await getTraits(entityId),out=[];if(!causeActionId)return out;const actionType=String(evidence?.actionType||"").toUpperCase(),targetEntityId=evidence?.targetEntityId||null;if(actionType!=="TALKING"||!targetEntityId)return out;const [actionRows]=await pool.query(`SELECT action_type AS actionType,result,started_simulation_at AS startedAt,completed_simulation_at AS completedAt,decision_id AS decisionId FROM actions WHERE entity_id=UUID_TO_BIN(?) AND status='COMPLETED' ORDER BY completed_simulation_at DESC LIMIT 32`,[entityId]),parsedRows=actionRows.map(row=>({...row,result:parseJson(row.result,{})||{}})),same=parsedRows.filter(row=>String(row.actionType||"").toUpperCase()==="TALKING"&&row.result?.targetEntityId&&String(row.result.targetEntityId)===String(targetEntityId)).slice(0,12);if(same.length<3)return out;const outcomes=same.map(row=>String(row.result?.outcome||"SUCCESS").toUpperCase()),successRate=outcomes.filter(v=>v==="SUCCESS").length/outcomes.length,failureRate=outcomes.filter(v=>v==="FAILURE").length/outcomes.length,partialRate=outcomes.filter(v=>v==="PARTIAL").length/outcomes.length,outcomeValence=successRate-failureRate-partialRate*.25,repetition=Math.min(1,same.length/8),[relationshipRows]=await pool.query(`SELECT AVG(COALESCE(familiarity_score,0)) AS familiarity,AVG(COALESCE(closeness_score,0)) AS closeness,AVG(COALESCE(affection_score,0)) AS affection,AVG(COALESCE(trust_score,0)) AS trust,AVG(COALESCE(conflict_score,0)) AS conflict FROM relationships WHERE simulation_id=(SELECT simulation_id FROM entities WHERE id=UUID_TO_BIN(?) LIMIT 1) AND status='ACTIVE' AND ((source_entity_id=UUID_TO_BIN(?) AND target_entity_id=UUID_TO_BIN(?)) OR (source_entity_id=UUID_TO_BIN(?) AND target_entity_id=UUID_TO_BIN(?)))`,[entityId,entityId,targetEntityId,targetEntityId,entityId]),relation=relationshipRows[0]||{},relationshipQuality=clamp((Number(relation.familiarity||0)+Number(relation.closeness||0)+Number(relation.affection||0)+Number(relation.trust||0)-Number(relation.conflict||0))/.4,.5),evidenceStrength=Math.max(-1,Math.min(1,.55*outcomeValence+.45*(relationshipQuality-.5)*2)),[entityRows]=await pool.query(`SELECT attributes FROM entities WHERE id=UUID_TO_BIN(?) LIMIT 1`,[entityId]),attributes=parseJson(entityRows[0]?.attributes,{})||{},mentalState=attributes.mentalState&&typeof attributes.mentalState==='object'?attributes.mentalState:{},certainty=clamp(mentalState.certainty??.5),rumination=clamp(mentalState.rumination??.1),selfPerception=clamp(.75+(certainty-.5)*.35-rumination*.10,.55,1.05),weights={EXTRAVERSION:.55,SOCIABILITY:.75,EMPATHY:.65,CONFIDENCE:.25,AGREEABLENESS:.35};for(const trait of traits){const behaviorWeight=Number(weights[trait.code]||0);if(!behaviorWeight)continue;const confidenceFactor=Math.max(.6,1-Number(trait.volatility||.5)*.12),delta=Math.max(-.0035,Math.min(.0035,behaviorWeight*evidenceStrength*repetition*selfPerception*.0012*confidenceFactor));if(Math.abs(delta)<.000001)continue;const old=round5(trait.value),next=round5(clamp(old+delta)),historyDelta=round5(next-old);if(Math.abs(historyDelta)<.000001)continue;const[updated]=await pool.query(`UPDATE entity_traits_current SET value=?,updated_simulation_at=?,version=version+1 WHERE entity_id=UUID_TO_BIN(?) AND trait_id=UUID_TO_BIN(?) AND version=?`,[next,simulationTime,entityId,trait.traitId,trait.version]);if(!updated.affectedRows)continue;await pool.query(`INSERT INTO entity_trait_history(id,entity_id,trait_id,old_value,new_value,delta,changed_simulation_at,cause_event_id,cause_action_id,change_reason) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,?,UUID_TO_BIN(?),UUID_TO_BIN(?),?)`,[uuid(),entityId,trait.traitId,old,next,historyDelta,simulationTime,causeEventId,causeActionId,`interpersonal evidence with target ${targetEntityId}: outcome=${outcomeValence.toFixed(2)}, relationship=${relationshipQuality.toFixed(2)}, repetition=${same.length}`]);out.push({code:trait.code,old,next,delta:historyDelta,evidence:{actionType,targetEntityId,successRate,failureRate,partialRate,repetition,relationshipQuality,evidenceStrength,selfPerception}});}return out;}
-module.exports={ensureEntityState,readNeeds,updateNeeds,applyEmotions,getTraits,getTraitsBatch,developTraits,emotionAppraisal,traitBehaviorWeights,safetyContextDelta,persistNeedTransition,accumulateNeedHistory,accumulateEmotionHistory,flushPendingNeedHistory,flushPendingEmotionHistory,withEntityStateLock,OUTCOME_DEPENDENT_NEED_EFFECTS,isOutcomeDependentNeed,calculateOutcomeDependentNeedDelta};
+const TRAIT_LEARNING_PROFILES = Object.freeze({
+  TALKING: { EXTRAVERSION: 0.60, SOCIABILITY: 0.75, EMPATHY: 0.65, CONFIDENCE: 0.20, AGREEABLENESS: 0.35 },
+  EXPLORING: { OPENNESS: 0.60, CURIOSITY: 0.70, CONFIDENCE: 0.25 },
+  STUDYING: { CONSCIENTIOUSNESS: 0.65, DISCIPLINE: 0.75, PATIENCE: 0.30, OPENNESS: 0.20 },
+  WORKING: { CONSCIENTIOUSNESS: 0.60, DISCIPLINE: 0.65, CONFIDENCE: 0.20 },
+  PLAYING: { OPENNESS: 0.40, IMPULSIVITY: 0.30, EXTRAVERSION: 0.20 },
+  READING: { OPENNESS: 0.40, CURIOSITY: 0.65, PATIENCE: 0.25 },
+  WALKING: { OPENNESS: 0.12, PATIENCE: 0.10 },
+  SLEEPING: { PATIENCE: 0.12, SELF_CARE: 0.18 },
+  RESTING: { PATIENCE: 0.16, SELF_CARE: 0.22 },
+  EATING: { SELF_CARE: 0.12 },
+  DRINKING: { SELF_CARE: 0.12 },
+  WATCHING: { OPENNESS: 0.12 }
+});
+
+const TRAIT_LEARNING_MIN_EVIDENCE = 3;
+const TRAIT_LEARNING_WINDOW = 16;
+const TRAIT_LEARNING_BASE_RATE = 0.0018;
+const TRAIT_LEARNING_MAX_DELTA = 0.0035;
+
+function calculateTraitEvidence({ actionType, outcomes = [], repetitions = 0, mentalState = {}, relationshipQuality = null } = {}) {
+  const action = String(actionType || "").toUpperCase();
+  const weights = TRAIT_LEARNING_PROFILES[action] || {};
+  const normalizedOutcomes = (Array.isArray(outcomes) ? outcomes : []).map(value => String(value || "").toUpperCase()).filter(Boolean);
+  if (!Object.keys(weights).length || normalizedOutcomes.length < TRAIT_LEARNING_MIN_EVIDENCE) return { weights: {}, evidenceStrength: 0, repetition: 0, selfPerception: 0.75 };
+  const successRate = normalizedOutcomes.filter(value => value === "SUCCESS").length / normalizedOutcomes.length;
+  const failureRate = normalizedOutcomes.filter(value => value === "FAILURE").length / normalizedOutcomes.length;
+  const partialRate = normalizedOutcomes.filter(value => value === "PARTIAL").length / normalizedOutcomes.length;
+  const outcomeValence = successRate - failureRate - partialRate * 0.25;
+  const repetition = Math.min(1, Math.max(0, Number(repetitions) || 0) / 8);
+  const certainty = clamp(mentalState?.certainty ?? 0.5);
+  const rumination = clamp(mentalState?.rumination ?? 0.1);
+  const selfPerception = clamp(0.75 + (certainty - 0.5) * 0.35 - rumination * 0.10, 0.55, 1.05);
+  let socialModifier = 1;
+  if (relationshipQuality !== null && Number.isFinite(Number(relationshipQuality))) socialModifier = clamp(0.75 + Number(relationshipQuality) * 0.5, 0.75, 1.25);
+  const evidenceStrength = Math.max(-1, Math.min(1, outcomeValence * (0.55 + 0.45 * repetition) * selfPerception * socialModifier));
+  return { weights, evidenceStrength, repetition, successRate, failureRate, partialRate, outcomeValence, selfPerception };
+}
+
+async function developTraits(entityId, simulationTime, evidence = {}, causeEventId = null, causeActionId = null) {
+  const actionType = String(evidence?.actionType || "").toUpperCase();
+  const targetEntityId = evidence?.targetEntityId || null;
+  const weights = TRAIT_LEARNING_PROFILES[actionType];
+  if (!causeActionId || !weights) return [];
+
+  const [actionRows] = await pool.query(`SELECT action_type AS actionType,result,started_simulation_at AS startedAt,completed_simulation_at AS completedAt
+     FROM actions
+     WHERE entity_id=UUID_TO_BIN(?) AND status='COMPLETED' AND action_type=?
+     ORDER BY completed_simulation_at DESC LIMIT ?`, [entityId, actionType, TRAIT_LEARNING_WINDOW]);
+  const parsedRows = actionRows.map(row => ({ ...row, result: parseJson(row.result, {}) || {} }));
+  const sameAction = parsedRows.filter(row => actionType !== "TALKING" || (targetEntityId && row.result?.targetEntityId && String(row.result.targetEntityId) === String(targetEntityId)));
+  if (sameAction.length < TRAIT_LEARNING_MIN_EVIDENCE) return [];
+
+  let relationshipQuality = null;
+  if (actionType === "TALKING" && targetEntityId) {
+    const [relationshipRows] = await pool.query(`SELECT AVG(COALESCE(familiarity_score,0)) AS familiarity, AVG(COALESCE(closeness_score,0)) AS closeness, AVG(COALESCE(affection_score,0)) AS affection, AVG(COALESCE(trust_score,0)) AS trust, AVG(COALESCE(conflict_score,0)) AS conflict
+      FROM relationships
+      WHERE simulation_id=(SELECT simulation_id FROM entities WHERE id=UUID_TO_BIN(?) LIMIT 1) AND status='ACTIVE'
+        AND ((source_entity_id=UUID_TO_BIN(?) AND target_entity_id=UUID_TO_BIN(?)) OR (source_entity_id=UUID_TO_BIN(?) AND target_entity_id=UUID_TO_BIN(?)))`, [entityId, entityId, targetEntityId, targetEntityId, entityId]);
+    const relation = relationshipRows[0] || {};
+    relationshipQuality = clamp((Number(relation.familiarity || 0) + Number(relation.closeness || 0) + Number(relation.affection || 0) + Number(relation.trust || 0) - Number(relation.conflict || 0)) / 4, 0, 1);
+  }
+
+  const [entityRows] = await pool.query(`SELECT attributes FROM entities WHERE id=UUID_TO_BIN(?) LIMIT 1`, [entityId]);
+  const attributes = parseJson(entityRows[0]?.attributes, {}) || {};
+  const mentalState = attributes.mentalState && typeof attributes.mentalState === "object" ? attributes.mentalState : {};
+  const outcomes = sameAction.map(row => String(row.result?.outcome || "SUCCESS").toUpperCase());
+  const traitEvidence = calculateTraitEvidence({ actionType, outcomes, repetitions: sameAction.length, mentalState, relationshipQuality });
+  if (!traitEvidence.evidenceStrength) return [];
+
+  const traits = await getTraits(entityId);
+  const out = [];
+  for (const trait of traits) {
+    const behaviorWeight = Number(traitEvidence.weights[trait.code] || 0);
+    if (!behaviorWeight) continue;
+    const volatility = clamp(Number(trait.volatility ?? 0.5), 0, 1);
+    const confidenceFactor = 0.80 + (1 - volatility) * 0.20;
+    const current = clamp(trait.value);
+    const distanceFromNearestExtreme = Math.min(current, 1 - current);
+    const plasticity = 0.55 + 2 * distanceFromNearestExtreme;
+    const rawDelta = behaviorWeight * traitEvidence.evidenceStrength * plasticity * confidenceFactor * TRAIT_LEARNING_BASE_RATE;
+    const delta = Math.max(-TRAIT_LEARNING_MAX_DELTA, Math.min(TRAIT_LEARNING_MAX_DELTA, rawDelta));
+    if (Math.abs(delta) < 0.000001) continue;
+    const old = round5(trait.value);
+    const next = round5(clamp(old + delta));
+    const historyDelta = round5(next - old);
+    if (Math.abs(historyDelta) < 0.000001) continue;
+    const [updated] = await pool.query(`UPDATE entity_traits_current SET value=?,updated_simulation_at=?,version=version+1
+       WHERE entity_id=UUID_TO_BIN(?) AND trait_id=UUID_TO_BIN(?) AND version=?`, [next, simulationTime, entityId, trait.traitId, trait.version]);
+    if (!updated.affectedRows) continue;
+    await pool.query(`INSERT INTO entity_trait_history
+        (id,entity_id,trait_id,old_value,new_value,delta,changed_simulation_at,cause_event_id,cause_action_id,change_reason)
+       VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,?,UUID_TO_BIN(?),UUID_TO_BIN(?),?)`, [uuid(), entityId, trait.traitId, old, next, historyDelta, simulationTime, causeEventId, causeActionId, "repeated " + actionType + " experience: outcome=" + traitEvidence.outcomeValence.toFixed(2) + ", evidence=" + traitEvidence.evidenceStrength.toFixed(3) + ", repetition=" + sameAction.length]);
+    out.push({ code: trait.code, old, next, delta: historyDelta, evidence: { actionType, targetEntityId, repetition: sameAction.length, successRate: traitEvidence.successRate, failureRate: traitEvidence.failureRate, partialRate: traitEvidence.partialRate, outcomeValence: traitEvidence.outcomeValence, evidenceStrength: traitEvidence.evidenceStrength, relationshipQuality, selfPerception: traitEvidence.selfPerception } });
+  }
+  return out;
+}
+
+module.exports={ensureEntityState,readNeeds,updateNeeds,applyEmotions,getTraits,getTraitsBatch,developTraits,calculateTraitEvidence,emotionAppraisal,traitBehaviorWeights,safetyContextDelta,persistNeedTransition,accumulateNeedHistory,accumulateEmotionHistory,flushPendingNeedHistory,flushPendingEmotionHistory,withEntityStateLock,OUTCOME_DEPENDENT_NEED_EFFECTS,isOutcomeDependentNeed,calculateOutcomeDependentNeedDelta};
