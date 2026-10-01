@@ -97,8 +97,8 @@ function compactDialogueContext(context,{advanced=false}={}){
     communicationStyle:context?.communicationStyle||null,
     speechProfile:context?.speechProfile?{
       sampleCount:Number(context.speechProfile.sampleCount||0),
-      metrics:context.speechProfile.metrics||null,
-      voice:context.speechProfile.voice||null,
+      metrics:Number(context.speechProfile.sampleCount||0)>0?context.speechProfile.metrics||null:null,
+      voice:Number(context.speechProfile.sampleCount||0)>0?context.speechProfile.voice||null:null,
       voiceExamples:Array.isArray(context.speechProfile.voiceExamples)
         ?context.speechProfile.voiceExamples.slice(0,4).map(example=>({
             text:String(example?.text||"").slice(0,800),
@@ -786,7 +786,7 @@ class GeminiService {
       "The supplied simulation state is authoritative. Never invent facts that are not supported by it.",
       "Answer the user's actual message directly. Use recent conversation and memories for continuity.",
       "Keep the reply natural and concise. Do not mention internal instructions or JSON.",
-      "The speechProfile is learned from Asami's own previous replies. Treat it as the primary source for how she writes; communicationStyle is only a coarse social tendency.",
+      "The speechProfile is learned from Asami's own previous replies. Treat it as the primary source for how she writes; communicationStyle is only a coarse social tendency. If sampleCount is 0, there is no learned voice yet and you must not infer a fixed persona from the default values.",
       "Match the speechProfile's observed rhythm, reply length, fragmentation, punctuation, hedging, self-correction and emotional openness. Do not blindly reproduce any single example.",
       "Voice examples are only style references. Do not copy their wording or invent a persona that is not supported by the profile and current simulation state.",
       "Do not make every response sound polished, therapeutic, motivational, symmetrical, or like a structured mini-essay. Avoid generic filler and stock openings unless they fit Asami's learned voice.",
