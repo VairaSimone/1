@@ -17,3 +17,21 @@ test("walking toward a resource is not interrupted by the same critical need",()
 test("sleeping is not interrupted by sleepiness itself",()=>{const result=getInterruptionReason("SLEEPING",[{code:"SLEEPINESS",value:.95},{code:"THIRST",value:.2}],{recentEvents:[]});assert.equal(result,null);});
 test("energy and safety are critical only when low",()=>{assert.equal(isCriticalNeed("ENERGY",.9),false);assert.equal(isCriticalNeed("ENERGY",.14),true);assert.equal(isCriticalNeed("SAFETY",1),false);assert.equal(isCriticalNeed("SAFETY",.19),true);});
 test("healthy energy and safety never interrupt long actions",()=>{assert.equal(getInterruptionReason("SLEEPING",[{code:"ENERGY",value:.9},{code:"SAFETY",value:1}],{recentEvents:[]}),null);assert.equal(getInterruptionReason("STUDYING",[{code:"ENERGY",value:.9},{code:"SAFETY",value:1}],{recentEvents:[]}),null);});
+test("high-importance communication does not interrupt long actions",()=>{
+  const result=getInterruptionReason("SLEEPING",[],{recentEvents:[{id:"communication-1",type:"COMMUNICATION",category:"SOCIAL",title:"Observer communication",description:"A normal conversation",importance:.99,metadata:{}}]});
+  assert.equal(result,null);
+});
+test("explicitly interrupting communication can interrupt long actions",()=>{
+  const result=getInterruptionReason("SLEEPING",[],{recentEvents:[{id:"emergency-communication-1",type:"COMMUNICATION",category:"SOCIAL",title:"Emergency!",description:"A critical emergency was communicated",importance:.5,metadata:{interruptsActions:true}}]});
+  assert.equal(result?.type,"CRITICAL_EVENT");
+  assert.equal(result?.eventId,"emergency-communication-1");
+});
+test("explicitly non-interrupting critical-looking events do not interrupt",()=>{
+  const result=getInterruptionReason("SLEEPING",[],{recentEvents:[{id:"suppressed-1",type:"RANDOM",category:"RANDOM",title:"FIRE drill",description:"A simulated emergency",importance:.99,metadata:{interruptsActions:false}}]});
+  assert.equal(result,null);
+});
+test("non-social emergency-pattern events still interrupt",()=>{
+  const result=getInterruptionReason("SLEEPING",[],{recentEvents:[{id:"fire-1",type:"ENVIRONMENTAL",category:"ENVIRONMENTAL",title:"Fire emergency",description:"A fire breaks out",importance:.8,metadata:{}}]});
+  assert.equal(result?.type,"CRITICAL_EVENT");
+  assert.equal(result?.eventId,"fire-1");
+});
