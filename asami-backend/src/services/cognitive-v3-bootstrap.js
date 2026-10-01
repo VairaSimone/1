@@ -47,7 +47,12 @@ async function install() {
         await emergent.branchCounterfactuals({ simulationId,entityId,simulationTime,decisionId,actionType });
       }
     } catch (err) {
-      logger.warn({ err: err.message },'Cognitive v3 counterfactual branching skipped');
+      logger.warnThrottled(
+      'cognitive-v3:counterfactual',
+      60000,
+      { err: err.message },
+      'Cognitive v3 counterfactual branching skipped'
+    );
     }
     return result;
   };
@@ -87,11 +92,21 @@ async function install() {
           }
           return results;
         }, { retries: 3, baseDelayMs: 10 }).catch(err => {
-          logger.warn({ err: err.message, simulationId, entityId, actionId, actionType, outcome },'Cognitive v3 post-action learning failed after retries');
+          logger.warnThrottled(
+      `cognitive-v3:post-action:${simulationId}:${entityId}`,
+      60000,
+      { err: err.message, simulationId, entityId, actionId, actionType, outcome },
+      'Cognitive v3 post-action learning failed after retries'
+    );
         });
       }
     } catch (err) {
-      logger.warn({ err: err.message },'Cognitive v3 post-action learning skipped');
+      logger.warnThrottled(
+      'cognitive-v3:post-action-skipped',
+      60000,
+      { err: err.message },
+      'Cognitive v3 post-action learning skipped'
+    );
     }
     return result;
   };
