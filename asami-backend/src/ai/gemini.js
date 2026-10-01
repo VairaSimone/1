@@ -692,6 +692,11 @@ class GeminiService {
             fallbackDepth:modelIndex
           };
           const fallbackModel=models[modelIndex+1]||null;
+          lastTransientFailure={
+            reason:fallbackReason,
+            retryAfterMs:modelCooldown,
+            model
+          };
           logger.warnThrottled(
             `gemini:provider-limit:${kind}:${model}:${fallbackReason}`,
             60000,
@@ -702,7 +707,9 @@ class GeminiService {
               retryAfterMs:modelCooldown,
               fallbackTo:fallbackModel
             },
-            "Gemini model limit reached; trying fallback model"
+            fallbackModel
+              ? "Gemini model limit reached; trying fallback model"
+              : "Gemini model limit reached; deterministic fallback will be used"
           );
           continue;
         }
@@ -735,7 +742,9 @@ class GeminiService {
               fallbackTo:fallbackModel,
               latencyMs:Date.now()-startedAt
             },
-            "Gemini model unavailable; trying fallback model"
+            fallbackModel
+              ? "Gemini model unavailable; trying fallback model"
+              : "Gemini model unavailable; deterministic fallback will be used"
           );
           continue;
         }
