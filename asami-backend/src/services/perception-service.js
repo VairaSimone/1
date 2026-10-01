@@ -24,7 +24,7 @@ async function perceive(simulationId,entityId,simulationTime){
       LIMIT 25
     `,[simulationId,simulationId,entityId,entityId]),
     pool.query(`
-      SELECT BIN_TO_UUID(e.id) AS id,et.code AS type,e.title,e.description,e.importance,e.simulation_at AS simulationAt
+      SELECT BIN_TO_UUID(e.id) AS id,et.code AS type,et.category,e.title,e.description,e.importance,e.simulation_at AS simulationAt,e.metadata
       FROM events e JOIN event_types et ON et.id=e.event_type_id
       WHERE e.simulation_id=UUID_TO_BIN(?) AND e.simulation_at<=?
       ORDER BY e.simulation_at DESC LIMIT 12
@@ -44,7 +44,17 @@ async function perceive(simulationId,entityId,simulationTime){
     currentLocation.environment = attributes.environment || {};
     delete currentLocation.attributes;
   }
-  return {simulationTime,location:currentLocation,nearby,recentEvents,relationships};
+  return {
+    simulationTime,
+    location:currentLocation,
+    nearby,
+    recentEvents:recentEvents.map(event => ({
+      ...event,
+      category:event.category || null,
+      metadata:parseJson(event.metadata,{})
+    })),
+    relationships
+  };
 }
 
 
@@ -84,7 +94,7 @@ async function perceiveBatch(simulationId,entityIds=[],simulationTime){
       [simulationId,...ids,simulationId,...ids]
     ),
     pool.query(`
-      SELECT BIN_TO_UUID(e.id) AS id,et.code AS type,e.title,e.description,e.importance,e.simulation_at AS simulationAt
+      SELECT BIN_TO_UUID(e.id) AS id,et.code AS type,et.category,e.title,e.description,e.importance,e.simulation_at AS simulationAt,e.metadata
       FROM events e JOIN event_types et ON et.id=e.event_type_id
       WHERE e.simulation_id=UUID_TO_BIN(?) AND e.simulation_at<=?
       ORDER BY e.simulation_at DESC LIMIT 12`,
@@ -104,7 +114,12 @@ async function perceiveBatch(simulationId,entityIds=[],simulationTime){
       [simulationId,...ids,...ids]
     )
   ]);
-  const byId=new Map(ids.map(id=>[id,{simulationTime,location:null,nearby:[],recentEvents:eventRows||[],relationships:[]}]));
+  const normalizedRecentEvents=(eventRows||[]).map(event => ({
+    ...event,
+    category:event.category || null,
+    metadata:parseJson(event.metadata,{})
+  }));
+  const byId=new Map(ids.map(id=>[id,{simulationTime,location:null,nearby:[],recentEvents:normalizedRecentEvents,relationships:[]}]));
   for(const row of locationRows){
     const item=byId.get(row.entityId); if(!item)continue;
     const attributes=parseJson(row.attributes,{});
