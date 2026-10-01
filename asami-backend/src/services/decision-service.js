@@ -815,6 +815,9 @@ async function makeDecision({
   );
   if (criticalResourceRecovery?.selectedAction)protectedActions.push(normalizeAction(criticalResourceRecovery.selectedAction));
   candidates = applyRecoveryBlocks(candidates,context?.recoveryBlocks || [],protectedActions);
+  candidates = applyWanderingGuard(candidates, context?.needs || [], {
+    activePlanStep: context?.activePlanStep || null
+  });
 
   if (criticalResourceRecovery?.candidate) {
     const recoveryCandidate = criticalResourceRecovery.candidate;
@@ -839,7 +842,8 @@ async function makeDecision({
   const aiCandidate = candidates.find(
     candidate =>
       normalizeAction(candidate.action) === aiAction &&
-      !candidate.recoveryBlocked
+      !candidate.recoveryBlocked &&
+      !candidate.wanderingBlocked
   );
   const aiHasSocialTarget =
     aiAction !== "TALKING" ||
