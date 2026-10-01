@@ -165,8 +165,40 @@ function getCriticalInterruptionNeed(activeActionType, needs = []) {
 function getCriticalInterruptionEvent(perception) {
   const events = Array.isArray(perception?.recentEvents) ? perception.recentEvents : [];
   for (const event of events) {
-    const type = String(event?.type || ""), title = String(event?.title || ""), description = String(event?.description || ""), importance = Number(event?.importance);
-    if ((Number.isFinite(importance) && importance >= 0.9) || CRITICAL_EVENT_PATTERNS.test(`${type} ${title} ${description}`)) return { id: event?.id || null, type, title, importance: Number.isFinite(importance) ? importance : null };
+    const type = String(event?.type || "").toUpperCase();
+    const category = String(event?.category || "").toUpperCase();
+    const title = String(event?.title || "");
+    const description = String(event?.description || "");
+    const importance = Number(event?.importance);
+    const metadata = event?.metadata && typeof event.metadata === "object" ? event.metadata : {};
+    const explicitInterruptsActions = metadata.interruptsActions;
+
+    // Explicit true is authoritative, including for social/communication events.
+    if (explicitInterruptsActions === true) {
+      return {
+        id: event?.id || null,
+        type,
+        title,
+        importance: Number.isFinite(importance) ? importance : null
+      };
+    }
+
+    // Explicit false suppresses inferred criticality.
+    if (explicitInterruptsActions === false) continue;
+
+    // Importance alone must never interrupt an action. Keep the keyword-based
+    // emergency fallback only for non-social events.
+    const isCommunication = type === "COMMUNICATION";
+    const isSocial = category === "SOCIAL";
+    const isEmergencyPattern = CRITICAL_EVENT_PATTERNS.test(type + " " + title + " " + description);
+    if (!isCommunication && !isSocial && isEmergencyPattern) {
+      return {
+        id: event?.id || null,
+        type,
+        title,
+        importance: Number.isFinite(importance) ? importance : null
+      };
+    }
   }
   return null;
 }
