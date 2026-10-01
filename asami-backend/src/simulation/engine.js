@@ -322,7 +322,12 @@ class SimulationEngine {
     try {
       const healthy = await pingWithRetry({ attempts: Math.min(3, Number(env.DB_RETRY_ATTEMPTS) || 3), throwNonTransient: true });
       if (!healthy) {
-        logger.warn({ database: getDatabaseHealth() }, "database degraded; skipping engine pulse");
+        logger.warnThrottled(
+  "engine:database-degraded:global",
+  60000,
+  { database: getDatabaseHealth() },
+  "database degraded; skipping engine pulse"
+);
         return;
       }
       const simulations = await simRepo.listSimulations();
@@ -363,7 +368,12 @@ class SimulationEngine {
       const previousTime = new Date(sim.currentSimulationAt || clock.simulationAnchorAt); if (nextTime <= previousTime) return;
       const dbReady = await pingWithRetry({ attempts: Math.min(2, Number(env.DB_RETRY_ATTEMPTS) || 2), throwNonTransient: true });
       if (!dbReady) {
-        logger.warn({ simulationId: sim.id, database: getDatabaseHealth() }, "database degraded; tick creation skipped");
+        logger.warnThrottled(
+  `engine:database-degraded:${sim.id}`,
+  60000,
+  { simulationId: sim.id, database: getDatabaseHealth() },
+  "database degraded; tick creation skipped"
+);
         return;
       }
       tickId = await simRepo.advanceAndCreateTick(sim.id, nextTime, sim.version, "AUTONOMOUS", env.ENGINE_VERSION); if (!tickId) return;
@@ -432,13 +442,23 @@ class SimulationEngine {
         }catch(batchStateError){
           activeActionsByEntity=new Map();
           perceptionByEntity=new Map();
-          logger.warn(logger.contextError({simulationId:sim.id,phase:"entity.context.batch"},batchStateError,"batched entity context unavailable; falling back to per-actor reads"));
+          logger.warnThrottled(
+  `engine:batch-fallback:${sim.id}:entity.context.batch`,
+  60000,
+  logger.contextError({simulationId:sim.id,phase:"entity.context.batch"},batchStateError,"batched entity context unavailable; falling back to per-actor reads"),
+  "batched entity context unavailable; falling back to per-actor reads"
+);
         }
         try{
           traitsByEntity=await getTraitsBatch(actors);
         }catch(batchTraitsError){
           traitsByEntity=new Map();
-          logger.warn(logger.contextError({simulationId:sim.id,phase:"entity.traits.batch"},batchTraitsError,"batched traits unavailable; falling back to per-actor reads"));
+          logger.warnThrottled(
+  `engine:batch-fallback:${sim.id}:entity.traits.batch`,
+  60000,
+  logger.contextError({simulationId:sim.id,phase:"entity.traits.batch"},batchTraitsError,"batched traits unavailable; falling back to per-actor reads"),
+  "batched traits unavailable; falling back to per-actor reads"
+);
         }
         try {
           setPhase("autonomy.context.batch");
@@ -446,7 +466,12 @@ class SimulationEngine {
           logger.debug({simulationId:sim.id,simulationTime:nextTime.toISOString(),actorCount:actors.length,batchActorCount:autonomyBatchContext?.contexts?.size||0},"autonomy tick context prepared in batch");
         } catch(batchError) {
           autonomyBatchContext=null;
-          logger.warn(logger.contextError({simulationId:sim.id,phase:"autonomy.context.batch"},batchError,"batched autonomy context unavailable; falling back to per-actor context loading"));
+          logger.warnThrottled(
+  `engine:batch-fallback:${sim.id}:autonomy.context.batch`,
+  60000,
+  logger.contextError({simulationId:sim.id,phase:"autonomy.context.batch"},batchError,"batched autonomy context unavailable; falling back to per-actor context loading"),
+  "batched autonomy context unavailable; falling back to per-actor context loading"
+);
         }
         for (const id of actors) {
           if (this.stopping) break;
@@ -773,7 +798,12 @@ class SimulationEngine {
                 }, recoveryError, "critical resource emergency recovery failed"));
               }
             } else if (String(err?.code||"").toUpperCase()==="CRITICAL_ACTION_UNAVAILABLE") {
-              logger.warn(logger.contextError(errorContext,err,"critical action unavailable; actor remains active for the next tick"));
+              logger.warnThrottled(
+  `engine:critical-action-unavailable:${sim.id}:${id}`,
+  60000,
+  logger.contextError(errorContext,err,"critical action unavailable; actor remains active for the next tick"),
+  "critical action unavailable; actor remains active for the next tick"
+);
             } else if (isExpectedEntityCondition(err)) {
               logger.debug(logger.contextError(errorContext,err,"expected entity condition; actor skipped for this tick"));
             } else {
@@ -800,18 +830,28 @@ class SimulationEngine {
                 },"actor inactivity threshold reached");
               }
             } catch (observabilityError) {
-              logger.warn({
-                simulationId:sim.id,
-                entityId:id,
-                event:"OBSERVABILITY_FAILED",
-                error:String(observabilityError?.message||observabilityError)
-              },"actor observability update failed");
+              logger.debugThrottled(
+  `engine:observability-failed:${sim.id}:${id}`,
+  60000,
+  {
+    simulationId:sim.id,
+    entityId:id,
+    event:"OBSERVABILITY_FAILED",
+    error:String(observabilityError?.message||observabilityError)
+  },
+  "actor observability update failed"
+);
             }
           }
         }
         if (this.stopping) return;
         setPhase("world.decay"); await decayMemories(sim.id, nextTime); this.tickCounter.set(sim.id, Number(this.tickCounter.get(sim.id) || 0) + 1);
-        const count = Number(this.tickCounter.get(sim.id) || 0); if (count % env.GEMINI_PROACTIVE_EVERY_TICKS === 0) { try { const asami = await getAsamiCandidate(sim.id); if (asami) await initiateConversation({ simulationId: sim.id, asamiEntityId: asami.id, simulationTime: nextTime.toISOString(), gemini: this.gemini, hub: this.hub }); } catch (err) { logger.warn({ simulationId: sim.id, phase: "proactive_conversation", err }, "proactive conversation attempt failed"); } } if (count % env.SNAPSHOT_EVERY_TICKS === 0) await simRepo.createSnapshot(sim.id, nextTime);
+        const count = Number(this.tickCounter.get(sim.id) || 0); if (count % env.GEMINI_PROACTIVE_EVERY_TICKS === 0) { try { const asami = await getAsamiCandidate(sim.id); if (asami) await initiateConversation({ simulationId: sim.id, asamiEntityId: asami.id, simulationTime: nextTime.toISOString(), gemini: this.gemini, hub: this.hub }); } catch (err) { logger.warnThrottled(
+  `engine:proactive-conversation:${sim.id}`,
+  300000,
+  { simulationId: sim.id, phase: "proactive_conversation", err },
+  "proactive conversation attempt failed"
+); } } if (count % env.SNAPSHOT_EVERY_TICKS === 0) await simRepo.createSnapshot(sim.id, nextTime);
         await simRepo.completeTick(tickId, { status: "COMPLETED", entityCount: actors.length });
         observability.logSnapshot(sim.id,nextTime.toISOString());
         void maybeRunSafeRetention(sim.id, nextTime.toISOString());
