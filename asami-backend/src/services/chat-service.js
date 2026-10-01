@@ -7,6 +7,14 @@ const { createEvent, addEffect } = require("./event-service");
 const { applyNeedDeltas, applyEmotionDeltas, applyTraitDeltas, applyRelationshipDeltas, updateCommunicationStyle, createGoalFromProposal } = require("./conversation-cognition-service");
 const { getCognitiveProfile, applyDialogueCognition, recordHabitEvidence, updateMentalState } = require("./personality-service");
 const { getSpeechProfile, recordSpeechSample } = require("./speech-profile-service");
+async function updateSpeechProfileSafely({simulationId,entityId,simulationTime,text,source,fallback=null}={}){
+  try{
+    return await recordSpeechSample({simulationId,entityId,simulationTime,text,source})||fallback||null;
+  }catch(err){
+    logger.warn({simulationId,entityId,source,error:String(err?.message||err)},"Speech profile update failed; conversation will continue");
+    return fallback||null;
+  }
+}
 const { learnFromAction } = require("./action-service");
 const logger = require("../lib/logger");
 const {
@@ -401,7 +409,6 @@ async function sendMessage({
     conversationTopic:context.conversationTopic,
     conversationState,
     conversationInnerState:innerStateAfter,
-    speechProfile:updatedSpeechProfile,
     significance:significance.score,
     significanceReasons:significance.reasons,
     significanceBefore:significanceBefore.score,
@@ -413,13 +420,15 @@ async function sendMessage({
     "INSERT INTO messages(id,simulation_id,conversation_id,sender_entity_id,message_type,content,simulation_created_at,status,metadata,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),'ASSISTANT',?,?,'DELIVERED',?,1)",
     [assistantId,simulationId,cid,asamiEntityId,reply,simulationTime,JSON.stringify({...aiMeta,turnSequence,messageOrder:1})]
   );
-  const updatedSpeechProfile=await recordSpeechSample({
+  const updatedSpeechProfile=await updateSpeechProfileSafely({
     simulationId,
     entityId:asamiEntityId,
     simulationTime,
     text:reply,
-    source:generated?"GEMINI":"DETERMINISTIC"
+    source:generated?"GEMINI":"DETERMINISTIC",
+    fallback:context.speechProfile
   });
+  aiMeta.speechProfile=updatedSpeechProfile;
   await pool.query(
     "UPDATE communication_intents SET status='SENT',version=version+1 WHERE id=UUID_TO_BIN(?) AND status='ATTEMPTING'",
     [intentId]
@@ -802,7 +811,6 @@ async function initiateConversation({simulationId,asamiEntityId,simulationTime,g
     conversationTopic:topic,
     conversationState,
     conversationInnerState:updatedInnerState,
-    speechProfile:updatedSpeechProfile,
     significance:significance.score,
     significanceReasons:significance.reasons,
     memoryCreated:Boolean(memoryId)
@@ -811,13 +819,15 @@ async function initiateConversation({simulationId,asamiEntityId,simulationTime,g
     "INSERT INTO messages(id,simulation_id,conversation_id,sender_entity_id,message_type,content,simulation_created_at,status,metadata,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),'ASSISTANT',?,?,'DELIVERED',?,1)",
     [assistantId,simulationId,cid,asamiEntityId,reply,simulationTime,JSON.stringify({...metadata,turnSequence,messageOrder:1})]
   );
-  const updatedSpeechProfile=await recordSpeechSample({
+  const updatedSpeechProfile=await updateSpeechProfileSafely({
     simulationId,
     entityId:asamiEntityId,
     simulationTime,
     text:reply,
-    source:generated?"GEMINI":"DETERMINISTIC"
+    source:generated?"GEMINI":"DETERMINISTIC",
+    fallback:context.speechProfile
   });
+  metadata.speechProfile=updatedSpeechProfile;
   await pool.query(
     "UPDATE communication_attempts SET status='DELIVERED',message_id=UUID_TO_BIN(?),result=? WHERE id=UUID_TO_BIN(?) AND status='STARTED'",
     [assistantId,JSON.stringify({messageId:assistantId}),attemptId]
