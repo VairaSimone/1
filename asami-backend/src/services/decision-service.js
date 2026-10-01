@@ -11,7 +11,7 @@ function normalizeAction(v){return String(v||"").trim().toUpperCase();}
 function parseJson(v,f={}){if(v===null||v===undefined)return f;if(typeof v==="object")return v;try{return JSON.parse(v);}catch{return f;}}
 function personalizeDecisionNeeds(needs=[],traits=[],habits=[],recentActions=[],simulationTime=null){
   const traitMap=Object.fromEntries((traits||[]).map(item=>[normalizeAction(item?.code),Number(item?.value)]));
-  const history=(recentActions||[]).map(item=>({actionType:item?.actionType,outcome:item?.outcome||item?.result?.outcome||item?.status||null}));
+  const history=(recentActions||[]).map(item=>({actionType:item?.actionType,outcome:item?.outcome||item?.result?.outcome||item?.status||"COMPLETED"}));
   return (needs||[]).map(need=>{
     const code=normalizeAction(need?.code);
     const trait=calculateTraitNeedModifiers(code,traitMap);
