@@ -438,11 +438,17 @@ class GeminiService {
       ?Number(deadlineAt)
       :Date.now()+Math.max(5000,Number.isFinite(configuredMaxLatencyMs)?configuredMaxLatencyMs:12000);
 
-    const outputTokenCeiling=Number(outputTokenCeilingOverride)||(
+    const configuredOutputTokenCeiling=Number(outputTokenCeilingOverride)||(
       kind==="dialogue"
         ?Number(env.GEMINI_DIALOGUE_OUTPUT_TOKEN_CEILING)
         :Number(env.GEMINI_AUTONOMY_OUTPUT_TOKEN_CEILING)
     );
+    // Gemini 3 thinking tokens share the maxOutputTokens budget with the
+    // structured response. Keep compact autonomy responses above a safe floor
+    // so JSON cannot be truncated merely because the thinking budget consumed it.
+    const outputTokenCeiling=kind==="autonomy"
+      ?Math.max(2048,configuredOutputTokenCeiling)
+      :configuredOutputTokenCeiling;
     const configuredModels=kind==="dialogue"?this.dialogueModels:this.models;
     const availableModels=this._availableModels(kind);
     const requestedMaxModels=Number(maxModels);
@@ -543,7 +549,7 @@ class GeminiService {
             abortSignal:controller.signal,
             httpOptions:{
               timeout:timeoutMs,
-              retryOptions:{attempts:1,initialDelay:0}
+              retryOptions:{attempts:2,initialDelay:250}
             }
           }
         });
@@ -660,7 +666,9 @@ class GeminiService {
               fallbackTo:fallbackModel,
               latencyMs:Date.now()-startedAt
             },
-            "Gemini produced invalid structured output; trying fallback model"
+            fallbackModel
+              ? "Gemini produced invalid structured output; trying fallback model"
+              : "Gemini produced invalid structured output; deterministic fallback will be used"
           );
           continue;
         }
@@ -765,16 +773,26 @@ class GeminiService {
       model:lastTransientFailure?.model||null,
       fallbackDepth:models.length
     };
+    const finalReason=lastTransientFailure?.reason||"ALL_GEMINI_MODELS_FAILED";
+    const finalMessage=
+      finalReason==="AI_INVALID_OUTPUT"
+        ? (models.length>1
+            ? "all attempted Gemini models returned invalid structured output; deterministic fallback used"
+            : "Gemini structured output was invalid; deterministic fallback used")
+        : finalReason==="PROVIDER_TRANSIENT_FAILURE"
+          ? "all attempted Gemini models were temporarily unavailable; deterministic fallback used"
+          : "all attempted Gemini models failed; deterministic fallback used";
     logger.warnThrottled(
       `gemini:all-failed:${kind}`,
       60000,
       {
         kind,
         models,
-        reason:lastTransientFailure?.reason||"ALL_GEMINI_MODELS_FAILED",
+        attemptedModels:models.length,
+        reason:finalReason,
         retryAfterMs:Number(lastTransientFailure?.retryAfterMs||0)
       },
-      "all Gemini models unavailable; deterministic fallback used"
+      finalMessage
     );
     return null;
   }
