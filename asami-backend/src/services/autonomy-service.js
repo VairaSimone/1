@@ -363,5 +363,54 @@ const decision=await decisionService.makeDecision({simulationId,entityId,simulat
   return{decision,started,intentionId,goalState,aiChoice};
 }
 async function ensureIntention({simulationId,entityId,simulationTime,decision,sourceType,goalState,aiChoice,geminiDecision}){const intentionId=require("../lib/ids").uuid(),decisionSource=decision?.decisionSource||sourceType||"DETERMINISTIC",reason=serializeReason({source:decisionSource,status:geminiDecision?.status||"NOT_CONSULTED",geminiReason:geminiDecision?.reason||null,decision:aiChoice?.strategy||decision.reason||"autonomous decision"}),goalId=goalState.goal?.id||null,planId=goalState.plan?.id||null,mysqlTime=mysqlSimulationDateTime(simulationTime);await pool.query(`INSERT INTO intentions(id,simulation_id,entity_id,goal_id,plan_id,action_type,target_entity_id,target_location_id,scheduled_simulation_at,priority,status,reason,created_simulation_at,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,UUID_TO_BIN(?),UUID_TO_BIN(?),NULL,?,'ACTIVE',?,?,1)`,[intentionId,simulationId,entityId,goalId,planId,decision.actionType,decision.targetEntityId,decision.targetLocationId,goalState.goal?.priority||.5,reason,mysqlTime]);return intentionId;}
-async function completeGoalForAction(goalId,actionType,simulationTime,outcome,actionResult={}){if(!goalId)return null;let simulationId=actionResult?.simulationId||null,entityId=actionResult?.entityId||null;if(!simulationId||!entityId){const[rows]=await pool.query(`SELECT BIN_TO_UUID(simulation_id) AS simulationId,BIN_TO_UUID(entity_id) AS entityId FROM goals WHERE id=UUID_TO_BIN(?) LIMIT 1`,[goalId]);simulationId=simulationId||rows[0]?.simulationId||null;entityId=entityId||rows[0]?.entityId||null;}if(!simulationId||!entityId)return null;return advancePlanForAction({simulationId,entityId,goalId,actionType,outcome,simulationTime,actionResult});}
+async function completeGoalForAction(goalId,actionType,simulationTime,outcome,actionResult={}) {
+  let resolvedGoalId=goalId||null;
+  let simulationId=actionResult?.simulationId||null;
+  let entityId=actionResult?.entityId||null;
+  const actionId=actionResult?.actionId||null;
+
+  // The action is the source of truth for goal linkage. Older actions may not
+  // have goalId in JSON metadata even though actions.source_goal_id is set.
+  if (actionId && (!resolvedGoalId || !simulationId || !entityId)) {
+    const [rows]=await pool.query(
+      `SELECT BIN_TO_UUID(source_goal_id) AS goalId,
+              BIN_TO_UUID(simulation_id) AS simulationId,
+              BIN_TO_UUID(entity_id) AS entityId
+       FROM actions
+       WHERE id=UUID_TO_BIN(?)
+       LIMIT 1`,
+      [actionId]
+    );
+    resolvedGoalId=resolvedGoalId||rows[0]?.goalId||null;
+    simulationId=simulationId||rows[0]?.simulationId||null;
+    entityId=entityId||rows[0]?.entityId||null;
+  }
+
+  if (!resolvedGoalId) return null;
+
+  if (!simulationId || !entityId) {
+    const [rows]=await pool.query(
+      `SELECT BIN_TO_UUID(simulation_id) AS simulationId,
+              BIN_TO_UUID(entity_id) AS entityId
+       FROM goals
+       WHERE id=UUID_TO_BIN(?)
+       LIMIT 1`,
+      [resolvedGoalId]
+    );
+    simulationId=simulationId||rows[0]?.simulationId||null;
+    entityId=entityId||rows[0]?.entityId||null;
+  }
+
+  if (!simulationId || !entityId) return null;
+
+  return advancePlanForAction({
+    simulationId,
+    entityId,
+    goalId:resolvedGoalId,
+    actionType,
+    outcome,
+    simulationTime,
+    actionResult
+  });
+}
 module.exports={findAutonomousActors,prepareTickAutonomyContext,shouldAskGemini,getGeminiTrigger,actForEntity,completeGoalForAction,canUseGeminiDecision,markGeminiDecisionUsed,sanitizeGeminiChoice,chooseExplorationDestination,explorationNoveltyScore,goalActionSatisfiesNeed,buildGeminiDecisionContext};
