@@ -22,7 +22,12 @@ class RealtimeHub {
       try {
         if (client.ws.readyState === 1) client.ws.send(message);
       } catch (err) {
-        logger.warn({ err, simulationId, type }, "websocket send failed");
+        logger.warnThrottled(
+          `realtime:websocket-send:${simulationId}:${type}`,
+          60000,
+          { err, simulationId, type },
+          "websocket send failed"
+        );
       }
     }
   }
