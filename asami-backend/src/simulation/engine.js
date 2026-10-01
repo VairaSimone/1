@@ -639,6 +639,7 @@ class SimulationEngine {
             };
             this.hub.publish(sim.id,"entity.state",{
               entityId,
+              simulationAt: realtimeIso(nextTime),
               action:{...active,status:wasCompleted?"COMPLETED":"ACTIVE"},
               needChanges,
               emotionChanges:outcomeEmotionChanges,
@@ -653,11 +654,13 @@ class SimulationEngine {
               action:realtimeWorldState.action
             });
           } else {
+            let passiveNeedChanges=[];
+            let passiveEmotionChanges=[];
             if (elapsedHours > 0.0001) {
               setPhase("entity.gap.catchup");
-              const passiveNeedChanges = await updateNeeds(entityId, nextTime, elapsedHours, null, null, null, { significant: false });
+              passiveNeedChanges = await updateNeeds(entityId, nextTime, elapsedHours, null, null, null, { significant: false });
               currentNeedsForTick=mergeNeedChanges(currentNeedsForTick,passiveNeedChanges);
-              await applyEmotions(entityId, nextTime, passiveNeedChanges, null, null, null, elapsedHours, { traits: batchTraits });
+              passiveEmotionChanges = await applyEmotions(entityId, nextTime, passiveNeedChanges, null, null, null, elapsedHours, { traits: batchTraits });
               latestNeedsForTick=currentNeedsForTick;
             }
             setPhase("entity.mental_state");
@@ -689,6 +692,25 @@ class SimulationEngine {
               simulationTime: nextTime,
               needs: latestNeeds,
               activeActionType: started.actionType||decision.actionType
+            });
+            this.hub.publish(sim.id, "entity.state", {
+              entityId,
+              simulationAt: realtimeIso(nextTime),
+              needChanges: passiveNeedChanges,
+              emotionChanges: passiveEmotionChanges,
+              worldState: {
+                locationId: started.movement?.originLocationId || null,
+                moving: Boolean(started.movement),
+                movement: started.movement || null,
+                action: {
+                  id: started.actionId,
+                  actionType: started.actionType || decision.actionType,
+                  status: "ACTIVE",
+                  startedSimulationAt: nextTime,
+                  targetLocationId: started.targetLocationId || decision.targetLocationId || null,
+                  targetEntityId: started.targetEntityId || decision.targetEntityId || null
+                }
+              }
             });
             this.hub.publish(sim.id, "action.created", { entityId, decision, action: started });
             publishWorldActorState(this.hub,sim.id,{
