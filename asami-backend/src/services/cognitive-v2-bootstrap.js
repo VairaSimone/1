@@ -222,7 +222,12 @@ async function postCompletionCognition(args, result) {
     await maybeRecordNarrative({simulationId:args.simulationId,entityId:args.entityId,simulationTime:args.simulationTime,args,result});
     if (expectation?.regret > 0.45) await cognitive.upsertIdentityValue({simulationId:args.simulationId,entityId:args.entityId,simulationTime:args.simulationTime,code:'LEARNING',confidenceDelta:0.018,salience:0.9});
   } catch (err) {
-    logger.warn({ simulationId:args.simulationId, entityId:args.entityId, actionId:args.actionId, err }, 'Cognitive v2 post-action learning failed; core action result kept');
+    logger.warnThrottled(
+      `cognitive-v2:post-action:${args.simulationId}:${args.entityId}`,
+      60000,
+      { simulationId:args.simulationId, entityId:args.entityId, actionId:args.actionId, err },
+      'Cognitive v2 post-action learning failed; core action result kept'
+    );
     throw err;
   }
 }
@@ -278,7 +283,12 @@ function install({ gemini } = {}) {
       const simulationTime = args.simulationTime || args.context?.simulationTime || new Date();
       const context = args.context?.cognitiveV2 ? args.context : await enrichDecisionContext(args.simulationId,args.entityId,simulationTime,args.context || {});
       const result = await originalMakeDecision.call(this,{...args,context});
-      try { result.cognitiveV2 = await createDecisionCognition({simulationId:args.simulationId,entityId:args.entityId,simulationTime,decision:result,context}); } catch (err) { logger.warn({err,simulationId:args.simulationId,entityId:args.entityId,decisionId:result?.decisionId},'Could not persist cognitive v2 expectation'); }
+      try { result.cognitiveV2 = await createDecisionCognition({simulationId:args.simulationId,entityId:args.entityId,simulationTime,decision:result,context}); } catch (err) { logger.warnThrottled(
+      `cognitive-v2:expectation:${args.simulationId}:${args.entityId}`,
+      300000,
+      {err,simulationId:args.simulationId,entityId:args.entityId,decisionId:result?.decisionId},
+      'Could not persist cognitive v2 expectation'
+    ); }
       return result;
     };
 
@@ -286,7 +296,12 @@ function install({ gemini } = {}) {
     actionService.completeAction = async function wrappedCompleteAction(args = {}) {
       const result = await originalCompleteAction.call(this,args);
       void cognitiveQueue.enqueue(args.entityId, () => postCompletionCognition(args,result), { retries: 3, baseDelayMs: 10 }).catch(err => {
-        logger.warn({ simulationId:args.simulationId, entityId:args.entityId, actionId:args.actionId, err:err.message }, 'Cognitive v2 post-action learning exhausted retries');
+        logger.warnThrottled(
+      `cognitive-v2:retries:${args.simulationId}:${args.entityId}`,
+      60000,
+      { simulationId:args.simulationId, entityId:args.entityId, actionId:args.actionId, err:err.message },
+      'Cognitive v2 post-action learning exhausted retries'
+    );
       });
       return result;
     };
@@ -301,7 +316,12 @@ function install({ gemini } = {}) {
         if (identity?.values?.some(v => normalize(v.code) === 'SOCIAL_CONNECTION')) {
           await cognitive.upsertIdentityValue({simulationId:args.simulationId,entityId:args.asamiEntityId,simulationTime:args.simulationTime,code:'SOCIAL_CONNECTION',confidenceDelta:0.012,salience:0.72});
         }
-      } catch (err) { logger.warn({err,simulationId:args.simulationId,entityId:args.asamiEntityId},'Cognitive v2 conversation enrichment failed; message kept'); }
+      } catch (err) { logger.warnThrottled(
+        `cognitive-v2:conversation:${args.simulationId}:${args.asamiEntityId}`,
+        300000,
+        {err,simulationId:args.simulationId,entityId:args.asamiEntityId},
+        'Cognitive v2 conversation enrichment failed; message kept'
+      ); }
       return result;
     };
   })().catch(err => {
