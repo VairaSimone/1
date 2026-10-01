@@ -40,6 +40,5 @@ test("normalizeSpeechProfile clamps malformed values and derives voice", () => {
   assert.equal(profile.voice.stance, "direct");
   assert.equal(profile.voice.openness, "open");
   assert.equal(profile.voice.inquisitiveness, "high");
-  assert.equal(profile.voiceExamples?.length, undefined);
   assert.equal(profile.voiceExamples.length, 1);
 });
