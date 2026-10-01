@@ -264,7 +264,7 @@ test('critical resource invariant checks reachability from actor locations and v
   assert.match(section,/findReachableResource\(locations,origin\.locationId,resource\)/);
   assert.match(section,/ensureResourceReserveAtLocation\([\s\S]*locationId:origin\.locationId/);
   assert.match(section,/const refreshed=await loadActiveLocations\(simulationId\)/);
-  assert.match(section,/const stillReachable=findReachableResource\(nextLocations,originId,resource\)/);
+  assert.match(section,/const stillReachable=findReachableResource\(nextLocations,origin\.locationId,resource\)/);
   assert.match(section,/code:"CRITICAL_RESOURCE_RECOVERY_UNAVAILABLE"/);
 });
 
