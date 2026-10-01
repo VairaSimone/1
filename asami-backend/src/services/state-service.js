@@ -303,6 +303,28 @@ const ACTION_NEED_GAINS={
   WORKING:{ACHIEVEMENT:-0.70,ENERGY:-0.20,FUN:-0.10,COMFORT:-0.04,SAFETY:0.005},WATCHING:{FUN:-1.10,ENERGY:0.05,COMFORT:0.06,SAFETY:0.02},
   SCHOOL:{ACHIEVEMENT:-0.60,CURIOSITY:-0.40,ENERGY:-0.12,FUN:-0.05,COMFORT:-0.03,SAFETY:0.01}
 };
+const OUTCOME_DEPENDENT_NEED_EFFECTS=Object.freeze({
+  DRINKING:Object.freeze({needCode:"THIRST",resource:"water",rate:Number((ACTION_NEED_GAINS.DRINKING||{}).THIRST)||0,requiredAmount:1})
+});
+function isOutcomeDependentNeed(actionType,needCode){
+  const action=String(actionType||"").toUpperCase(),need=String(needCode||"").toUpperCase();
+  return Boolean(OUTCOME_DEPENDENT_NEED_EFFECTS[action]?.needCode===need);
+}
+function calculateOutcomeDependentNeedDelta({actionType,needCode,currentValue,durationMinutes,consumed}={}){
+  const action=String(actionType||"").toUpperCase(),code=String(needCode||"").toUpperCase();
+  const effect=OUTCOME_DEPENDENT_NEED_EFFECTS[action];
+  const current=clamp(currentValue),duration=Number(durationMinutes),amount=Number(consumed);
+  if(!effect||effect.needCode!==code||!Number.isFinite(duration)||duration<=0||!Number.isFinite(amount)||amount<=0){
+    return {applied:false,actionType:action,needCode:code,old:current,new:current,delta:0,consumed:Number.isFinite(amount)?Math.max(0,amount):0,durationMinutes:Number.isFinite(duration)?Math.max(0,duration):0};
+  }
+  const consumptionRatio=Math.min(1,Math.max(0,amount)/Math.max(0.000001,Number(effect.requiredAmount)||1));
+  const durationHours=duration/60;
+  const pressureFactor=0.30+0.70*current;
+  const requestedDelta=Number(effect.rate)*durationHours*pressureFactor*consumptionRatio;
+  const next=round5(clamp(current+Math.min(0,requestedDelta)));
+  return {applied:true,actionType:action,needCode:code,old:current,new:next,delta:round5(next-current),consumed:amount,requiredAmount:Number(effect.requiredAmount)||1,consumptionRatio:round5(consumptionRatio),durationMinutes:round5(duration),rate:Number(effect.rate)};
+}
+
 const SAFETY_ACTION_EFFECTS=Object.freeze({
   WALKING:0.008,
   EXPLORING:0.018,
@@ -382,7 +404,7 @@ async function updateNeeds(entityId,simulationTime,deltaHours,causeEventId=null,
       else if(r.code==="SAFETY")delta=safetyContextDelta({actionType:action,currentValue:r.value,recoveryRate,decayRate,hours,perception:historyContext?.perception});
       else if(r.code==="COMFORT")delta=(recoveryRate*0.12*(1-clamp(r.value))-decayRate*0.04)*hours;
       else delta=-decayRate*hours;
-      if(action){
+      if(action && !isOutcomeDependentNeed(action,r.code)){
         const rawGain=saturatedActionDelta(action,r.code,r.value,hours),floor=ACTION_PRESSURE_FLOORS[action]?.[r.code];
         if(PRESSURE_NEEDS.has(r.code)&&rawGain<0&&floor!==undefined)delta+=Math.max(rawGain,-Math.max(0,Number(r.value)-floor));
         else if(PRESSURE_NEEDS.has(r.code)&&rawGain<0)delta+=Math.max(rawGain,-Number(r.value)*0.60);
@@ -482,4 +504,4 @@ async function getTraitsBatch(entityIds=[],db=pool){
 }
 function traitBehaviorWeights(actionType){return {...(TRAIT_BEHAVIOR_LINKS[String(actionType||"").toUpperCase()]||{})};}
 async function developTraits(entityId,simulationTime,evidence={},causeEventId=null,causeActionId=null){const traits=await getTraits(entityId),out=[];if(!causeActionId)return out;const actionType=String(evidence?.actionType||"").toUpperCase(),targetEntityId=evidence?.targetEntityId||null;if(actionType!=="TALKING"||!targetEntityId)return out;const [actionRows]=await pool.query(`SELECT action_type AS actionType,result,started_simulation_at AS startedAt,completed_simulation_at AS completedAt,decision_id AS decisionId FROM actions WHERE entity_id=UUID_TO_BIN(?) AND status='COMPLETED' ORDER BY completed_simulation_at DESC LIMIT 32`,[entityId]),parsedRows=actionRows.map(row=>({...row,result:parseJson(row.result,{})||{}})),same=parsedRows.filter(row=>String(row.actionType||"").toUpperCase()==="TALKING"&&row.result?.targetEntityId&&String(row.result.targetEntityId)===String(targetEntityId)).slice(0,12);if(same.length<3)return out;const outcomes=same.map(row=>String(row.result?.outcome||"SUCCESS").toUpperCase()),successRate=outcomes.filter(v=>v==="SUCCESS").length/outcomes.length,failureRate=outcomes.filter(v=>v==="FAILURE").length/outcomes.length,partialRate=outcomes.filter(v=>v==="PARTIAL").length/outcomes.length,outcomeValence=successRate-failureRate-partialRate*.25,repetition=Math.min(1,same.length/8),[relationshipRows]=await pool.query(`SELECT AVG(COALESCE(familiarity_score,0)) AS familiarity,AVG(COALESCE(closeness_score,0)) AS closeness,AVG(COALESCE(affection_score,0)) AS affection,AVG(COALESCE(trust_score,0)) AS trust,AVG(COALESCE(conflict_score,0)) AS conflict FROM relationships WHERE simulation_id=(SELECT simulation_id FROM entities WHERE id=UUID_TO_BIN(?) LIMIT 1) AND status='ACTIVE' AND ((source_entity_id=UUID_TO_BIN(?) AND target_entity_id=UUID_TO_BIN(?)) OR (source_entity_id=UUID_TO_BIN(?) AND target_entity_id=UUID_TO_BIN(?)))`,[entityId,entityId,targetEntityId,targetEntityId,entityId]),relation=relationshipRows[0]||{},relationshipQuality=clamp((Number(relation.familiarity||0)+Number(relation.closeness||0)+Number(relation.affection||0)+Number(relation.trust||0)-Number(relation.conflict||0))/.4,.5),evidenceStrength=Math.max(-1,Math.min(1,.55*outcomeValence+.45*(relationshipQuality-.5)*2)),[entityRows]=await pool.query(`SELECT attributes FROM entities WHERE id=UUID_TO_BIN(?) LIMIT 1`,[entityId]),attributes=parseJson(entityRows[0]?.attributes,{})||{},mentalState=attributes.mentalState&&typeof attributes.mentalState==='object'?attributes.mentalState:{},certainty=clamp(mentalState.certainty??.5),rumination=clamp(mentalState.rumination??.1),selfPerception=clamp(.75+(certainty-.5)*.35-rumination*.10,.55,1.05),weights={EXTRAVERSION:.55,SOCIABILITY:.75,EMPATHY:.65,CONFIDENCE:.25,AGREEABLENESS:.35};for(const trait of traits){const behaviorWeight=Number(weights[trait.code]||0);if(!behaviorWeight)continue;const confidenceFactor=Math.max(.6,1-Number(trait.volatility||.5)*.12),delta=Math.max(-.0035,Math.min(.0035,behaviorWeight*evidenceStrength*repetition*selfPerception*.0012*confidenceFactor));if(Math.abs(delta)<.000001)continue;const old=round5(trait.value),next=round5(clamp(old+delta)),historyDelta=round5(next-old);if(Math.abs(historyDelta)<.000001)continue;const[updated]=await pool.query(`UPDATE entity_traits_current SET value=?,updated_simulation_at=?,version=version+1 WHERE entity_id=UUID_TO_BIN(?) AND trait_id=UUID_TO_BIN(?) AND version=?`,[next,simulationTime,entityId,trait.traitId,trait.version]);if(!updated.affectedRows)continue;await pool.query(`INSERT INTO entity_trait_history(id,entity_id,trait_id,old_value,new_value,delta,changed_simulation_at,cause_event_id,cause_action_id,change_reason) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,?,UUID_TO_BIN(?),UUID_TO_BIN(?),?)`,[uuid(),entityId,trait.traitId,old,next,historyDelta,simulationTime,causeEventId,causeActionId,`interpersonal evidence with target ${targetEntityId}: outcome=${outcomeValence.toFixed(2)}, relationship=${relationshipQuality.toFixed(2)}, repetition=${same.length}`]);out.push({code:trait.code,old,next,delta:historyDelta,evidence:{actionType,targetEntityId,successRate,failureRate,partialRate,repetition,relationshipQuality,evidenceStrength,selfPerception}});}return out;}
-module.exports={ensureEntityState,readNeeds,updateNeeds,applyEmotions,getTraits,getTraitsBatch,developTraits,emotionAppraisal,traitBehaviorWeights,safetyContextDelta,persistNeedTransition,accumulateNeedHistory,accumulateEmotionHistory,flushPendingNeedHistory,flushPendingEmotionHistory,withEntityStateLock};
+module.exports={ensureEntityState,readNeeds,updateNeeds,applyEmotions,getTraits,getTraitsBatch,developTraits,emotionAppraisal,traitBehaviorWeights,safetyContextDelta,persistNeedTransition,accumulateNeedHistory,accumulateEmotionHistory,flushPendingNeedHistory,flushPendingEmotionHistory,withEntityStateLock,OUTCOME_DEPENDENT_NEED_EFFECTS,isOutcomeDependentNeed,calculateOutcomeDependentNeedDelta};
