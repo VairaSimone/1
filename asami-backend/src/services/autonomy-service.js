@@ -390,11 +390,7 @@ async function completeGoalForAction(goalId,actionType,simulationTime,outcome,ac
 
   if (!simulationId || !entityId) {
     const [rows]=await pool.query(
-      `SELECT BIN_TO_UUID(simulation_id) AS simulationId,
-              BIN_TO_UUID(entity_id) AS entityId
-       FROM goals
-       WHERE id=UUID_TO_BIN(?)
-       LIMIT 1`,
+      `SELECT BIN_TO_UUID(simulation_id) AS simulationId,BIN_TO_UUID(entity_id) AS entityId FROM goals WHERE id=UUID_TO_BIN(?) LIMIT 1`,
       [resolvedGoalId]
     );
     simulationId=simulationId||rows[0]?.simulationId||null;
