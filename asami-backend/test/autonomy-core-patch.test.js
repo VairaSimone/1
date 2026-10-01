@@ -6,6 +6,54 @@ const decision = require("../src/services/decision-service");
 const queue = require("../src/services/cognitive-queue");
 
 
+
+
+test("purposeless walking is blocked when a high unmet need has an actionable alternative", () => {
+  const candidates = decision.applyWanderingGuard([
+    { action: "WALKING", score: 4 },
+    { action: "PLAYING", score: 1.2 },
+    { action: "READING", score: 0.8 }
+  ], [
+    { code: "FUN", value: 0.74, priorityWeight: 1 }
+  ]);
+
+  const walking = candidates.find(candidate => candidate.action === "WALKING");
+  assert.equal(walking.score, 0);
+  assert.equal(walking.wanderingBlocked, true);
+  assert.equal(walking.wanderingBlockReason, "HIGH_UNMET_NEED_WITHOUT_MOVEMENT_PURPOSE");
+});
+
+test("purposeful walking remains available when it is the action that satisfies a goal", () => {
+  const candidates = decision.applyWanderingGuard([
+    {
+      action: "WALKING",
+      score: 0.4,
+      targetLocationId: "park",
+      resourceIntent: { resource: "water", destinationLocationId: "park" }
+    },
+    { action: "PLAYING", score: 0.8 }
+  ], [
+    { code: "THIRST", value: 0.68, priorityWeight: 1 }
+  ]);
+
+  const walking = candidates.find(candidate => candidate.action === "WALKING");
+  assert.equal(walking.score, 0.4);
+  assert.equal(walking.wanderingBlocked, undefined);
+});
+
+test("wandering guard is disabled while an explicit plan step exists", () => {
+  const candidates = decision.applyWanderingGuard([
+    { action: "WALKING", score: 4 },
+    { action: "PLAYING", score: 1 }
+  ], [
+    { code: "FUN", value: 0.8, priorityWeight: 1 }
+  ], {
+    activePlanStep: { id: "step-1", actionType: "WALKING", status: "ACTIVE" }
+  });
+
+  assert.equal(candidates.find(candidate => candidate.action === "WALKING").score, 4);
+});
+
 test("critical thirst hard-forces drinking even when sleeping has the highest score", () => {
   const recovery = decision.resolveCriticalResourceRecovery({
     needs: [
