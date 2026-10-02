@@ -69,7 +69,7 @@ async function evolvePrices(simulationId,simulationTime){
   const [markets]=await pool.query(`SELECT BIN_TO_UUID(es.entity_id) entityId,BIN_TO_UUID(es.scope_location_id) locationId FROM emergent_structures es WHERE es.simulation_id=UUID_TO_BIN(?) AND es.structure_type="MARKET"`,[simulationId]);
   for(const market of markets){
     const [stock]=await pool.query(`SELECT COALESCE(SUM(quantity),0) supply FROM emergent_inventory WHERE simulation_id=UUID_TO_BIN(?) AND owner_entity_id=UUID_TO_BIN(?) AND good_code="FOOD"`,[simulationId,market.entityId]);
-    const [demand]=await pool.query(`SELECT COUNT(*) demand FROM actions WHERE simulation_id=UUID_TO_BIN(?) AND action_type="BUY_FOOD" AND completed_simulation_at>=DATE_SUB(?,INTERVAL 24 HOUR) AND JSON_UNQUOTE(JSON_EXTRACT(result,"$.outcome"))="SUCCESS"`,[simulationId,simulationTime]);
+    const [demand]=await pool.query(`SELECT COUNT(*) demand FROM actions WHERE simulation_id=UUID_TO_BIN(?) AND action_type="BUY_FOOD" AND completed_simulation_at>=DATE_SUB(?,INTERVAL 24 HOUR) AND JSON_UNQUOTE(JSON_EXTRACT(result,"$.outcome"))="SUCCESS" AND JSON_UNQUOTE(JSON_EXTRACT(result,"$.targetLocationId"))=?`,[simulationId,simulationTime,market.locationId]);
     const [base]=await pool.query(`SELECT base_price FROM emergent_goods WHERE simulation_id=UUID_TO_BIN(?) AND code="FOOD" LIMIT 1`,[simulationId]);
     const supplyValue=Number(stock[0]?.supply||0),demandValue=Number(demand[0]?.demand||0),basePrice=Number(base[0]?.base_price||1);
     const price=Number((basePrice*clamp(1+(demandValue*.18)/Math.max(5,supplyValue),.55,3)).toFixed(4));
