@@ -82,7 +82,7 @@ async function loadActors(simulationId) {
   const ids = rows.map(row => String(row.entityId));
   const placeholders = ids.map(() => "UUID_TO_BIN(?)").join(",");
   const [needs] = await pool.query(
-    "SELECT BIN_TO_UUID(enc.entity_id) entityId,nd.code,enc.value " +
+    "SELECT BIN_TO_UUID(enc.entity_id) entityId,nd.code,enc.value,nd.default_value defaultValue " +
     "FROM entity_needs_current enc JOIN need_definitions nd ON nd.id=enc.need_id " +
     "WHERE enc.entity_id IN (" + placeholders + ") AND nd.active=1",
     ids
@@ -94,10 +94,10 @@ async function loadActors(simulationId) {
     ids
   );
 
-  const map = new Map(rows.map(row => [String(row.entityId), { ...row, needs: {}, traits: {} }]));
+  const map = new Map(rows.map(row => [String(row.entityId), { ...row, needs: {}, needMeta: {}, traits: {} }]));
   for (const row of needs) {
     const actor = map.get(String(row.entityId));
-    if (actor) actor.needs[code(row.code)] = Number(row.value);
+    if (actor) { actor.needs[code(row.code)] = Number(row.value); actor.needMeta[code(row.code)] = { defaultValue: Number(row.defaultValue ?? 0.5) }; }
   }
   for (const row of traits) {
     const actor = map.get(String(row.entityId));
@@ -122,15 +122,28 @@ function topNeedSignal(actors) {
   for (const actor of actors) {
     for (const need of Object.keys(actor.needs || {})) allCodes.add(need);
   }
+
   let best = null;
   for (const needCode of allCodes) {
     const values = actors.map(actor => Number(actor.needs?.[needCode] || 0));
-    const pressure = average(values);
-    const highCount = values.filter(value => value >= 0.62).length;
+    const defaultValue = average(actors.map(actor => Number(actor.needMeta?.[needCode]?.defaultValue ?? 0.5)));
+    const direction = defaultValue > 0.5 ? "LOW" : "HIGH";
+    const pressures = values.map(value => direction === "LOW" ? 1 - value : value);
+    const pressure = average(pressures);
+    const highCount = pressures.filter(value => value >= 0.62).length;
     const breadth = highCount / Math.max(1, actors.length);
     const score = clamp(pressure * 0.72 + breadth * 0.28);
     if (!best || score > best.score) {
-      best = { needCode, pressure, highCount, breadth, score };
+      best = {
+        needCode,
+        pressure,
+        observedValue: average(values),
+        defaultValue,
+        direction,
+        highCount,
+        breadth,
+        score
+      };
     }
   }
   return best;
@@ -155,6 +168,7 @@ function deterministicFallbackDefinition(signal, proposer, simulationTime) {
   const baseCode = "EMERGENT_" + kind + "_" + signal.needCode + "_" + seed.slice(0, 6);
   const activityCode = kind === "ACTIVITY" ? baseCode : baseCode + "_ACT";
   const needLabel = signal.needCode.toLowerCase().replaceAll("_", " ");
+  const needDelta = signal.direction === "LOW" ? 0.12 : -0.12;
   return normalizeDefinition({
     kind,
     code: baseCode,
@@ -169,7 +183,7 @@ function deterministicFallbackDefinition(signal, proposer, simulationTime) {
       durationMinutes: 45,
       needWeights: { [signal.needCode]: 2 },
       gate: { needCode: signal.needCode, min: 0.30 },
-      effects: [{ type: "NEED_DELTA", needCode: signal.needCode, delta: -0.12 }]
+      effects: [{ type: "NEED_DELTA", needCode: signal.needCode, delta: needDelta }]
     }],
     formation: "BOTTOM_UP",
     membership: "VOLUNTARY",
@@ -188,7 +202,9 @@ async function askGemini(gemini, { simulationTime, scope, signal, proposer, acto
     },
     sharedPressure: {
       needCode: signal.needCode,
-      averageValue: Number(signal.pressure.toFixed(4)),
+      averageValue: Number(signal.observedValue.toFixed(4)),
+      pressure: Number(signal.pressure.toFixed(4)),
+      pressureDirection: signal.direction,
       highNeedAgents: signal.highCount,
       population: actors.length
     },
