@@ -304,44 +304,82 @@ async function applyInventoryEffect({conn,simulationId,entityId,simulationTime,e
 }
 
 async function executeDynamicActivity({conn,simulationId,entityId,actionId,actionType,simulationTime,targetLocationId=null}) {
-  await conn.query("SAVEPOINT dynamic_activity_effects");
   const normalizedAction=code(actionType);
-  const [rows]=await conn.query(
-    `SELECT BIN_TO_UUID(wc.location_id) locationId,wc.parameters,wc.name,wc.category
-       FROM world_capabilities wc
-      WHERE wc.simulation_id=UUID_TO_BIN(?) AND wc.code=? AND wc.active=1
-        AND (wc.location_id=UUID_TO_BIN(?) OR wc.location_id=UUID_TO_BIN(?))
-      ORDER BY CASE WHEN wc.location_id=UUID_TO_BIN(?) THEN 0 ELSE 1 END
-      LIMIT 1`,
-    [simulationId,normalizedAction,targetLocationId||"",targetLocationId||"",targetLocationId||""]
-  );
-  if(!rows.length)return null;
-  const definition=parseJson(rows[0].parameters,{});
-  const effects=Array.isArray(definition.effects)
-    ?definition.effects.map(normalizeEffect)
-    :Array.isArray(definition.effect)?definition.effect.map(normalizeEffect):[];
-  if(!effects.length)return {ok:true,effects:[],dynamicActivity:true};
-  const locationRows=await conn.query(
-    `SELECT BIN_TO_UUID(location_id) locationId FROM entity_locations_current
-      WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) LIMIT 1`,
+  await conn.query("SAVEPOINT dynamic_activity_effects");
+
+  const [locationRows]=await conn.query(
+    "SELECT BIN_TO_UUID(location_id) locationId FROM entity_locations_current " +
+    "WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) LIMIT 1",
     [simulationId,entityId]
   );
-  const locationId=locationRows[0][0]?.locationId||targetLocationId||null;
+  const currentLocationId=locationRows[0]?.locationId||null;
+  if(!currentLocationId){
+    await conn.query("ROLLBACK TO SAVEPOINT dynamic_activity_effects");
+    return {ok:false,failureReason:"NO_CURRENT_LOCATION"};
+  }
+
+  if(targetLocationId && String(targetLocationId)!==String(currentLocationId)){
+    await conn.query("ROLLBACK TO SAVEPOINT dynamic_activity_effects");
+    return {ok:false,failureReason:"DYNAMIC_ACTION_LOCATION_MISMATCH"};
+  }
+
+  const [rows]=await conn.query(
+    "SELECT BIN_TO_UUID(wc.location_id) locationId,wc.parameters,wc.name,wc.category " +
+    "FROM world_capabilities wc " +
+    "WHERE wc.simulation_id=UUID_TO_BIN(?) AND wc.code=? AND wc.active=1 " +
+    "AND wc.location_id=UUID_TO_BIN(?) LIMIT 1",
+    [simulationId,normalizedAction,currentLocationId]
+  );
+
+  if(!rows.length){
+    await conn.query("ROLLBACK TO SAVEPOINT dynamic_activity_effects");
+    return {ok:false,failureReason:"DYNAMIC_CAPABILITY_NOT_AVAILABLE"};
+  }
+
+  const definition=parseJson(rows[0].parameters,{});
+  const effects=Array.isArray(definition.effects)
+    ? definition.effects.map(normalizeEffect)
+    : Array.isArray(definition.effect)
+      ? definition.effect.map(normalizeEffect)
+      : [];
+
+  if(!effects.length){
+    await conn.query("RELEASE SAVEPOINT dynamic_activity_effects");
+    return {ok:true,dynamicActivity:true,activityCode:normalizedAction,effects:[],locationId:currentLocationId};
+  }
+
   const effectResults=[];
   for(const effect of effects){
     let result=null;
-    if(effect.type==="NEED_DELTA")result=await applyNeedEffect({conn,entityId,actionId,simulationTime,effect});
-    if(effect.type==="RESOURCE_DELTA")result=await applyResourceEffect({conn,simulationId,entityId,simulationTime,locationId,effect});
-    if(effect.type==="INVENTORY_DELTA")result=await applyInventoryEffect({conn,simulationId,entityId,simulationTime,effect});
+    if(effect.type==="NEED_DELTA"){
+      result=await applyNeedEffect({conn,entityId,actionId,simulationTime,effect});
+    } else if(effect.type==="RESOURCE_DELTA"){
+      result=await applyResourceEffect({conn,simulationId,entityId,simulationTime,locationId:currentLocationId,effect});
+    } else if(effect.type==="INVENTORY_DELTA"){
+      result=await applyInventoryEffect({conn,simulationId,entityId,simulationTime,effect});
+    }
+
     if(!result)continue;
     if(!result.ok){
       await conn.query("ROLLBACK TO SAVEPOINT dynamic_activity_effects");
-      return {ok:false,failureReason:result.failureReason||"DYNAMIC_EFFECT_FAILED",effect,result};
+      return {
+        ok:false,
+        failureReason:result.failureReason||"DYNAMIC_EFFECT_FAILED",
+        effect,
+        result
+      };
     }
     effectResults.push(result.effect);
   }
+
   await conn.query("RELEASE SAVEPOINT dynamic_activity_effects");
-  return {ok:true,dynamicActivity:true,activityCode:normalizedAction,effects:effectResults,locationId};
+  return {
+    ok:true,
+    dynamicActivity:true,
+    activityCode:normalizedAction,
+    effects:effectResults,
+    locationId:currentLocationId
+  };
 }
 
 async function createDynamicEvent({conn,simulationId,entityId,actionType,simulationTime,effectResults,locationId}) {
