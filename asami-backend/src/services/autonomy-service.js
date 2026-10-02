@@ -7,7 +7,7 @@ const { getEntity } = require("../repositories/entity-repo");
 const { recallContext } = require("./memory-service");
 const { buildSocialContext, buildSocialContexts, buildRemoteSocialContexts, deriveSocialIntent } = require("./social-relationship-service");
 const actionService = require("./action-service");
-const { ensureGoalPlan, advancePlanForAction, selectActiveStep, MAX_GOAL_AGE_HOURS } = require("./planning-service");
+const { ensureGoalPlan, advancePlanForAction, advancePersistentGoalFromAnyAutonomousAction, selectActiveStep, MAX_GOAL_AGE_HOURS } = require("./planning-service");
 const { refreshMentalStateFromSimulation } = require("./personality-service");
 const observability = require("./simulation-observability");
 const { readNeeds } = require("./state-service");
@@ -399,7 +399,7 @@ async function completeGoalForAction(goalId,actionType,simulationTime,outcome,ac
 
   if (!simulationId || !entityId) return null;
 
-  return advancePlanForAction({
+  const primary=await advancePlanForAction({
     simulationId,
     entityId,
     goalId:resolvedGoalId,
@@ -408,5 +408,20 @@ async function completeGoalForAction(goalId,actionType,simulationTime,outcome,ac
     simulationTime,
     actionResult
   });
+
+  const persistent=await advancePersistentGoalFromAnyAutonomousAction({
+    simulationId,
+    entityId,
+    actionType,
+    outcome,
+    simulationTime,
+    actionResult,
+    excludeGoalId:resolvedGoalId
+  });
+
+  return{
+    ...(primary||{}),
+    persistentProgress:persistent||null
+  };
 }
 module.exports={findAutonomousActors,prepareTickAutonomyContext,shouldAskGemini,getGeminiTrigger,actForEntity,completeGoalForAction,canUseGeminiDecision,markGeminiDecisionUsed,sanitizeGeminiChoice,chooseExplorationDestination,explorationNoveltyScore,goalActionSatisfiesNeed,buildGeminiDecisionContext};
