@@ -342,6 +342,19 @@ function isMaterialEconomicDefinition(definition = {}) {
     || activities.some(activity => ['WORK','PRODUCTION','CRAFT','COMMERCE'].includes(normalize(activity?.category)));
 }
 
+async function countRecentPressureProposals(simulationId, scopeLocationId, needCode, simulationTime) {
+  const [rows] = await pool.query(
+    "SELECT definition FROM emergent_world_proposals WHERE simulation_id=UUID_TO_BIN(?) AND scope_location_id=UUID_TO_BIN(?) AND status='ACCEPTED' AND created_simulation_at>=DATE_SUB(?,INTERVAL 7 DAY) ORDER BY created_simulation_at DESC LIMIT 40",
+    [simulationId, scopeLocationId, simulationTime]
+  );
+  const target = code(needCode);
+  return rows.reduce((count, row) => {
+    const definition = parseJson(row.definition, {});
+    const targets = Array.isArray(definition.targetNeeds) ? definition.targetNeeds : [];
+    return count + (targets.some(item => code(item?.code) === target) ? 1 : 0);
+  }, 0);
+}
+
 async function countRecentSimilarProposals(simulationId, scopeLocationId, definition, simulationTime) {
   const [rows] = await pool.query(
     "SELECT definition FROM emergent_world_proposals WHERE simulation_id=UUID_TO_BIN(?) AND scope_location_id=UUID_TO_BIN(?) AND status='ACCEPTED' AND created_simulation_at>=DATE_SUB(?,INTERVAL 7 DAY) ORDER BY created_simulation_at DESC LIMIT 30",
