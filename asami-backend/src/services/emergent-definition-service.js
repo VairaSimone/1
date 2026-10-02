@@ -4,7 +4,7 @@ const { persistNeedTransition } = require("./state-service");
 const logger = require("../lib/logger");
 
 const KINDS = new Set(["STRUCTURE","INSTITUTION","ACTIVITY","SYSTEM"]);
-const EFFECT_TYPES = new Set(["NEED_DELTA","RESOURCE_DELTA","INVENTORY_DELTA"]);
+const EFFECT_TYPES = new Set(["NEED_DELTA","RESOURCE_DELTA","INVENTORY_DELTA","PRODUCTION"]);
 const CODE_RE = /^[A-Z][A-Z0-9_]{2,63}$/;
 const MAX_EFFECTS = 4;
 const MAX_ACTIVITIES = 6;
@@ -40,6 +40,25 @@ function normalizeEffect(effect) {
   }
   if(type==="INVENTORY_DELTA"){
     return { type, goodCode:code(item.goodCode), delta:Number(item.delta) };
+  }
+  if(type==="PRODUCTION"){
+    const resourceInputs={};
+    for(const [key,value] of Object.entries(item.resourceInputs||{}).slice(0,8)){
+      const n=Number(value), resource=String(key||"").trim().toLowerCase();
+      if(Number.isFinite(n)&&n>0&&n<=5)resourceInputs[resource]=Number(n.toFixed(4));
+    }
+    const inventoryInputs={};
+    for(const [key,value] of Object.entries(item.inventoryInputs||{}).slice(0,8)){
+      const n=Number(value), good=code(key);
+      if(Number.isFinite(n)&&n>0&&n<=5)inventoryInputs[good]=Number(n.toFixed(4));
+    }
+    return {
+      type,
+      goodCode:code(item.goodCode),
+      quantity:Number(item.quantity),
+      resourceInputs,
+      inventoryInputs
+    };
   }
   return { type };
 }
@@ -177,6 +196,20 @@ async function validateDefinition(simulationId,definition,{scopeLocationId=null,
       }else if(effect.type==="INVENTORY_DELTA"){
         if(!goodCodes.has(effect.goodCode))errors.push("UNKNOWN_GOOD");
         if(!Number.isFinite(effect.delta)||Math.abs(effect.delta)>MAX_INVENTORY_DELTA)errors.push("INVALID_INVENTORY_DELTA");
+      }else if(effect.type==="PRODUCTION"){
+        if(!goodCodes.has(effect.goodCode))errors.push("UNKNOWN_PRODUCED_GOOD");
+        if(!Number.isFinite(effect.quantity)||effect.quantity<=0||effect.quantity>5)errors.push("INVALID_PRODUCTION_QUANTITY");
+        const resourceInputs=effect.resourceInputs||{},inventoryInputs=effect.inventoryInputs||{};
+        if(!Object.keys(resourceInputs).length&&!Object.keys(inventoryInputs).length)errors.push("PRODUCTION_REQUIRES_INPUT");
+        for(const [resource,input] of Object.entries(resourceInputs)){
+          if(!/^[a-z0-9_]{1,64}$/.test(resource))errors.push("INVALID_PRODUCTION_RESOURCE");
+          if(!Number.isFinite(Number(input))||Number(input)<=0||Number(input)>5)errors.push("INVALID_PRODUCTION_RESOURCE_INPUT");
+          if(Number(localResources?.[resource]||0)<Number(input))errors.push("INSUFFICIENT_PRODUCTION_RESOURCE_"+resource);
+        }
+        for(const [good,input] of Object.entries(inventoryInputs)){
+          if(!goodCodes.has(good))errors.push("UNKNOWN_PRODUCTION_INPUT_GOOD");
+          if(!Number.isFinite(Number(input))||Number(input)<=0||Number(input)>5)errors.push("INVALID_PRODUCTION_INVENTORY_INPUT");
+        }
       }
     }
   }
@@ -303,6 +336,65 @@ async function applyInventoryEffect({conn,simulationId,entityId,simulationTime,e
   return {ok:true,effect:{...effect,oldValue:before,newValue:after}};
 }
 
+async function applyProductionEffect({conn,simulationId,entityId,simulationTime,locationId,effect}) {
+  const [structureRows]=await conn.query(
+    "SELECT BIN_TO_UUID(es.entity_id) producerEntityId FROM emergent_structures es " +
+    "WHERE es.simulation_id=UUID_TO_BIN(?) AND es.scope_location_id=UUID_TO_BIN(?) LIMIT 1 FOR UPDATE",
+    [simulationId,locationId]
+  );
+  const producerEntityId=structureRows[0]?.producerEntityId;
+  if(!producerEntityId)return {ok:false,failureReason:"NO_PRODUCTION_STRUCTURE",effect};
+
+  const resourceInputs=effect.resourceInputs||{};
+  const inventoryInputs=effect.inventoryInputs||{};
+
+  for(const [resource,input] of Object.entries(resourceInputs)){
+    const [locationRows]=await conn.query(
+      "SELECT attributes,version FROM entities WHERE id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?) LIMIT 1 FOR UPDATE",
+      [locationId,simulationId]
+    );
+    if(!locationRows.length)return {ok:false,failureReason:"LOCATION_NOT_FOUND",effect};
+    const attributes=parseJson(locationRows[0].attributes,{});
+    const resources={...(attributes.resources||{})};
+    const available=Number(resources[resource]||0);
+    if(available<Number(input))return {ok:false,failureReason:"PRODUCTION_RESOURCE_UNAVAILABLE",resource,available,required:Number(input),effect};
+    resources[resource]=Number((available-Number(input)).toFixed(4));
+    const [updated]=await conn.query(
+      "UPDATE entities SET attributes=?,version=version+1 WHERE id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?) AND version=?",
+      [JSON.stringify({...attributes,resources}),locationId,simulationId,Number(locationRows[0].version||1)]
+    );
+    if(!updated.affectedRows)return {ok:false,failureReason:"LOCATION_UPDATE_CONFLICT",effect};
+  }
+
+  for(const [good,input] of Object.entries(inventoryInputs)){
+    const [rows]=await conn.query(
+      "SELECT id,quantity FROM emergent_inventory WHERE simulation_id=UUID_TO_BIN(?) AND owner_entity_id=UUID_TO_BIN(?) AND good_code=? LIMIT 1 FOR UPDATE",
+      [simulationId,producerEntityId,good]
+    );
+    const available=Number(rows[0]?.quantity||0);
+    if(available<Number(input))return {ok:false,failureReason:"PRODUCTION_INPUT_GOOD_UNAVAILABLE",goodCode:good,available,required:Number(input),effect};
+    await conn.query("UPDATE emergent_inventory SET quantity=quantity-?,updated_simulation_at=?,version=version+1 WHERE id=?",
+      [Number(input),simulationTime,rows[0].id]);
+  }
+
+  const [outputRows]=await conn.query(
+    "SELECT id,quantity FROM emergent_inventory WHERE simulation_id=UUID_TO_BIN(?) AND owner_entity_id=UUID_TO_BIN(?) AND good_code=? LIMIT 1 FOR UPDATE",
+    [simulationId,producerEntityId,effect.goodCode]
+  );
+  const output=Number(effect.quantity);
+  if(outputRows.length){
+    await conn.query("UPDATE emergent_inventory SET quantity=quantity+?,updated_simulation_at=?,version=version+1 WHERE id=?",
+      [output,simulationTime,outputRows[0].id]);
+  }else{
+    await conn.query(
+      "INSERT INTO emergent_inventory(id,simulation_id,owner_entity_id,good_code,quantity,updated_simulation_at,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,1)",
+      [uuid(),simulationId,producerEntityId,effect.goodCode,output,simulationTime]
+    );
+  }
+
+  return {ok:true,effect:{...effect,producerEntityId,outputQuantity:output}};
+}
+
 async function executeDynamicActivity({conn,simulationId,entityId,actionId,actionType,simulationTime,targetLocationId=null}) {
   const normalizedAction=code(actionType);
   await conn.query("SAVEPOINT dynamic_activity_effects");
@@ -317,7 +409,6 @@ async function executeDynamicActivity({conn,simulationId,entityId,actionId,actio
     await conn.query("ROLLBACK TO SAVEPOINT dynamic_activity_effects");
     return {ok:false,failureReason:"NO_CURRENT_LOCATION"};
   }
-
   if(targetLocationId && String(targetLocationId)!==String(currentLocationId)){
     await conn.query("ROLLBACK TO SAVEPOINT dynamic_activity_effects");
     return {ok:false,failureReason:"DYNAMIC_ACTION_LOCATION_MISMATCH"};
@@ -325,12 +416,10 @@ async function executeDynamicActivity({conn,simulationId,entityId,actionId,actio
 
   const [rows]=await conn.query(
     "SELECT BIN_TO_UUID(wc.location_id) locationId,wc.parameters,wc.name,wc.category " +
-    "FROM world_capabilities wc " +
-    "WHERE wc.simulation_id=UUID_TO_BIN(?) AND wc.code=? AND wc.active=1 " +
+    "FROM world_capabilities wc WHERE wc.simulation_id=UUID_TO_BIN(?) AND wc.code=? AND wc.active=1 " +
     "AND wc.location_id=UUID_TO_BIN(?) LIMIT 1",
     [simulationId,normalizedAction,currentLocationId]
   );
-
   if(!rows.length){
     await conn.query("ROLLBACK TO SAVEPOINT dynamic_activity_effects");
     return {ok:false,failureReason:"DYNAMIC_CAPABILITY_NOT_AVAILABLE"};
@@ -338,10 +427,10 @@ async function executeDynamicActivity({conn,simulationId,entityId,actionId,actio
 
   const definition=parseJson(rows[0].parameters,{});
   const effects=Array.isArray(definition.effects)
-    ? definition.effects.map(normalizeEffect)
-    : Array.isArray(definition.effect)
-      ? definition.effect.map(normalizeEffect)
-      : [];
+    ?definition.effects.map(normalizeEffect)
+    :Array.isArray(definition.effect)
+      ?definition.effect.map(normalizeEffect)
+      :[];
 
   if(!effects.length){
     await conn.query("RELEASE SAVEPOINT dynamic_activity_effects");
@@ -351,37 +440,22 @@ async function executeDynamicActivity({conn,simulationId,entityId,actionId,actio
   const effectResults=[];
   for(const effect of effects){
     let result=null;
-    if(effect.type==="NEED_DELTA"){
-      result=await applyNeedEffect({conn,entityId,actionId,simulationTime,effect});
-    } else if(effect.type==="RESOURCE_DELTA"){
-      result=await applyResourceEffect({conn,simulationId,entityId,simulationTime,locationId:currentLocationId,effect});
-    } else if(effect.type==="INVENTORY_DELTA"){
-      result=await applyInventoryEffect({conn,simulationId,entityId,simulationTime,effect});
-    }
+    if(effect.type==="NEED_DELTA")result=await applyNeedEffect({conn,entityId,actionId,simulationTime,effect});
+    else if(effect.type==="RESOURCE_DELTA")result=await applyResourceEffect({conn,simulationId,entityId,simulationTime,locationId:currentLocationId,effect});
+    else if(effect.type==="INVENTORY_DELTA")result=await applyInventoryEffect({conn,simulationId,entityId,simulationTime,effect});
+    else if(effect.type==="PRODUCTION")result=await applyProductionEffect({conn,simulationId,entityId,simulationTime,locationId:currentLocationId,effect});
 
     if(!result)continue;
     if(!result.ok){
       await conn.query("ROLLBACK TO SAVEPOINT dynamic_activity_effects");
-      return {
-        ok:false,
-        failureReason:result.failureReason||"DYNAMIC_EFFECT_FAILED",
-        effect,
-        result
-      };
+      return {ok:false,failureReason:result.failureReason||"DYNAMIC_EFFECT_FAILED",effect,result};
     }
     effectResults.push(result.effect);
   }
 
   await conn.query("RELEASE SAVEPOINT dynamic_activity_effects");
-  return {
-    ok:true,
-    dynamicActivity:true,
-    activityCode:normalizedAction,
-    effects:effectResults,
-    locationId:currentLocationId
-  };
+  return {ok:true,dynamicActivity:true,activityCode:normalizedAction,effects:effectResults,locationId:currentLocationId};
 }
-
 async function createDynamicEvent({conn,simulationId,entityId,actionType,simulationTime,effectResults,locationId}) {
   const eventId=await require("./event-service").createEvent({
     simulationId,eventTypeCode:"PERSONAL",
