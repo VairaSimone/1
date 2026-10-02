@@ -22,14 +22,14 @@ async function ensureCatalog(simulationId,simulationTime){
 }
 
 async function ensureAccounts(simulationId,simulationTime){
-  const [entities]=await pool.query(`SELECT DISTINCT BIN_TO_UUID(e.id) id
+  const [entities]=await pool.query(`SELECT DISTINCT BIN_TO_UUID(e.id) id,et.code entityType
     FROM entities e JOIN entity_types et ON et.id=e.entity_type_id
     WHERE e.simulation_id=UUID_TO_BIN(?) AND e.status="ACTIVE"
       AND (et.code IN ("PERSON","ORGANIZATION") OR EXISTS (SELECT 1 FROM emergent_structures es WHERE es.simulation_id=e.simulation_id AND es.entity_id=e.id))`,[simulationId]);
   for(const entity of entities){
     const [rows]=await pool.query(`SELECT balance FROM emergent_economy_accounts WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) LIMIT 1`,[simulationId,entity.id]);
     if(!rows.length){
-      const starting=entity.id===null?20:20;
+      const starting=normalize(entity.entityType)==="PERSON"?20:0;
       await pool.query(`INSERT INTO emergent_economy_accounts(id,simulation_id,entity_id,balance,lifetime_income,lifetime_spending,last_updated_simulation_at,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,0,0,?,1)`,[uuid(),simulationId,entity.id,starting,simulationTime]);
     }
   }
@@ -500,12 +500,38 @@ async function ensureBusinesses(simulationId,simulationTime){
          FROM emergent_projects WHERE simulation_id=UUID_TO_BIN(?) AND id=UUID_TO_BIN(?) LIMIT 1`,
       [simulationId,structure.projectId]
     );
+    const ownerEntityId=project[0]?.ownerEntityId||structure.entityId;
     await pool.query(
       `INSERT INTO emergent_businesses
         (id,simulation_id,entity_id,owner_entity_id,status,production_capacity,created_simulation_at,updated_simulation_at,version)
         VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),'ACTIVE',1,?,?,1)`,
-      [uuid(),simulationId,structure.entityId,project[0]?.ownerEntityId||structure.entityId,simulationTime,simulationTime]
+      [uuid(),simulationId,structure.entityId,ownerEntityId,simulationTime,simulationTime]
     );
+    if(String(ownerEntityId)!==String(structure.entityId)){
+      const [ownerAccount]=await pool.query(
+        `SELECT id,balance FROM emergent_economy_accounts
+          WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) LIMIT 1 FOR UPDATE`,
+        [simulationId,ownerEntityId]
+      );
+      const [businessAccount]=await pool.query(
+        `SELECT id,balance FROM emergent_economy_accounts
+          WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) LIMIT 1 FOR UPDATE`,
+        [simulationId,structure.entityId]
+      );
+      if(ownerAccount.length&&businessAccount.length&&Number(ownerAccount[0].balance)>0){
+        const capital=Number(Math.min(10,Math.max(0,Number(ownerAccount[0].balance)*.25)).toFixed(4));
+        if(capital>0){
+          await pool.query(
+            `UPDATE emergent_economy_accounts SET balance=balance-?,lifetime_spending=lifetime_spending+?,last_updated_simulation_at=?,version=version+1 WHERE id=?`,
+            [capital,capital,simulationTime,ownerAccount[0].id]
+          );
+          await pool.query(
+            `UPDATE emergent_economy_accounts SET balance=balance+?,lifetime_income=lifetime_income+?,last_updated_simulation_at=?,version=version+1 WHERE id=?`,
+            [capital,capital,simulationTime,businessAccount[0].id]
+          );
+        }
+      }
+    }
     created++;
   }
   return created;
