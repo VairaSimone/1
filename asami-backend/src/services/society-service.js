@@ -473,6 +473,84 @@ async function ensureBusinesses(simulationId,simulationTime){
   return created;
 }
 
+
+async function latestEconomicPolicy(simulationId){
+  const [rows]=await pool.query(
+    \`SELECT parameters FROM emergent_policies
+      WHERE simulation_id=UUID_TO_BIN(?) AND status='ENACTED'
+      ORDER BY updated_simulation_at DESC LIMIT 1\`,
+    [simulationId]
+  );
+  return parseJson(rows[0]?.parameters,{});
+}
+
+async function ensureEconomicPolicyProposal(simulationId,simulationTime,business){
+  const [governanceRows]=await pool.query(
+    \`SELECT BIN_TO_UUID(id) id FROM emergent_systems
+      WHERE simulation_id=UUID_TO_BIN(?) AND system_type='GOVERNANCE' AND stage<>'ENDED'
+      LIMIT 1\`,
+    [simulationId]
+  );
+  if(!governanceRows.length||!business)return null;
+  const [recent]=await pool.query(
+    \`SELECT id FROM emergent_policies
+      WHERE simulation_id=UUID_TO_BIN(?) AND issue_code LIKE 'ECONOMIC_%'
+        AND created_simulation_at>=DATE_SUB(?,INTERVAL 24 HOUR)
+      LIMIT 1\`,
+    [simulationId,simulationTime]
+  );
+  if(recent.length)return null;
+  const unemployment=Number(business.unemployed||0)/Math.max(1,Number(business.employed||0)+Number(business.unemployed||0));
+  const inequalityRows=await pool.query(
+    \`SELECT gini,average_food_price averageFoodPrice FROM emergent_economic_metrics
+      WHERE simulation_id=UUID_TO_BIN(?) ORDER BY simulation_at DESC LIMIT 1\`,
+    [simulationId]
+  );
+  const giniValue=Number(inequalityRows[0][0]?.gini||0);
+  const foodPrice=Number(inequalityRows[0][0]?.averageFoodPrice||1);
+  if(unemployment<.35&&giniValue<.48&&foodPrice<1.35)return null;
+
+  let issueCode,title,statement,parameters;
+  if(unemployment>=.35){
+    issueCode='ECONOMIC_EMPLOYMENT';
+    title='Support employment and production';
+    statement='Create a temporary production incentive financed through the common pool so businesses can sustain employment.';
+    parameters={fundingModel:'COMMON_POOL',contributionRate:.06,productionSubsidyRate:.12};
+  }else if(foodPrice>=1.35){
+    issueCode='ECONOMIC_PRICES';
+    title='Limit essential food price pressure';
+    statement='Introduce a temporary ceiling for essential food prices while supply adjusts.';
+    parameters={fundingModel:'VOLUNTARY',priceCeilingMultiplier:1.25};
+  }else{
+    issueCode='ECONOMIC_DISTRIBUTION';
+    title='Increase contribution to the common pool';
+    statement='Increase the common contribution to fund collective economic support.';
+    parameters={fundingModel:'COMMON_POOL',contributionRate:.08,wageSubsidyRate:.10};
+  }
+  const [proposer]=await pool.query(
+    \`SELECT BIN_TO_UUID(entity_id) entityId FROM emergent_governance_members
+      WHERE simulation_id=UUID_TO_BIN(?) AND system_id=UUID_TO_BIN(?)
+      ORDER BY role='COORDINATOR' DESC,joined_simulation_at ASC LIMIT 1\`,
+    [simulationId,governanceRows[0].id]
+  );
+  const [fallback]=await pool.query(
+    \`SELECT BIN_TO_UUID(e.id) entityId FROM entities e JOIN entity_types et ON et.id=e.entity_type_id
+      WHERE e.simulation_id=UUID_TO_BIN(?) AND et.code='PERSON' AND e.status='ACTIVE'
+      ORDER BY e.created_simulation_at LIMIT 1\`,
+    [simulationId]
+  );
+  const proposerId=proposer[0]?.entityId||fallback[0]?.entityId;
+  if(!proposerId)return null;
+  const id=uuid();
+  await pool.query(
+    \`INSERT INTO emergent_policies
+      (id,simulation_id,proposer_entity_id,governance_system_id,scope_location_id,issue_code,title,statement,parameters,status,created_simulation_at,updated_simulation_at,version)
+      VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),NULL,?,?,?,?, 'PROPOSED',?,?,1)\`,
+    [id,simulationId,proposerId,governanceRows[0].id,issueCode,title,statement,JSON.stringify(parameters),simulationTime,simulationTime]
+  );
+  return {id,issueCode,parameters};
+}
+
 async function evolveBusinesses(simulationId,simulationTime){
   const [businesses]=await pool.query(
     \`SELECT BIN_TO_UUID(id) id,BIN_TO_UUID(entity_id) entityId,status,production_capacity productionCapacity,
@@ -908,9 +986,10 @@ async function evolveSociety(simulationId,simulationTime){
   await ensureGovernanceMembers(simulationId,simulationTime);
   const politics=await evolvePolitics(simulationId,simulationTime);
   const business=await evolveBusinesses(simulationId,simulationTime);
+  const economicPolicy=await ensureEconomicPolicyProposal(simulationId,simulationTime,business);
   const wealth=await recordWealth(simulationId,simulationTime);
-  logger.info({simulationId,simulationTime,wealth,politics,wholesale,business,laborChanges},"society evolution completed");
-  return {wealth,politics,wholesale,business,laborChanges};
+  logger.info({simulationId,simulationTime,wealth,politics,wholesale,business,laborChanges,economicPolicy},"society evolution completed");
+  return {wealth,politics,wholesale,business,laborChanges,economicPolicy};
 }
 
 async function getSocietySnapshot(simulationId){
@@ -941,4 +1020,4 @@ async function getSocietySnapshot(simulationId){
   return {systems:decode(systems),goods,markets,accounts,jobs,trades,metrics,policies:decode(policies),conflicts:decode(conflicts),businessMetrics,businesses,openEnded:{proposals:decodeOpen(openProposals),definitions:decodeOpen(openDefinitions)}};
 }
 
-module.exports={evolveSociety,evolvePolitics,executeEconomicAction,getSocietySnapshot,gini,ensureCatalog,restockMarkets,isMarketStructure,isProducerStructure,ensureBusinesses,evolveBusinesses,matchLaborMarket};
+module.exports={evolveSociety,evolvePolitics,executeEconomicAction,getSocietySnapshot,gini,ensureCatalog,restockMarkets,isMarketStructure,isProducerStructure,ensureBusinesses,evolveBusinesses,matchLaborMarket,latestEconomicPolicy,ensureEconomicPolicyProposal};
