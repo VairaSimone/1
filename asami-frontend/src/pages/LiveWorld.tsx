@@ -28,7 +28,7 @@ function locationIcon(type: string) {
   if (code === 'HOME') return <Home size={17} />
   if (code === 'PARK' || code === 'NATURE') return <TreePine size={17} />
   if (code === 'CAFE') return <Coffee size={17} />
-  if (code === 'SHOP' || code === 'GROCERY') return <ShoppingCart size={17} />
+  if (code === 'SHOP' || code === 'GROCERY' || code === 'MARKET') return <ShoppingCart size={17} />
   if (code === 'LIBRARY') return <Library size={17} />
   if (code === 'SQUARE') return <Landmark size={17} />
   if (code === 'SCHOOL') return <School size={17} />
@@ -294,7 +294,7 @@ export function LiveWorld({
               title={location.description || location.name}
             >
               <span className="location-icon">{locationIcon(location.locationType)}</span>
-              <span className="location-label">{location.name}</span>
+              <span className="location-label">{location.name}{(location.code.startsWith("EMERGENT_") || Boolean(location.addressData?.emergent)) && <small className="emergent-location-badge">emergente</small>}</span>
               {hasEvent && <i className="location-pulse" />}
             </button>
           })}
