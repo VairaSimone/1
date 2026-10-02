@@ -427,7 +427,7 @@ async function createStructure(simulationId, simulationTime, proposal, scope, ac
     definition,
     originProposalId: proposal.id,
     connections: [scope.locationId],
-    resources: {}
+    resources: { water: 8, food: 0 }
   };
 
   await pool.query(
