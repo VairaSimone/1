@@ -4,7 +4,9 @@ const assert = require("node:assert/strict");
 const {
   topNeedSignal,
   deterministicFallbackDefinition,
-  supportScore
+  supportScore,
+  semanticDefinitionSignature,
+  isMaterialEconomicDefinition
 } = require("../src/services/open-emergence-service");
 const {
   normalizeDefinition,
@@ -160,3 +162,34 @@ test("unsupported resource creation is excluded by deterministic validation rule
 });
 
 void validateDefinition;
+
+test("semantic duplicate detection ignores renamed copies",()=>{
+  const base=normalizeDefinition({
+    kind:"INSTITUTION",
+    code:"FUN_ONE",
+    name:"Fun Circle",
+    category:"EMERGENT",
+    purpose:"Share fun locally.",
+    targetNeeds:[{code:"FUN",weight:2}],
+    activities:[{
+      code:"FUN_ACT",
+      name:"Practice fun",
+      category:"EMERGENT",
+      durationMinutes:45,
+      needWeights:{FUN:2},
+      gate:{needCode:"FUN",min:.3},
+      effects:[{type:"NEED_DELTA",needCode:"FUN",delta:-.1}]
+    }]
+  });
+  const renamed=normalizeDefinition({...base,kind:"SYSTEM",code:"FUN_TWO",name:"Another Fun Circle"});
+  assert.equal(semanticDefinitionSignature(base),semanticDefinitionSignature(renamed));
+});
+
+test("economic bridge fallback creates a material market response",()=>{
+  const signal={needCode:"CURIOSITY",direction:"HIGH"};
+  const definition=deterministicFallbackDefinition(signal,{entityId:"a",displayName:"Asami"},"2026-10-09T12:00:00.000Z",{economicOpportunity:true});
+  assert.equal(definition.kind,"STRUCTURE");
+  assert.equal(definition.market,true);
+  assert.equal(definition.category,"COMMERCE");
+  assert.equal(isMaterialEconomicDefinition(definition),true);
+});
