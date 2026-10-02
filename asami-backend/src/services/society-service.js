@@ -60,34 +60,34 @@ function isProducerStructure(row) {
 
 async function ensureMarketInventory(simulationId,simulationTime){
   const [structures]=await pool.query(
-    \`SELECT BIN_TO_UUID(es.entity_id) entityId,es.structure_type type,es.attributes
+    `SELECT BIN_TO_UUID(es.entity_id) entityId,es.structure_type type,es.attributes
        FROM emergent_structures es
-      WHERE es.simulation_id=UUID_TO_BIN(?)\`,
+      WHERE es.simulation_id=UUID_TO_BIN(?)`,
     [simulationId]
   );
   for(const market of structures){
     if(!isMarketStructure(market))continue;
     const [rows]=await pool.query(
-      \`SELECT quantity FROM emergent_inventory
+      `SELECT quantity FROM emergent_inventory
         WHERE simulation_id=UUID_TO_BIN(?) AND owner_entity_id=UUID_TO_BIN(?) AND good_code='FOOD'
-        LIMIT 1\`,
+        LIMIT 1`,
       [simulationId,market.entityId]
     );
     if(rows.length)continue;
     await pool.query(
-      \`INSERT INTO emergent_inventory
+      `INSERT INTO emergent_inventory
         (id,simulation_id,owner_entity_id,good_code,quantity,updated_simulation_at,version)
-        VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),'FOOD',12,?,1)\`,
+        VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),'FOOD',12,?,1)`,
       [uuid(),simulationId,market.entityId,simulationTime]
     );
   }
 }
 async function ensureJobs(simulationId,simulationTime){
   const [structures]=await pool.query(
-    \`SELECT BIN_TO_UUID(es.entity_id) employerId,BIN_TO_UUID(es.project_id) projectId,
+    `SELECT BIN_TO_UUID(es.entity_id) employerId,BIN_TO_UUID(es.project_id) projectId,
             es.structure_type type,es.attributes
        FROM emergent_structures es
-      WHERE es.simulation_id=UUID_TO_BIN(?)\`,
+      WHERE es.simulation_id=UUID_TO_BIN(?)`,
     [simulationId]
   );
 
@@ -112,24 +112,24 @@ async function ensureJobs(simulationId,simulationTime){
     const safeWage=Number.isFinite(wage)?Math.max(0.25,Math.min(5,wage)):0.75;
 
     const [members]=await pool.query(
-      \`SELECT BIN_TO_UUID(entity_id) entityId
+      `SELECT BIN_TO_UUID(entity_id) entityId
          FROM emergent_project_members
         WHERE simulation_id=UUID_TO_BIN(?) AND project_id=UUID_TO_BIN(?) AND entity_id<>UUID_TO_BIN(?)
-        ORDER BY joined_simulation_at LIMIT 8\`,
+        ORDER BY joined_simulation_at LIMIT 8`,
       [simulationId,structure.projectId,structure.employerId]
     );
 
     for(const member of members){
       const [existing]=await pool.query(
-        \`SELECT id FROM emergent_jobs
-          WHERE simulation_id=UUID_TO_BIN(?) AND employee_entity_id=UUID_TO_BIN(?) AND status='ACTIVE' LIMIT 1\`,
+        `SELECT id FROM emergent_jobs
+          WHERE simulation_id=UUID_TO_BIN(?) AND employee_entity_id=UUID_TO_BIN(?) AND status='ACTIVE' LIMIT 1`,
         [simulationId,member.entityId]
       );
       if(existing.length)continue;
       await pool.query(
-        \`INSERT INTO emergent_jobs
+        `INSERT INTO emergent_jobs
           (id,simulation_id,employer_entity_id,employee_entity_id,role,wage_per_hour,status,hired_simulation_at,version)
-          VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,'ACTIVE',?,1)\`,
+          VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,'ACTIVE',?,1)`,
         [uuid(),simulationId,structure.employerId,member.entityId,role,safeWage,simulationTime]
       );
     }
@@ -137,28 +137,28 @@ async function ensureJobs(simulationId,simulationTime){
 }
 async function evolvePrices(simulationId,simulationTime){
   const [markets]=await pool.query(
-    \`SELECT BIN_TO_UUID(es.entity_id) entityId,BIN_TO_UUID(es.scope_location_id) locationId,es.structure_type type,es.attributes
+    `SELECT BIN_TO_UUID(es.entity_id) entityId,BIN_TO_UUID(es.scope_location_id) locationId,es.structure_type type,es.attributes
        FROM emergent_structures es
-      WHERE es.simulation_id=UUID_TO_BIN(?)\`,
+      WHERE es.simulation_id=UUID_TO_BIN(?)`,
     [simulationId]
   );
   const marketRows=markets.filter(isMarketStructure);
   const [goods]=await pool.query(
-    \`SELECT code,base_price basePrice FROM emergent_goods WHERE simulation_id=UUID_TO_BIN(?) ORDER BY code\`,
+    `SELECT code,base_price basePrice FROM emergent_goods WHERE simulation_id=UUID_TO_BIN(?) ORDER BY code`,
     [simulationId]
   );
 
   for(const market of marketRows){
     for(const good of goods){
       const [stock]=await pool.query(
-        \`SELECT COALESCE(SUM(quantity),0) supply FROM emergent_inventory
-          WHERE simulation_id=UUID_TO_BIN(?) AND owner_entity_id=UUID_TO_BIN(?) AND good_code=?\`,
+        `SELECT COALESCE(SUM(quantity),0) supply FROM emergent_inventory
+          WHERE simulation_id=UUID_TO_BIN(?) AND owner_entity_id=UUID_TO_BIN(?) AND good_code=?`,
         [simulationId,market.entityId,good.code]
       );
       const [demand]=await pool.query(
-        \`SELECT COUNT(*) demand FROM emergent_trades
+        `SELECT COUNT(*) demand FROM emergent_trades
           WHERE simulation_id=UUID_TO_BIN(?) AND seller_entity_id=UUID_TO_BIN(?)
-            AND good_code=? AND simulation_at>=DATE_SUB(?,INTERVAL 24 HOUR)\`,
+            AND good_code=? AND simulation_at>=DATE_SUB(?,INTERVAL 24 HOUR)`,
         [simulationId,market.entityId,good.code,simulationTime]
       );
       const supplyValue=Number(stock[0]?.supply||0);
@@ -167,11 +167,11 @@ async function evolvePrices(simulationId,simulationTime){
       const pressure=(demandValue*.18)/Math.max(1,supplyValue);
       const price=Number((basePrice*clamp(1+pressure,.55,3)).toFixed(4));
       await pool.query(
-        \`INSERT INTO emergent_market_state
+        `INSERT INTO emergent_market_state
           (id,simulation_id,location_id,good_code,price,supply,demand,updated_simulation_at,version)
           VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,?,?,1)
           ON DUPLICATE KEY UPDATE price=VALUES(price),supply=VALUES(supply),demand=VALUES(demand),
-            updated_simulation_at=VALUES(updated_simulation_at),version=version+1\`,
+            updated_simulation_at=VALUES(updated_simulation_at),version=version+1`,
         [uuid(),simulationId,market.locationId,good.code,price,supplyValue,demandValue,simulationTime]
       );
     }
@@ -180,9 +180,9 @@ async function evolvePrices(simulationId,simulationTime){
 
 async function loadLocationGraph(simulationId){
   const [rows]=await pool.query(
-    \`SELECT BIN_TO_UUID(e.id) locationId,l.address_data addressData
+    `SELECT BIN_TO_UUID(e.id) locationId,l.address_data addressData
        FROM locations l JOIN entities e ON e.id=l.entity_id
-      WHERE l.simulation_id=UUID_TO_BIN(?) AND e.simulation_id=UUID_TO_BIN(?) AND e.status='ACTIVE'\`,
+      WHERE l.simulation_id=UUID_TO_BIN(?) AND e.simulation_id=UUID_TO_BIN(?) AND e.status='ACTIVE'`,
     [simulationId,simulationId]
   );
   return rows.map(row=>({locationId:row.locationId,connections:parseJson(row.addressData,{})?.connections||[]}));
@@ -206,8 +206,8 @@ function graphDistance(graph,originId,targetId){
 
 async function restockMarkets(simulationId,simulationTime){
   const [rows]=await pool.query(
-    \`SELECT BIN_TO_UUID(es.entity_id) entityId,BIN_TO_UUID(es.scope_location_id) locationId,es.structure_type type,es.attributes
-       FROM emergent_structures es WHERE es.simulation_id=UUID_TO_BIN(?)\`,
+    `SELECT BIN_TO_UUID(es.entity_id) entityId,BIN_TO_UUID(es.scope_location_id) locationId,es.structure_type type,es.attributes
+       FROM emergent_structures es WHERE es.simulation_id=UUID_TO_BIN(?)`,
     [simulationId]
   );
   const markets=rows.filter(isMarketStructure), producers=rows.filter(isProducerStructure);
@@ -217,15 +217,15 @@ async function restockMarkets(simulationId,simulationTime){
 
   for(const market of markets){
     const [marketAccount]=await pool.query(
-      \`SELECT id,balance FROM emergent_economy_accounts
-        WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) FOR UPDATE\`,
+      `SELECT id,balance FROM emergent_economy_accounts
+        WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) FOR UPDATE`,
       [simulationId,market.entityId]
     );
     if(!marketAccount.length)continue;
 
     const [goods]=await pool.query(
-      \`SELECT DISTINCT good_code goodCode FROM emergent_inventory
-        WHERE simulation_id=UUID_TO_BIN(?) AND owner_entity_id IN (SELECT entity_id FROM emergent_structures WHERE simulation_id=UUID_TO_BIN(?)) AND quantity>0\`,
+      `SELECT DISTINCT good_code goodCode FROM emergent_inventory
+        WHERE simulation_id=UUID_TO_BIN(?) AND owner_entity_id IN (SELECT entity_id FROM emergent_structures WHERE simulation_id=UUID_TO_BIN(?)) AND quantity>0`,
       [simulationId,simulationId]
     );
 
@@ -236,9 +236,9 @@ async function restockMarkets(simulationId,simulationTime){
         const distance=graphDistance(graph,producer.locationId,market.locationId);
         if(!Number.isFinite(distance))continue;
         const [stock]=await pool.query(
-          \`SELECT id,quantity FROM emergent_inventory
+          `SELECT id,quantity FROM emergent_inventory
             WHERE simulation_id=UUID_TO_BIN(?) AND owner_entity_id=UUID_TO_BIN(?) AND good_code=? AND quantity>0
-            FOR UPDATE\`,
+            FOR UPDATE`,
           [simulationId,producer.entityId,good.goodCode]
         );
         if(stock.length&&Number(stock[0].quantity)>0)candidates.push({producer,stock:stock[0],distance});
@@ -248,8 +248,8 @@ async function restockMarkets(simulationId,simulationTime){
       if(!candidate)continue;
 
       const [priceRows]=await pool.query(
-        \`SELECT price FROM emergent_market_state
-          WHERE simulation_id=UUID_TO_BIN(?) AND location_id=UUID_TO_BIN(?) AND good_code=? LIMIT 1\`,
+        `SELECT price FROM emergent_market_state
+          WHERE simulation_id=UUID_TO_BIN(?) AND location_id=UUID_TO_BIN(?) AND good_code=? LIMIT 1`,
         [simulationId,market.locationId,good.goodCode]
       );
       const unitPrice=Number(priceRows[0]?.price||1)*0.72;
@@ -258,38 +258,38 @@ async function restockMarkets(simulationId,simulationTime){
       if(quantity<=0||Number(marketAccount[0].balance)<total)continue;
 
       const [producerAccount]=await pool.query(
-        \`SELECT id FROM emergent_economy_accounts
-          WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) FOR UPDATE\`,
+        `SELECT id FROM emergent_economy_accounts
+          WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) FOR UPDATE`,
         [simulationId,candidate.producer.entityId]
       );
       if(!producerAccount.length)continue;
 
-      await pool.query(\`UPDATE emergent_inventory SET quantity=quantity-?,updated_simulation_at=?,version=version+1 WHERE id=?\`,
+      await pool.query(`UPDATE emergent_inventory SET quantity=quantity-?,updated_simulation_at=?,version=version+1 WHERE id=?`,
         [quantity,simulationTime,candidate.stock.id]);
       const [marketStock]=await pool.query(
-        \`SELECT id FROM emergent_inventory
-          WHERE simulation_id=UUID_TO_BIN(?) AND owner_entity_id=UUID_TO_BIN(?) AND good_code=? FOR UPDATE\`,
+        `SELECT id FROM emergent_inventory
+          WHERE simulation_id=UUID_TO_BIN(?) AND owner_entity_id=UUID_TO_BIN(?) AND good_code=? FOR UPDATE`,
         [simulationId,market.entityId,good.goodCode]
       );
       if(marketStock.length){
-        await pool.query(\`UPDATE emergent_inventory SET quantity=quantity+?,updated_simulation_at=?,version=version+1 WHERE id=?\`,
+        await pool.query(`UPDATE emergent_inventory SET quantity=quantity+?,updated_simulation_at=?,version=version+1 WHERE id=?`,
           [quantity,simulationTime,marketStock[0].id]);
       }else{
         await pool.query(
-          \`INSERT INTO emergent_inventory(id,simulation_id,owner_entity_id,good_code,quantity,updated_simulation_at,version)
-           VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,1)\`,
+          `INSERT INTO emergent_inventory(id,simulation_id,owner_entity_id,good_code,quantity,updated_simulation_at,version)
+           VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,1)`,
           [uuid(),simulationId,market.entityId,good.goodCode,quantity,simulationTime]
         );
       }
 
       await pool.query(
-        \`UPDATE emergent_economy_accounts
-           SET balance=balance-?,lifetime_spending=lifetime_spending+?,last_updated_simulation_at=?,version=version+1 WHERE id=?\`,
+        `UPDATE emergent_economy_accounts
+           SET balance=balance-?,lifetime_spending=lifetime_spending+?,last_updated_simulation_at=?,version=version+1 WHERE id=?`,
         [total,total,simulationTime,marketAccount[0].id]
       );
       await pool.query(
-        \`UPDATE emergent_economy_accounts
-           SET balance=balance+?,lifetime_income=lifetime_income+?,last_updated_simulation_at=?,version=version+1 WHERE id=?\`,
+        `UPDATE emergent_economy_accounts
+           SET balance=balance+?,lifetime_income=lifetime_income+?,last_updated_simulation_at=?,version=version+1 WHERE id=?`,
         [total,total,simulationTime,producerAccount[0].id]
       );
       transfers.push({marketEntityId:market.entityId,producerEntityId:candidate.producer.entityId,goodCode:good.goodCode,quantity,unitPrice,total,simulationAt:simulationTime});
@@ -387,25 +387,25 @@ async function executeEconomicAction({conn,simulationId,entityId,actionType,simu
   }
   if(action==="PRODUCE_GOODS"){
     const [location]=await conn.query(
-      \`SELECT BIN_TO_UUID(location_id) locationId
+      `SELECT BIN_TO_UUID(location_id) locationId
          FROM entity_locations_current
-        WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) LIMIT 1\`,
+        WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) LIMIT 1`,
       [simulationId,entityId]
     );
     const locationId=location[0]?.locationId;
     if(!locationId)return {ok:false,failureReason:"NO_LOCATION"};
     const [structure]=await conn.query(
-      \`SELECT BIN_TO_UUID(entity_id) producerEntityId
+      `SELECT BIN_TO_UUID(entity_id) producerEntityId
          FROM emergent_structures
-        WHERE simulation_id=UUID_TO_BIN(?) AND scope_location_id=UUID_TO_BIN(?) LIMIT 1\`,
+        WHERE simulation_id=UUID_TO_BIN(?) AND scope_location_id=UUID_TO_BIN(?) LIMIT 1`,
       [simulationId,locationId]
     );
     const producer=structure[0]?.producerEntityId;
     if(!producer)return {ok:false,failureReason:"NO_PRODUCTION_STRUCTURE"};
 
     const [locationRows]=await conn.query(
-      \`SELECT attributes,version FROM entities
-        WHERE id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?) LIMIT 1 FOR UPDATE\`,
+      `SELECT attributes,version FROM entities
+        WHERE id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?) LIMIT 1 FOR UPDATE`,
       [locationId,simulationId]
     );
     if(!locationRows.length)return {ok:false,failureReason:"LOCATION_NOT_FOUND"};
@@ -415,27 +415,27 @@ async function executeEconomicAction({conn,simulationId,entityId,actionType,simu
     if(water<1)return {ok:false,failureReason:"PRODUCTION_RESOURCE_UNAVAILABLE",resource:"water",available:water,required:1};
     resources.water=Number((water-1).toFixed(4));
     await conn.query(
-      \`UPDATE entities SET attributes=?,version=version+1
-        WHERE id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?) AND version=?\`,
+      `UPDATE entities SET attributes=?,version=version+1
+        WHERE id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?) AND version=?`,
       [JSON.stringify({...attributes,resources}),locationId,simulationId,Number(locationRows[0].version||1)]
     );
 
     const [stock]=await conn.query(
-      \`SELECT id,quantity FROM emergent_inventory
+      `SELECT id,quantity FROM emergent_inventory
         WHERE simulation_id=UUID_TO_BIN(?) AND owner_entity_id=UUID_TO_BIN(?) AND good_code='TOOLS'
-        LIMIT 1 FOR UPDATE\`,
+        LIMIT 1 FOR UPDATE`,
       [simulationId,producer]
     );
     const quantity=2;
     if(stock.length){
       await conn.query(
-        \`UPDATE emergent_inventory SET quantity=quantity+?,updated_simulation_at=?,version=version+1 WHERE id=?\`,
+        `UPDATE emergent_inventory SET quantity=quantity+?,updated_simulation_at=?,version=version+1 WHERE id=?`,
         [quantity,simulationTime,stock[0].id]
       );
     }else{
       await conn.query(
-        \`INSERT INTO emergent_inventory(id,simulation_id,owner_entity_id,good_code,quantity,updated_simulation_at,version)
-         VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),'TOOLS',?,?,1)\`,
+        `INSERT INTO emergent_inventory(id,simulation_id,owner_entity_id,good_code,quantity,updated_simulation_at,version)
+         VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),'TOOLS',?,?,1)`,
         [uuid(),simulationId,producer,quantity,simulationTime]
       );
     }
