@@ -1192,7 +1192,7 @@ async function evolveSociety(simulationId,simulationTime){
   const business=await evolveBusinesses(simulationId,simulationTime);
   const economicPolicy=await ensureEconomicPolicyProposal(simulationId,simulationTime,business);
   const wealth=await recordWealth(simulationId,simulationTime);
-  logger.info({simulationId,simulationTime,wealth,politics,wholesale,business,laborChanges,economicPolicy},"society evolution completed");
+  logger.debugThrottled(`SOCIETY_EVOLUTION:${simulationId}`,120000,{simulationId,simulationTime,wealth,politics,wholesale,business,laborChanges,economicPolicy},"society evolution completed");
   return {wealth,politics,wholesale,business,laborChanges,economicPolicy};
 }
 
