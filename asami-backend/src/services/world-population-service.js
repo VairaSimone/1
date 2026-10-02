@@ -4,7 +4,7 @@ const { ensureEntityState } = require("./state-service");
 const { personalizeExistingNeedDefaults } = require("./need-individualization-service");
 
 const MIN_WORLD_PEOPLE = 6;
-const MAX_WORLD_PEOPLE = 10;
+const MAX_WORLD_PEOPLE = 30;
 const LOCATION_ENTITY_TYPE_ID = "00000000-0000-4000-8000-000000000003";
 const PERSON_ENTITY_TYPE_ID = "00000000-0000-4000-8000-000000000001";
 const PARTNER_RELATIONSHIP_TYPE_ID = "00000000-0000-4000-8007-000000000011";
@@ -102,7 +102,7 @@ async function ensurePopulation(simulationId,simulationTime){
   let count=Number(rows[0]?.count||0),created=[];
   for(const profile of NPC_PROFILES){ if(count>=MIN_WORLD_PEOPLE)break; const [exists]=await pool.query(`SELECT id FROM entities WHERE simulation_id=UUID_TO_BIN(?) AND display_name=? LIMIT 1`,[simulationId,`${profile.firstName} ${profile.lastName}`]); if(exists.length)continue; created.push(await createPerson(simulationId,simulationTime,profile,false)); count++; }
   while(count<MIN_WORLD_PEOPLE){created.push(await createPerson(simulationId,simulationTime,null,true));count++;}
-  if(count<MAX_WORLD_PEOPLE && Math.random()<0.001)created.push(await createPerson(simulationId,simulationTime,null,true));
+  if(count<MAX_WORLD_PEOPLE && Math.random()<0.04)created.push(await createPerson(simulationId,simulationTime,null,true));
   return created;
 }
 async function ensureWorld(simulationId,simulationTime){
