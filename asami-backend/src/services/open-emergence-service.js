@@ -314,6 +314,29 @@ async function hasRecentProposal(simulationId, scopeLocationId, simulationTime) 
   return rows.length > 0;
 }
 
+function semanticDefinitionSignature(definition = {}) {
+  const activities = Array.isArray(definition.activities) ? definition.activities : [];
+  const effects = activities.flatMap(activity => Array.isArray(activity.effects) ? activity.effects : []);
+  return JSON.stringify({
+    targetNeeds: (definition.targetNeeds || []).map(item => code(item?.code)).filter(Boolean).sort(),
+    market: Boolean(definition.market),
+    production: Boolean(definition.production),
+    category: normalize(definition.category),
+    activityCategories: activities.map(activity => normalize(activity?.category)).filter(Boolean).sort(),
+    effectTypes: effects.map(effect => normalize(effect?.type)).filter(Boolean).sort(),
+    products: (definition.products || []).map(product => code(product?.code)).filter(Boolean).sort()
+  });
+}
+
+async function countRecentSimilarProposals(simulationId, scopeLocationId, definition, simulationTime) {
+  const [rows] = await pool.query(
+    "SELECT definition FROM emergent_world_proposals WHERE simulation_id=UUID_TO_BIN(?) AND scope_location_id=UUID_TO_BIN(?) AND status='ACCEPTED' AND created_simulation_at>=DATE_SUB(?,INTERVAL 7 DAY) ORDER BY created_simulation_at DESC LIMIT 30",
+    [simulationId, scopeLocationId, simulationTime]
+  );
+  const signature = semanticDefinitionSignature(definition);
+  return rows.reduce((count, row) => count + (semanticDefinitionSignature(parseJson(row.definition, {})) === signature ? 1 : 0), 0);
+}
+
 function supportScore(definition, actors) {
   const targetNeeds = (definition.targetNeeds || []).filter(
     item => Number.isFinite(Number(item.weight)) && Number(item.weight) !== 0
