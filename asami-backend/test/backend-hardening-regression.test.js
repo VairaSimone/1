@@ -450,7 +450,7 @@ test('failed plan paths also cancel every remaining open step',()=>{
   const section=source.slice(start,end);
   const cancelIndex=section.indexOf("status='CANCELLED'",section.indexOf('failedSteps>0'));
   assert.ok(cancelIndex>=0);
-  assert.match(section.slice(Math.max(0,cancelIndex-500),cancelIndex+700),/UPDATE plan_steps SET status='CANCELLED'/);
+  assert.match(section.slice(Math.max(0,cancelIndex-500),cancelIndex+700),/UPDATE plan_steps\s+SET status='CANCELLED'/);
   assert.match(section.slice(Math.max(0,cancelIndex-500),cancelIndex+1000),/status IN \('PENDING','ACTIVE','BLOCKED'\)/);
 });
 
