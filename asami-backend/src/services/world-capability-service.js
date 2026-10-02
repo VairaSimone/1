@@ -38,6 +38,11 @@ async function ensureCapabilitiesForEmergentStructures(simulationId,simulationTi
   return {created};
 }
 
+async function loadActivityCatalog() {
+  const [rows] = await pool.query(`SELECT BIN_TO_UUID(id) id,code,name,category,parameters,active FROM activity_types WHERE active=1 ORDER BY category,code`);
+  return rows.map(normalizeDefinition);
+}
+
 async function loadCapabilitiesForEntities(simulationId,entityIds=[]){
   const ids=[...new Set(entityIds.filter(Boolean).map(String))];if(!ids.length)return new Map();
   const placeholders=ids.map(()=>`UUID_TO_BIN(?)`).join(",");
@@ -56,4 +61,4 @@ function scoreDynamicActivity(activity,needs=[],traits=[]){
 }
 
 function dynamicCodes(activities=[]){return activities.map(a=>normalize(a.code||a)).filter(Boolean)}
-module.exports={DEFAULTS,ensureCapabilitiesForEmergentStructures,loadCapabilitiesForEntities,scoreDynamicActivity,dynamicCodes,normalizeDefinition};
+module.exports={DEFAULTS,ensureCapabilitiesForEmergentStructures,loadCapabilitiesForEntities,loadActivityCatalog,scoreDynamicActivity,dynamicCodes,normalizeDefinition};
