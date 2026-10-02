@@ -143,6 +143,10 @@ async function ensureCapabilitiesForEmergentStructures(simulationId, simulationT
     }
   }
 
+  const [goods] = await pool.query(
+    "SELECT code,name,category,base_price basePrice FROM emergent_goods WHERE simulation_id=UUID_TO_BIN(?)",
+    [simulationId]
+  );
   let created = 0;
 
   for (const row of structures) {
@@ -178,19 +182,56 @@ async function ensureCapabilitiesForEmergentStructures(simulationId, simulationT
         return c === "WORK" || c === "PRODUCTION" || c === "CRAFT";
       }));
 
-    if (isMarket && await ensureCapability({
-      simulationId,
-      locationId: row.entityId,
-      sourceEntityId: row.entityId,
-      activityCode: "BUY_FOOD",
-      activityRow: {
-        code: "BUY_FOOD",
-        name: DEFAULTS.BUY_FOOD.name,
-        category: DEFAULTS.BUY_FOOD.category,
-        parameters: DEFAULTS.BUY_FOOD
-      },
-      simulationTime
-    })) created += 1;
+    if (isMarket) {
+      for (const good of goods) {
+        const actionCode = `BUY_${normalize(good.code)}`;
+        if (await ensureCapability({
+          simulationId,
+          locationId: row.entityId,
+          sourceEntityId: row.entityId,
+          activityCode: actionCode,
+          activityRow: {
+            code: actionCode,
+            name: `Buy ${good.name}`,
+            category: "ECONOMY",
+            parameters: {
+              code: actionCode,
+              name: `Buy ${good.name}`,
+              category: "ECONOMY",
+              needWeights: good.code === "FOOD" ? { HUNGER: 2.9 } : {},
+              gate: good.code === "FOOD" ? ["HUNGER", 0.25] : null,
+              durationMinutes: 25,
+              economicType: "BUY_GOOD",
+              goodCode: normalize(good.code)
+            }
+          },
+          simulationTime
+        })) created += 1;
+
+        const sellActionCode = `SELL_${normalize(good.code)}`;
+        if (await ensureCapability({
+          simulationId,
+          locationId: row.entityId,
+          sourceEntityId: row.entityId,
+          activityCode: sellActionCode,
+          activityRow: {
+            code: sellActionCode,
+            name: `Sell ${good.name}`,
+            category: "ECONOMY",
+            parameters: {
+              code: sellActionCode,
+              name: `Sell ${good.name}`,
+              category: "ECONOMY",
+              needWeights: {},
+              durationMinutes: 20,
+              economicType: "SELL_GOOD",
+              goodCode: normalize(good.code)
+            }
+          },
+          simulationTime
+        })) created += 1;
+      }
+    }
 
     if (hasWork && await ensureCapability({
       simulationId,
@@ -257,6 +298,25 @@ async function loadCapabilitiesForEntities(simulationId, entityIds = []) {
 
   const result = new Map(ids.map(id => [id, []]));
   for (const row of rows) result.get(String(row.entityId))?.push(normalizeDefinition(row));
+
+  const [sellable] = await pool.query(
+    "SELECT BIN_TO_UUID(elc.entity_id) entityId,wc.code " +
+    "FROM entity_locations_current elc " +
+    "JOIN world_capabilities wc ON wc.location_id=elc.location_id AND wc.simulation_id=elc.simulation_id " +
+    "JOIN emergent_structures es ON es.simulation_id=wc.simulation_id AND es.scope_location_id=wc.location_id " +
+    "JOIN emergent_inventory ei ON ei.simulation_id=wc.simulation_id AND ei.owner_entity_id=elc.entity_id " +
+    "  AND ei.good_code=SUBSTRING(wc.code,6) AND ei.quantity>0 " +
+    "WHERE elc.simulation_id=UUID_TO_BIN(?) AND elc.entity_id IN (" + placeholders + ") " +
+    "AND wc.active=1 AND wc.code LIKE 'SELL_%'",
+    [simulationId, ...ids]
+  );
+  const allowedSell = new Set(sellable.map(row => `${row.entityId}|${normalize(row.code)}`));
+  for (const [entityId, activities] of result.entries()) {
+    result.set(entityId, activities.filter(activity =>
+      !normalize(activity.code).startsWith("SELL_") ||
+      allowedSell.has(`${entityId}|${normalize(activity.code)}`)
+    ));
+  }
   return result;
 }
 
