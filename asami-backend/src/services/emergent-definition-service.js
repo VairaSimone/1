@@ -171,7 +171,7 @@ async function validateDefinition(simulationId,definition,{scopeLocationId=null,
         if(!needCodes.has(effect.needCode))errors.push("UNKNOWN_NEED");
         if(!Number.isFinite(effect.delta)||Math.abs(effect.delta)>MAX_ABS_NEED_DELTA)errors.push("INVALID_NEED_DELTA");
       }else if(effect.type==="RESOURCE_DELTA"){
-        if(!effect.resource||!CODE_RE.test(effect.resource))errors.push("INVALID_RESOURCE");
+        if(!effect.resource||!CODE_RE.test(code(effect.resource)))errors.push("INVALID_RESOURCE");
         if(!Number.isFinite(effect.delta)||Math.abs(effect.delta)>MAX_RESOURCE_DELTA)errors.push("INVALID_RESOURCE_DELTA");
         if(Number(effect.delta)>0)errors.push("RESOURCE_CREATION_FORBIDDEN");
       }else if(effect.type==="INVENTORY_DELTA"){
