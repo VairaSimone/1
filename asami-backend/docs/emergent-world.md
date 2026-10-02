@@ -74,3 +74,22 @@ now includes:
 Core biological and locomotion primitives remain code-defined because they are simulation infrastructure rather than social inventions: sleeping, eating, drinking, movement, basic communication and their state transitions still have dedicated deterministic semantics.
 
 The social grammar itself is no longer restricted to \`LOCAL_MARKET\`, \`COMMUNITY_HUB\` or \`WORKSHOP_COOPERATIVE\`.
+
+## Closed economic loop
+
+The socio-economic layer now uses a conserved money flow after initial account endowments:
+
+\`INITIAL ENDOWMENT -> SALES -> BUSINESS REVENUE -> WAGES -> HOUSEHOLD WEALTH -> PURCHASES -> BUSINESS REVENUE\`
+
+Goods can be produced by emergent activities using the validated \`PRODUCTION\` effect. Producers accumulate inventory, nearby markets can purchase stock wholesale, and the wholesale transfer is persisted as a trade.
+
+Food has two distinct layers:
+
+- physical food in the world is finite and is consumed by \`EATING\`;
+- purchased \`FOOD\` is stored in the person's economic inventory and is consumed from that inventory by \`EATING\` before falling back to physical food.
+
+Normal background distribution no longer regenerates physical food. Water retains its environmental replenishment/fail-safe behavior.
+
+Market stock is seeded only when a market is first created; low stock is not automatically refilled. A market must earn money from retail sales to finance wholesale purchases and wages.
+
+Job pay is calculated from the actual \`WORK_JOB\` duration, so the wage is no longer an unconditional fixed two-hour payment.
