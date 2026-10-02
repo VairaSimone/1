@@ -40,6 +40,13 @@ const ProposalSchema = z.object({
       delta: z.number().optional()
     }).passthrough()).max(4)
   })).max(MAX_AI_ACTIVITIES),
+  products: z.array(z.object({
+    code: z.string().min(3).max(64),
+    name: z.string().min(3).max(120),
+    category: z.string().min(1).max(48),
+    unit: z.string().min(1).max(24),
+    basePrice: z.number().positive().max(100)
+  })).max(3).optional(),
   resourceCosts: z.record(z.string(), z.number()).optional(),
   targetNeeds: z.array(z.object({ code: z.string(), weight: z.number() })).max(8).optional(),
   formation: z.string().max(120).optional(),
@@ -361,6 +368,18 @@ async function persistProposal({ simulationId, simulationTime, proposer, scope, 
   return { id, status };
 }
 
+async function registerEmergentProducts(simulationId, simulationTime, definition) {
+  for (const product of definition.products || []) {
+    await pool.query(
+      `INSERT INTO emergent_goods
+        (id,simulation_id,code,name,category,unit,base_price,created_simulation_at)
+        VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,?,?,?)
+        ON DUPLICATE KEY UPDATE name=VALUES(name),category=VALUES(category),unit=VALUES(unit),base_price=VALUES(base_price)`,
+      [uuid(),simulationId,product.code,product.name,product.category,product.unit,product.basePrice,simulationTime]
+    );
+  }
+}
+
 async function createProjectCompatibilityRecord(simulationId, simulationTime, proposal, proposerEntityId) {
   const projectId = uuid();
   const definition = proposal.definition;
@@ -391,6 +410,7 @@ async function createProjectCompatibilityRecord(simulationId, simulationTime, pr
 
 async function createStructure(simulationId, simulationTime, proposal, scope, actors) {
   const definition = proposal.definition;
+  await registerEmergentProducts(simulationId, simulationTime, definition);
   const entityId = uuid();
   const latitude = Number(scope.latitude || 0) + 0.0007;
   const longitude = Number(scope.longitude || 0) + 0.0007;
@@ -528,6 +548,7 @@ async function createStructure(simulationId, simulationTime, proposal, scope, ac
 
 async function createSystem(simulationId, simulationTime, proposal, scope, actors) {
   const definition = proposal.definition;
+  await registerEmergentProducts(simulationId, simulationTime, definition);
   const systemId = uuid();
   const systemEntityId = uuid();
 
@@ -621,6 +642,7 @@ async function materializeProposal(simulationId, simulationTime, proposal, scope
     return createStructure(simulationId, simulationTime, proposal, scope, actors);
   }
   if (proposal.definition.kind === "ACTIVITY") {
+    await registerEmergentProducts(simulationId, simulationTime, proposal.definition);
     const definitionId = await registerDefinition(simulationId, {
       kind: "ACTIVITY",
       definition: proposal.definition,
