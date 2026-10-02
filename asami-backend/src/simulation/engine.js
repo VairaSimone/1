@@ -415,7 +415,7 @@ class SimulationEngine {
             observability.increment(sim.id,"integrity_violation_total",violations.reduce((sum,item)=>sum+Number(item.count||0),0));
           }
           setPhase("world.emergence");
-          await progressEmergence(sim.id, nextTime.toISOString());
+          await progressEmergence(sim.id, nextTime.toISOString(), { gemini: this.gemini });
           setPhase("world.society");
           await evolveSociety(sim.id, nextTime.toISOString());
           this.worldMaintenanceAt.set(sim.id, nextTime.getTime());
