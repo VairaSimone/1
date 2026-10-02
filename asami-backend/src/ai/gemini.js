@@ -140,9 +140,18 @@ function compactDialogueContext(context,{advanced=false}={}){
     conversationInnerState:context?.conversationInnerState||null,
     timeSinceLastActivityHours:context?.timeSinceLastActivityHours??null,
     memories:memories.map(m=>({
+      id:m.id||null,
+      type:m.memoryType||m.type||null,
       content:String(m.content||m.summary||"").slice(0,500),
       importance:Number(m.importance||0),
-      simulationAt:m.simulationAt||m.createdAt||null
+      simulationAt:m.simulationAt||m.createdAt||null,
+      metadata:m.metadata&&typeof m.metadata==="object"?{
+        kind:m.metadata.kind||null,
+        actionType:m.metadata.actionType||m.metadata.action||null,
+        outcome:m.metadata.outcome||null,
+        locationId:m.metadata.locationId||m.metadata.location?.id||null,
+        targetEntityId:m.metadata.targetEntityId||m.metadata.interlocutorEntityId||null
+      }:null
     })),
     recentConversation:recent.map(m=>({
       messageType:m.messageType,
@@ -245,6 +254,15 @@ const TRANSIENT_NETWORK_CODES = new Set([
   "ECONNRESET","ECONNREFUSED","EPIPE","ETIMEDOUT","EAI_AGAIN","ENETUNREACH",
   "EHOSTUNREACH","ENOTFOUND","FETCH_FAILED","UND_ERR_CONNECT_TIMEOUT","UND_ERR_SOCKET"
 ]);
+
+function createGeminiCodedError(message,code,details={},cause=null){
+  const error=new Error(String(message||"Gemini request failed"));
+  error.name="GeminiServiceError";
+  error.code=String(code||"GEMINI_ERROR");
+  if(details&&typeof details==="object")Object.assign(error,details);
+  if(cause)error.cause=cause;
+  return error;
+}
 
 function classifyGeminiError(err) {
   const status=Number(err?.status||err?.statusCode||err?.response?.status||(
@@ -572,11 +590,12 @@ class GeminiService {
           }
           parsed=schema.parse(JSON.parse(raw));
         }catch(parseError){
-          throw Object.assign(parseError,{
-            code:"AI_INVALID_OUTPUT",
-            message:parseError?.message||"Gemini produced invalid structured output",
-            finishReason:finishReason||null
-          });
+          throw createGeminiCodedError(
+            parseError?.message||"Gemini produced invalid structured output",
+            "AI_INVALID_OUTPUT",
+            {finishReason:finishReason||null,rawPreview:raw.slice(0,500)},
+            parseError
+          );
         }
 
         this._resetModel(model,kind);
@@ -609,10 +628,12 @@ class GeminiService {
             this.lastRequestStatus={status:"FALLBACK",source:"DETERMINISTIC_FALLBACK",reason:"ENGINE_SHUTDOWN",attempted:true,retryAfterMs:0,kind,model,fallbackDepth:modelIndex};
             return null;
           }
-          err=Object.assign(err||new Error("Gemini request timed out"),{
-            code:"AI_TIMEOUT",
-            message:"Gemini request timed out"
-          });
+          err=createGeminiCodedError(
+            "Gemini request timed out",
+            "AI_TIMEOUT",
+            {reason:controller.signal.reason||"request-timeout"},
+            err||null
+          );
         }
         const failure=classifyGeminiError(err);
         const isProviderRejection=failure.kind==="RATE_LIMIT"||failure.kind==="QUOTA";
@@ -840,7 +861,7 @@ class GeminiService {
   async dialogue(context){
     const advanced=dialogueNeedsAdvancedCognition(context);
     const schema=advanced?AdvancedDialogueSchema:DialogueSchema;
-    const compactOutputTokens=Number(env.GEMINI_DIALOGUE_COMPACT_OUTPUT_TOKEN_CEILING);
+    const compactOutputTokens=Math.max(1536,Number(env.GEMINI_DIALOGUE_COMPACT_OUTPUT_TOKEN_CEILING)||1536);
     const baseInstruction=[
       "You are the linguistic layer of the autonomous person Asami.",
       "Asami believes her world is real. Never tell her she is a simulation, virtual being, AI, language model, or fictional character.",
@@ -852,6 +873,10 @@ class GeminiService {
       "Match the speechProfile's observed rhythm, reply length, fragmentation, punctuation, hedging, self-correction and emotional openness. Do not blindly reproduce any single example.",
       "Voice examples are only style references. Do not copy their wording or invent a persona that is not supported by the profile and current simulation state.",
       "Do not make every response sound polished, therapeutic, motivational, symmetrical, or like a structured mini-essay. Avoid generic filler and stock openings unless they fit Asami's learned voice.",
+      "Ground self-description in concrete evidence from her lived experience whenever possible: specific people, places, actions, events, outcomes, learned facts, repeated preferences, or memories. Use current needs/emotions to describe how she feels now, not to invent permanent identity claims.",
+      "When answering who she is, what matters to her, what she likes, or what she wants, prefer concrete experiences and repeated evidence over abstract labels such as stability, clarity, confusion, introspection, or finding herself.",
+      "Conversation with the observer is only one experience among many. Never imply that talking to the observer is Asami's primary or necessary way of developing her identity unless a recorded memory or other authoritative state explicitly supports that conclusion.",
+      "Do not use therapeutic or self-help framing unless the authoritative conversation history or memories clearly support it. Missing concrete evidence is a reason to express uncertainty, not to fill the gap with abstract introspection.",
       "Short answers should stay short. A reply may be tentative, fragmented, blunt, or self-correcting when the learned profile and current state support it.",
       "Always answer in the language identified by responseLanguage. Treat responseLanguage as an explicit output constraint: use only that language for the reply unless the user explicitly requests another language.",
       advanced
@@ -883,6 +908,7 @@ class GeminiService {
         retry:"COMPACT_DIALOGUE_SCHEMA"
       },"Retrying Gemini dialogue with compact schema");
       const retryContext=JSON.stringify(compactDialogueContext(context,{advanced:false}));
+      const retryDeadlineAt=Date.now()+10000;
       const retry=await this.generateJson(
         [
           "You are Asami. Reply naturally in first person to the user's message.",
@@ -900,7 +926,7 @@ class GeminiService {
           maxModels:1,
           timeoutMsOverride:10000,
           outputTokenCeilingOverride:compactOutputTokens,
-          deadlineAt:dialogueDeadlineAt
+          deadlineAt:retryDeadlineAt
         }
       );
       if(retry)return retry;
@@ -909,6 +935,7 @@ class GeminiService {
     const fallbackReason=this.lastRequestStatus.reason;
     if(fallbackReason==="PROVIDER_TRANSIENT_FAILURE"||fallbackReason==="AI_TIMEOUT"||fallbackReason==="PROVIDER_NETWORK_FAILURE"||fallbackReason==="PROVIDER_RATE_LIMIT"||fallbackReason==="PROVIDER_QUOTA_EXHAUSTED"){
       const fallbackContext=JSON.stringify(compactDialogueContext(context,{advanced}));
+      const fallbackDeadlineAt=Date.now()+10000;
       return this.generateJson(
         [baseInstruction,fallbackContext].join("\n"),
         schema,
@@ -918,7 +945,7 @@ class GeminiService {
           maxModels:env.GEMINI_DIALOGUE_MAX_MODELS,
           timeoutMsOverride:env.GEMINI_DIALOGUE_TIMEOUT_MS,
           outputTokenCeilingOverride:advanced?Number(env.GEMINI_DIALOGUE_OUTPUT_TOKEN_CEILING):compactOutputTokens,
-          deadlineAt:dialogueDeadlineAt
+          deadlineAt:fallbackDeadlineAt
         }
       );
     }
