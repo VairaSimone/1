@@ -109,12 +109,12 @@ async function ensureJobs(simulationId,simulationTime){
           return category==="WORK"||category==="PRODUCTION"||category==="CRAFT";
         })
       : [];
-    const shouldHire=isProducerStructure(structure)||definitionWorkActivities.length>0;
+    const shouldHire=isMarketStructure(structure)||isProducerStructure(structure)||definitionWorkActivities.length>0;
     if(!shouldHire)continue;
 
     const role=definitionWorkActivities[0]?.name
       ? String(definitionWorkActivities[0].name).slice(0,80)
-      : normalize(structure.type)==="WORKSHOP"?"CRAFTSPERSON":"WORKER";
+      : isMarketStructure(structure)?"SELLER":(normalize(structure.type)==="WORKSHOP"?"CRAFTSPERSON":"WORKER");
     const wage=Number(
       definitionWorkActivities[0]?.wagePerHour ??
       (normalize(definition.category)==="HIGH_SKILL" ? 1.1 : 0.75)
