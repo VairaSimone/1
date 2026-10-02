@@ -11,6 +11,7 @@ const { getConversationState } = require("../services/conversation-state-service
 const { getUsage } = require("../services/gemini-budget-service");
 const { getWorldSnapshot } = require("../services/world-observer-service");
 const { getEmergentSnapshot } = require("../services/emergent-world-service");
+const { getSocietySnapshot } = require("../services/society-service");
 const { simulationCreate, speed, message, uuid, queryLimit } = require("./validation");
 const { runIdempotent } = require("../services/idempotency-service");
 const { env } = require("../config/env");
@@ -113,6 +114,12 @@ function buildRouter({hub,gemini}){
     const sim=await simRepo.getSimulation(simulationId);
     if(!sim)return res.status(404).json({error:"Simulation not found"});
     res.json(await getEmergentSnapshot(simulationId));
+  });
+  router.get("/simulations/:simulationId/society",async(req,res)=>{
+    const simulationId=uuid.parse(req.params.simulationId);
+    const sim=await simRepo.getSimulation(simulationId);
+    if(!sim)return res.status(404).json({error:"Simulation not found"});
+    res.json(await getSocietySnapshot(simulationId));
   });
   router.get("/simulations/:simulationId/analysis",async(req,res)=>{
     const simulationId=uuid.parse(req.params.simulationId);
