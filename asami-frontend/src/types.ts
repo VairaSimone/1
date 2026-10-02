@@ -247,6 +247,36 @@ export interface SocietyMetric {
   totalTradeValue: number
   simulationAt: string
 }
+export interface SocietyBusinessMetric {
+  businessCount: number
+  activeBusinessCount: number
+  failedBusinessCount: number
+  unemployedCount: number
+  employedCount: number
+  revenue: number
+  inputCost: number
+  wageCost: number
+  profit: number
+  productionValue: number
+  investment: number
+  simulationAt: string
+}
+export interface SocietyBusiness {
+  id: string
+  entityId: string
+  ownerEntityId: string | null
+  status: string
+  productionCapacity: number
+  recentRevenue: number
+  recentInputCost: number
+  recentWageCost: number
+  recentProfit: number
+  cumulativeProfit: number
+  cumulativeInvestment: number
+  failureCount: number
+  lastEvaluated: string | null
+  updatedAt: string
+}
 export interface SocietyPolicy {
   id: string
   proposerEntityId: string
@@ -311,5 +341,7 @@ export interface SocietySnapshot {
   metrics: SocietyMetric[]
   policies: SocietyPolicy[]
   conflicts: SocietyConflict[]
+  businessMetrics: SocietyBusinessMetric[]
+  businesses: SocietyBusiness[]
   openEnded: { proposals: SocietyProposal[]; definitions: SocietyDefinition[] }
 }
