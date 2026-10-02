@@ -11,11 +11,12 @@ import { Relationships } from './pages/Relationships'
 import { Development } from './pages/Development'
 import { Chat } from './pages/Chat'
 import { Mind } from './pages/Mind'
+import { Society } from './pages/Society'
 import { LiveWorld } from './pages/LiveWorld'
 import { NewSimulation } from './pages/NewSimulation'
 import { useSimulation } from './hooks/useSimulation'
 
-export type View = 'live-world' | 'overview' | 'analysis' | 'timeline' | 'memory' | 'mind' | 'relationships' | 'development' | 'chat'
+export type View = 'live-world' | 'overview' | 'analysis' | 'timeline' | 'memory' | 'mind' | 'relationships' | 'development' | 'society' | 'chat'
 
 export default function App() {
   const sim = useSimulation()
@@ -33,6 +34,7 @@ export default function App() {
     mind: ['COGNIZIONE', 'Mente di Asami', 'Identità, valori, desideri, attenzione, conflitti, aspettative e narrativa autobiografica.'],
     relationships: ['SOCIALE', 'Relazioni', 'La struttura relazionale di Asami e come cambiano i punteggi sociali.'],
     development: ['CRESCITA', 'Sviluppo', 'Tratti, capacità e segnali longitudinali di sviluppo.'],
+    society: ['SOCIETÀ', 'Società emergente', 'Economia, lavoro, ricchezza, governance, leggi e conflitti generati dagli abitanti.'],
     chat: ['COMUNICAZIONE', 'Parla con Asami', 'Una superficie di comunicazione collegata al servizio di comunicazione del backend.'],
   } as Record<View, [string, string, string]>)[view], [view])
 
@@ -65,6 +67,7 @@ export default function App() {
         {view === 'mind' && <Mind simulationId={sim.simulation.id} entityId={sim.asamiId || sim.dashboard.entity.id} currentSimulationAt={sim.simulation.currentSimulationAt} />}
         {view === 'relationships' && <Relationships relationships={sim.dashboard.relationships} />}
         {view === 'development' && <Development current={sim.development.current} history={sim.development.history} traits={sim.dashboard.traits} skills={sim.dashboard.skills} />}
+        {view === 'society' && <Society society={sim.society} world={sim.world} />}
         {view === 'chat' && <Chat messages={sim.messages} conversationState={sim.conversationState} asami={sim.dashboard.entity} senderId={sim.chatSenderId} onSenderId={sim.setChatSenderId} onSend={async (text) => { await sim.sendMessage(text) }} />}
       </div>}
       {!sim.simulation && !sim.error && <div className="empty-root"><CircleAlert size={24} /><h2>Nessuna simulazione selezionata</h2><p>Crea la prima vita autonoma per accedere alla sala di controllo.</p><button className="primary-button" onClick={() => setNewSimulation(true)}><Plus size={16} /> Crea simulazione</button></div>}
