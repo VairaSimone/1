@@ -227,7 +227,7 @@ async function askGemini(gemini, { simulationTime, scope, signal, proposer, acto
     "You are the generative design layer inside an autonomous society simulation.",
     "One inhabitant is proposing a genuinely new social possibility in response to a shared local pressure.",
     "Invent a novel STRUCTURE, INSTITUTION, ACTIVITY, or SYSTEM. Do not assume a fixed project taxonomy.",
-    "The definition is data, not code. It may only use safe effects: NEED_DELTA, RESOURCE_DELTA, INVENTORY_DELTA.",
+    "The definition is data, not code. It may only use safe effects: NEED_DELTA, RESOURCE_DELTA, INVENTORY_DELTA, PRODUCTION.",
     "Never emit SQL, code, commands, external URLs, invented entity IDs, arbitrary formulas, or effects outside the safe vocabulary.",
     "Activities are compositional: code, name, category, need weights, gate, duration and safe effect combinations may be novel.",
     "Make the proposal concrete and locally plausible from the people and resources shown.",
