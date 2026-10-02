@@ -23,8 +23,7 @@ const LOCATION_OBJECTS = {
 // Emergency reserves are deliberately modest. They are a fail-safe, not a
 // replacement for the normal environmental/resource economy.
 const CRITICAL_RESOURCE_RESERVES = Object.freeze({
-  water: 12,
-  food: 8
+  water: 12
 });
 const RESOURCE_EMERGENCY_TTL_MINUTES = 120;
 
@@ -190,8 +189,7 @@ async function ensureResourceReserveAtLocation({simulationId,locationId,resource
 }
 
 const RESOURCE_DISTRIBUTION_POLICY = Object.freeze({
-  water: { minimum: 4, cap: 20 },
-  food: { minimum: 2, cap: 16 }
+  water: { minimum: 4, cap: 20 }
 });
 
 async function maintainDistributedResources(simulationId, simulationTime) {
