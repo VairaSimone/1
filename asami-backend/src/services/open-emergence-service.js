@@ -11,6 +11,7 @@ const {
   KINDS
 } = require("./emergent-definition-service");
 const { ensureCapabilitiesForEmergentStructures } = require("./world-capability-service");
+const { ensureCatalog } = require("./society-service");
 const logger = require("../lib/logger");
 
 const PERSON = "00000000-0000-4000-8000-000000000001";
@@ -728,6 +729,7 @@ async function proposeForLocation(simulationId, simulationTime, scope, actors, g
 }
 
 async function evolveOpenEnded(simulationId, simulationTime, { gemini = null } = {}) {
+  await ensureCatalog(simulationId, simulationTime);
   const [actors, locations] = await Promise.all([
     loadActors(simulationId),
     loadLocations(simulationId)
