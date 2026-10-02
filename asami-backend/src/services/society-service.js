@@ -66,7 +66,7 @@ async function evolvePrices(simulationId,simulationTime){
   const [markets]=await pool.query(`SELECT BIN_TO_UUID(es.entity_id) entityId,BIN_TO_UUID(es.scope_location_id) locationId FROM emergent_structures es WHERE es.simulation_id=UUID_TO_BIN(?) AND es.structure_type="MARKET"`,[simulationId]);
   for(const market of markets){
     const [stock]=await pool.query(`SELECT COALESCE(SUM(quantity),0) supply FROM emergent_inventory WHERE simulation_id=UUID_TO_BIN(?) AND owner_entity_id=UUID_TO_BIN(?) AND good_code="FOOD"`,[simulationId,market.entityId]);
-    const [demand]=await pool.query(`SELECT COUNT(*) demand FROM actions WHERE simulation_id=UUID_TO_BIN(?) AND action_type="BUY_FOOD" AND completed_simulation_at>=DATE_SUB(?,INTERVAL 24 HOUR) AND result IS NOT NULL`,[simulationId,simulationTime]);
+    const [demand]=await pool.query(`SELECT COUNT(*) demand FROM actions WHERE simulation_id=UUID_TO_BIN(?) AND action_type="BUY_FOOD" AND completed_simulation_at>=DATE_SUB(?,INTERVAL 24 HOUR) AND JSON_UNQUOTE(JSON_EXTRACT(result,"$.outcome"))="SUCCESS"`,[simulationId,simulationTime]);
     const [base]=await pool.query(`SELECT base_price FROM emergent_goods WHERE simulation_id=UUID_TO_BIN(?) AND code="FOOD" LIMIT 1`,[simulationId]);
     const supplyValue=Number(stock[0]?.supply||0),demandValue=Number(demand[0]?.demand||0),basePrice=Number(base[0]?.base_price||1);
     const price=Number((basePrice*clamp(1+(demandValue*.18)/Math.max(5,supplyValue),.55,3)).toFixed(4));
@@ -147,19 +147,37 @@ async function executeEconomicAction({conn,simulationId,entityId,actionType,simu
     await conn.query(`UPDATE emergent_economy_accounts SET balance=balance-?,lifetime_spending=lifetime_spending+?,last_updated_simulation_at=?,version=version+1 WHERE id=?`,[unitPrice,unitPrice,simulationTime,account[0].id]);
     await conn.query(`UPDATE emergent_economy_accounts SET balance=balance+?,lifetime_income=lifetime_income+?,last_updated_simulation_at=?,version=version+1 WHERE id=?`,[unitPrice,unitPrice,simulationTime,sellerAccount[0].id]);
     await conn.query(`INSERT INTO emergent_trades(id,simulation_id,buyer_entity_id,seller_entity_id,location_id,good_code,quantity,unit_price,total,simulation_at) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),"FOOD",1,?,?,?)`,[uuid(),simulationId,entityId,sellerId,locationId,unitPrice,unitPrice,simulationTime]);
-    return {ok:true,economicType:"TRADE",good:"FOOD",quantity:1,unitPrice,total:unitPrice,resource:"FOOD",sellerEntityId:sellerId};
+    return {ok:true,economicType:"TRADE",good:"FOOD",quantity:1,unitPrice,total:unitPrice,resource:"FOOD",sellerEntityId:sellerId,needEffect:{code:"HUNGER",delta:-.35}};
   }
   if(action==="WORK_JOB"){
     const [job]=await conn.query(`SELECT id,wage_per_hour wage,employer_entity_id employerId FROM emergent_jobs WHERE simulation_id=UUID_TO_BIN(?) AND employee_entity_id=UUID_TO_BIN(?) AND status="ACTIVE" LIMIT 1 FOR UPDATE`,[simulationId,entityId]);
     if(!job.length)return {ok:false,failureReason:"NO_JOB"};
     const wage=Number(job[0].wage||0.75);
-    const amount=Number((wage*2).toFixed(4));
+    const gross=Number((wage*2).toFixed(4));
+    const [policyRows]=await conn.query(`SELECT parameters FROM emergent_policies WHERE simulation_id=UUID_TO_BIN(?) AND status="ENACTED" ORDER BY updated_simulation_at DESC LIMIT 1`,[simulationId]);
+    const policy=parseJson(policyRows[0]?.parameters,{});
+    const mandatoryTax=normalize(policy.fundingModel)==="COMMON_POOL" ? clamp(Number(policy.contributionRate||0),0,.35) : 0;
+    const tax=Number((gross*mandatoryTax).toFixed(4));
+    const amount=Number((gross-tax).toFixed(4));
     const [employer]=await conn.query(`SELECT id,balance FROM emergent_economy_accounts WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) FOR UPDATE`,[simulationId,job[0].employerId]);
     const [employee]=await conn.query(`SELECT id,balance FROM emergent_economy_accounts WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) FOR UPDATE`,[simulationId,entityId]);
-    if(!employer.length||Number(employer[0].balance)<amount)return {ok:false,failureReason:"EMPLOYER_CANNOT_PAY",required:amount};
-    await conn.query(`UPDATE emergent_economy_accounts SET balance=balance-?,last_updated_simulation_at=?,version=version+1 WHERE id=?`,[amount,simulationTime,employer[0].id]);
+    if(!employer.length||Number(employer[0].balance)<gross)return {ok:false,failureReason:"EMPLOYER_CANNOT_PAY",required:gross};
+    let governmentAccount=null;
+    if(tax>0){
+      const [govRows]=await conn.query(`SELECT parameters FROM emergent_policies WHERE simulation_id=UUID_TO_BIN(?) AND status="ENACTED" ORDER BY updated_simulation_at DESC LIMIT 1`,[simulationId]);
+      const govParams=parseJson(govRows[0]?.parameters,{});
+      const [systemRows]=await conn.query(`SELECT attributes FROM emergent_systems WHERE simulation_id=UUID_TO_BIN(?) AND system_type="GOVERNANCE" LIMIT 1`,[simulationId]);
+      const govAttrs=parseJson(systemRows[0]?.attributes,{});
+      const govId=govAttrs.systemEntityId;
+      if(govId){
+        const [rows]=await conn.query(`SELECT id,balance FROM emergent_economy_accounts WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) FOR UPDATE`,[simulationId,govId]);
+        if(rows.length) governmentAccount=rows[0];
+      }
+    }
+    await conn.query(`UPDATE emergent_economy_accounts SET balance=balance-?,last_updated_simulation_at=?,version=version+1 WHERE id=?`,[gross,simulationTime,employer[0].id]);
     await conn.query(`UPDATE emergent_economy_accounts SET balance=balance+?,lifetime_income=lifetime_income+?,last_updated_simulation_at=?,version=version+1 WHERE id=?`,[amount,amount,simulationTime,employee[0].id]);
-    return {ok:true,economicType:"WAGE",grossWage:amount,netWage:amount,employerEntityId:job[0].employerId};
+    if(governmentAccount){await conn.query(`UPDATE emergent_economy_accounts SET balance=balance+?,lifetime_income=lifetime_income+?,last_updated_simulation_at=?,version=version+1 WHERE id=?`,[tax,tax,simulationTime,governmentAccount.id]);}
+    return {ok:true,economicType:"WAGE",grossWage:gross,netWage:amount,tax,employerEntityId:job[0].employerId};
   }
   return null;
 }
