@@ -331,6 +331,18 @@ export interface SocietyDefinition {
   status: string
   createdAt: string
 }
+export interface SocietyEvent {
+  id: string
+  type: string
+  category: string
+  title: string
+  description: string | null
+  simulationAt: string
+  importance: number
+  status: string
+  locationId: string | null
+  metadata: Record<string, unknown>
+}
 export interface SocietySnapshot {
   systems: SocietySystem[]
   goods: Array<{ code: string; name: string; category: string; unit: string; basePrice: number }>
@@ -343,5 +355,6 @@ export interface SocietySnapshot {
   conflicts: SocietyConflict[]
   businessMetrics: SocietyBusinessMetric[]
   businesses: SocietyBusiness[]
+  events: SocietyEvent[]
   openEnded: { proposals: SocietyProposal[]; definitions: SocietyDefinition[] }
 }
