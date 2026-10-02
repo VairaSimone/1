@@ -753,17 +753,56 @@ async function proposeForLocation(simulationId, simulationTime, scope, actors, g
   const proposer = selectProposer(actors, signal);
   if (!proposer) return null;
 
+  const [[simulationRows], [economicRows]] = await Promise.all([
+    pool.query("SELECT started_simulation_at startedAt FROM simulations WHERE id=UUID_TO_BIN(?) LIMIT 1", [simulationId]),
+    pool.query("SELECT (SELECT COUNT(*) FROM emergent_businesses WHERE simulation_id=UUID_TO_BIN(?) AND status='ACTIVE') businessCount, (SELECT COUNT(*) FROM emergent_market_state WHERE simulation_id=UUID_TO_BIN(?)) marketCount", [simulationId, simulationId])
+  ]);
+  const startedAt = new Date(simulationRows[0]?.startedAt || simulationTime).getTime();
+  const now = new Date(simulationTime).getTime();
+  const simulationAgeHours = Number.isFinite(startedAt) && Number.isFinite(now)
+    ? Math.max(0, (now - startedAt) / 3600000)
+    : 0;
+  const economicState = economicRows[0] || {};
+
+  const similarityProbe = deterministicFallbackDefinition(signal, proposer, simulationTime);
+  const similarProposalCount = await countRecentSimilarProposals(
+    simulationId, scope.locationId, similarityProbe, simulationTime
+  );
+  const economicOpportunity = simulationAgeHours >= 72
+    && Number(economicState.businessCount || 0) === 0
+    && Number(economicState.marketCount || 0) === 0
+    && similarProposalCount >= 2;
+
+  const [recentLocalDefinitions] = await pool.query(
+    "SELECT kind,code,name,category,definition FROM emergent_definition_catalog WHERE simulation_id=UUID_TO_BIN(?) AND scope_location_id=UUID_TO_BIN(?) AND status='ACTIVE' ORDER BY created_simulation_at DESC LIMIT 12",
+    [simulationId, scope.locationId]
+  );
+
+  // A repeated semantic solution is not a new invention. Once the
+  // society has repeated the same response for several days, economicOpportunity
+  // lets the pressure evolve into durable material coordination instead.
+  if (!economicOpportunity && similarProposalCount >= 1) return null;
+
   const generated = await askGemini(gemini, {
     simulationTime,
     scope,
     signal,
     proposer,
-    actors
+    actors,
+    economicOpportunity,
+    similarProposalCount,
+    recentLocalDefinitions: recentLocalDefinitions.map(row => ({
+      kind: row.kind,
+      code: row.code,
+      name: row.name,
+      category: row.category,
+      definition: parseJson(row.definition, {})
+    }))
   });
 
   let definition = generated
     ? normalizeDefinition(generated)
-    : deterministicFallbackDefinition(signal, proposer, simulationTime);
+    : deterministicFallbackDefinition(signal, proposer, simulationTime, { economicOpportunity });
 
   let validation = await validateDefinition(simulationId, definition, {
     scopeLocationId: scope.locationId,
@@ -772,7 +811,7 @@ async function proposeForLocation(simulationId, simulationTime, scope, actors, g
   });
 
   if (!validation.valid && generated) {
-    definition = deterministicFallbackDefinition(signal, proposer, simulationTime);
+    definition = deterministicFallbackDefinition(signal, proposer, simulationTime, { economicOpportunity });
     validation = await validateDefinition(simulationId, definition, {
       scopeLocationId: scope.locationId,
       localResources: scope.attributes?.resources || {},
@@ -835,7 +874,6 @@ async function proposeForLocation(simulationId, simulationTime, scope, actors, g
   const materialized = await materializeProposal(simulationId, simulationTime, proposal, scope, actors);
   return { ...proposal, materialized };
 }
-
 async function evolveOpenEnded(simulationId, simulationTime, { gemini = null } = {}) {
   await ensureCatalog(simulationId, simulationTime);
   const [actors, locations] = await Promise.all([
