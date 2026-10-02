@@ -425,7 +425,7 @@ async function applyOutcomeDependentNeed({conn,simulationId,entityId,actionId,ac
   if(effectResult.old>0 && consumed>0 && effectResult.new>=effectResult.old){
     throw Object.assign(new Error(`Invariant violated: ${action} consumed ${effect.resource} but ${effect.needCode} did not decrease`),{code:"RESOURCE_NEED_INVARIANT_VIOLATION",needCode:effect.needCode,resource:effect.resource,actionId});
   }
-  logger.info({event:"RESOURCE_NEED_EFFECT_APPLIED",simulationId,entityId,actionId,actionType:action,resource:effect.resource,consumed,needCode:effect.needCode,oldNeed:effectResult.old,actionDelta:effectResult.delta,newNeed:effectResult.new,durationMinutes:effectResult.durationMinutes,consumptionRatio:effectResult.consumptionRatio},"resource consumption updated physiological need");
+  logger.debugThrottled("RESOURCE_NEED_EFFECT_APPLIED",60000,{event:"RESOURCE_NEED_EFFECT_APPLIED",actionType:action,resource:effect.resource,needCode:effect.needCode,consumed,oldNeed:effectResult.old,newNeed:effectResult.new},`resource consumption updated physiological need (${action})`);
   return {...effectResult,code:row.code,needId:row.needId,resource:effect.resource,actionId};
 }
 
