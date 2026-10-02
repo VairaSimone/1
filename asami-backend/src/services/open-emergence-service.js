@@ -264,8 +264,8 @@ async function askGemini(gemini, { simulationTime, scope, signal, proposer, acto
       thinkingLevel: "low",
       maxModels: 1,
       outputTokenCeilingOverride: 1200,
-      timeoutMsOverride: 7000,
-      deadlineAt: Date.now() + 7000
+      timeoutMsOverride: 10000,
+      deadlineAt: Date.now() + 10000
     });
   } catch (error) {
     logger.warn({
