@@ -488,6 +488,21 @@ async function createStructure(simulationId, simulationTime, proposal, scope, ac
     ]
   );
 
+  for (const actor of actors.slice(0, 12)) {
+    await pool.query(
+      "INSERT IGNORE INTO emergent_project_members " +
+      "(project_id,simulation_id,entity_id,role,motivation,joined_simulation_at) " +
+      "VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),'SUPPORTER',?,?)",
+      [
+        structureProjectId,
+        simulationId,
+        actor.entityId,
+        JSON.stringify({ origin: "AGENT_PROPOSAL", supportScore: proposal.supportScore || 0 }),
+        simulationTime
+      ]
+    );
+  }
+
   await createEvent({
     simulationId,
     eventTypeCode: "SOCIAL",
