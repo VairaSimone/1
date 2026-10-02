@@ -200,14 +200,6 @@ function deterministicFallbackDefinition(signal, proposer, simulationTime) {
       needWeights: { HUNGER: 2, ACHIEVEMENT: 0.5 },
       gate: { needCode: "HUNGER", min: 0.30 },
       effects: [{ type: "PRODUCTION", goodCode: "FOOD", quantity: 2, resourceInputs: { water: 1 }, inventoryInputs: {} }]
-    }, {
-      code: baseCode+"_SELL_FOOD",
-      name: "Sell local food",
-      category: "ECONOMY",
-      durationMinutes: 20,
-      needWeights: { ACHIEVEMENT: 0.3 },
-      gate: null,
-      effects: [{ type: "INVENTORY_DELTA", goodCode: "FOOD", delta: -1 }]
     }] : [{
       code: activityCode,
       name: "Practice " + needLabel + " locally",
