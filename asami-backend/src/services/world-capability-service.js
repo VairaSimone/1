@@ -22,7 +22,7 @@ function normalizeDefinition(row){
 
 async function ensureCapabilitiesForEmergentStructures(simulationId,simulationTime){
   const [rows]=await pool.query(`SELECT BIN_TO_UUID(es.entity_id) entityId,BIN_TO_UUID(es.scope_location_id) scopeLocationId,es.structure_type structureType,es.activities FROM emergent_structures es WHERE es.simulation_id=UUID_TO_BIN(?)`,[simulationId]);
-  const mappings={MARKET:["BUY_FOOD"],WORKSHOP:["WORK_JOB","PRODUCE_GOODS"],COMMUNITY_HUB:["ATTEND_COMMUNITY"]};
+  const mappings={MARKET:["BUY_FOOD","WORK_JOB"],WORKSHOP:["WORK_JOB","PRODUCE_GOODS"],COMMUNITY_HUB:["ATTEND_COMMUNITY"]};
   let created=0;
   for(const row of rows){
     const codes=[...new Set([...(mappings[normalize(row.structureType)]||[]),...parseJson(row.activities,[]).map(normalize).filter(Boolean)])];
