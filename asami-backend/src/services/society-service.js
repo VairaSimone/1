@@ -42,7 +42,7 @@ function definitionFromStructure(row) {
 function isMarketStructure(row) {
   const definition=definitionFromStructure(row);
   const category=normalize(definition.category);
-  return normalize(row.type)==="MARKET" ||
+  return normalize(row.type||row.systemType)==="MARKET" ||
     Boolean(definition.market===true) ||
     category==="MARKET" ||
     category==="COMMERCE";
@@ -55,7 +55,7 @@ function isProducerStructure(row) {
   return activities.some(activity=>{
     const category=normalize(activity?.category);
     return category==="WORK"||category==="PRODUCTION"||category==="CRAFT";
-  }) || ["WORKSHOP","FARM"].includes(normalize(row.type));
+  }) || ["WORKSHOP","FARM"].includes(normalize(row.type||row.systemType));
 }
 
 async function ensureMarketInventory(simulationId,simulationTime){
@@ -528,6 +528,69 @@ async function ensureBusinesses(simulationId,simulationTime){
           await pool.query(
             `UPDATE emergent_economy_accounts SET balance=balance+?,lifetime_income=lifetime_income+?,last_updated_simulation_at=?,version=version+1 WHERE id=?`,
             [capital,capital,simulationTime,businessAccount[0].id]
+          );
+        }
+      }
+    }
+    created++;
+  }
+
+  const [systems]=await pool.query(
+    \`SELECT BIN_TO_UUID(es.id) systemId,es.attributes
+       FROM emergent_systems es
+      WHERE es.simulation_id=UUID_TO_BIN(?) AND es.stage<>'ENDED'\`,
+    [simulationId]
+  );
+  for(const system of systems){
+    const definition=parseJson(system.attributes,{})?.definition||{};
+    const economic=Boolean(definition.market||definition.production) ||
+      (Array.isArray(definition.activities)&&definition.activities.some(activity=>{
+        const c=normalize(activity?.category);
+        return c==='WORK'||c==='PRODUCTION'||c==='CRAFT';
+      }));
+    if(!economic)continue;
+    const systemEntityId=parseJson(system.attributes,{}).systemEntityId;
+    if(!systemEntityId)continue;
+    const [existing]=await pool.query(
+      \`SELECT id FROM emergent_businesses WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) LIMIT 1\`,
+      [simulationId,systemEntityId]
+    );
+    if(existing.length)continue;
+    const [origin]=await pool.query(
+      \`SELECT BIN_TO_UUID(origin_entity_id) ownerEntityId
+         FROM emergent_definition_catalog
+        WHERE simulation_id=UUID_TO_BIN(?) AND code=?
+        ORDER BY created_simulation_at DESC LIMIT 1\`,
+      [simulationId,normalize(definition.code)]
+    );
+    const ownerEntityId=origin[0]?.ownerEntityId||systemEntityId;
+    await pool.query(
+      \`INSERT INTO emergent_businesses
+        (id,simulation_id,entity_id,owner_entity_id,status,production_capacity,created_simulation_at,updated_simulation_at,version)
+       VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),'ACTIVE',1,?,?,1)\`,
+      [uuid(),simulationId,systemEntityId,ownerEntityId,simulationTime,simulationTime]
+    );
+    if(String(ownerEntityId)!==String(systemEntityId)){
+      const [ownerAccount]=await pool.query(
+        \`SELECT id,balance FROM emergent_economy_accounts
+          WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) LIMIT 1 FOR UPDATE\`,
+        [simulationId,ownerEntityId]
+      );
+      const [systemAccount]=await pool.query(
+        \`SELECT id,balance FROM emergent_economy_accounts
+          WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) LIMIT 1 FOR UPDATE\`,
+        [simulationId,systemEntityId]
+      );
+      if(ownerAccount.length&&systemAccount.length&&Number(ownerAccount[0].balance)>0){
+        const capital=Number(Math.min(10,Math.max(0,Number(ownerAccount[0].balance)*.25)).toFixed(4));
+        if(capital>0){
+          await pool.query(
+            \`UPDATE emergent_economy_accounts SET balance=balance-?,lifetime_spending=lifetime_spending+?,last_updated_simulation_at=?,version=version+1 WHERE id=?\`,
+            [capital,capital,simulationTime,ownerAccount[0].id]
+          );
+          await pool.query(
+            \`UPDATE emergent_economy_accounts SET balance=balance+?,lifetime_income=lifetime_income+?,last_updated_simulation_at=?,version=version+1 WHERE id=?\`,
+            [capital,capital,simulationTime,systemAccount[0].id]
           );
         }
       }
