@@ -551,6 +551,19 @@ class SimulationEngine {
               setPhase("entity.action.complete");
               completion = await actionService.completeAction({ simulationId: sim.id, entityId, actionId: active.id, decisionId: active.decisionId, eventId, intentionId: active.intentionId, actionType: active.actionType, simulationTime: completionAt, targetEntityId, targetLocationId, relationshipIntent });
               if (!completion?.completed) { logger.warn({ simulationId: sim.id, entityId, actionId: active.id }, "action completion was not committed; skipping downstream learning"); continue; }
+              if (Array.isArray(completion?.needEffects)) {
+                const dynamicNeedChanges = completion.needEffects.map(effect => ({
+                  code: effect.needCode,
+                  old: effect.oldValue,
+                  new: effect.newValue,
+                  delta: Number(effect.appliedDelta ?? effect.delta ?? 0)
+                })).filter(change => change.code && Number.isFinite(Number(change.delta)));
+                if (dynamicNeedChanges.length) {
+                  needChanges.push(...dynamicNeedChanges);
+                  currentNeedsForTick = mergeNeedChanges(currentNeedsForTick, dynamicNeedChanges);
+                  latestNeedsForTick = currentNeedsForTick;
+                }
+              }
               outcome = completion.outcome || "SUCCESS"; successful = outcome === "SUCCESS";
               if(active.decisionId) await calibrateDecisionOutcome(active.decisionId,outcome);
               setPhase("entity.emotions.outcome");
