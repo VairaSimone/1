@@ -83,6 +83,7 @@ async function ensureMarketInventory(simulationId,simulationTime){
   }
 }
 async function ensureJobs(simulationId,simulationTime){
+  const economicPolicy=await latestEconomicPolicy(simulationId);
   const [structures]=await pool.query(
     `SELECT BIN_TO_UUID(es.entity_id) employerId,BIN_TO_UUID(es.project_id) projectId,
             es.structure_type type,es.attributes
@@ -118,7 +119,8 @@ async function ensureJobs(simulationId,simulationTime){
       definitionWorkActivities[0]?.wagePerHour ??
       (normalize(definition.category)==="HIGH_SKILL" ? 1.1 : 0.75)
     );
-    const safeWage=Number.isFinite(wage)?Math.max(0.25,Math.min(5,wage)):0.75;
+    const policyMinimumWage=Math.max(0,Math.min(5,Number(economicPolicy.minimumWage||0)));
+    const safeWage=Number.isFinite(wage)?Math.max(0.25,Math.min(5,Math.max(wage,policyMinimumWage))):Math.max(0.75,policyMinimumWage);
 
     const [members]=await pool.query(
       `SELECT BIN_TO_UUID(entity_id) entityId
@@ -146,6 +148,7 @@ async function ensureJobs(simulationId,simulationTime){
 }
 
 async function matchLaborMarket(simulationId,simulationTime){
+  const economicPolicy=await latestEconomicPolicy(simulationId);
   const [people]=await pool.query(
     \`SELECT BIN_TO_UUID(e.id) entityId
        FROM entities e JOIN entity_types et ON et.id=e.entity_type_id
@@ -188,6 +191,7 @@ async function matchLaborMarket(simulationId,simulationTime){
       });
       const wage=Number(work?.wagePerHour ?? (normalize(candidate.type)==='WORKSHOP'?.9:.75));
       if(!Number.isFinite(wage))continue;
+      wage=Math.max(wage,Math.max(0,Math.min(5,Number(economicPolicy.minimumWage||0))));
       if(!best || wage>best.wage)best={...candidate,wage:Math.max(.25,Math.min(5,wage)),role:String(work?.name||'WORKER').slice(0,80)};
     }
     if(!best)continue;
@@ -224,6 +228,7 @@ async function evolvePrices(simulationId,simulationTime){
     [simulationId]
   );
   const marketRows=markets.filter(isMarketStructure);
+  const economicPolicy=await latestEconomicPolicy(simulationId);
   const [goods]=await pool.query(
     `SELECT code,base_price basePrice FROM emergent_goods WHERE simulation_id=UUID_TO_BIN(?) ORDER BY code`,
     [simulationId]
@@ -246,7 +251,9 @@ async function evolvePrices(simulationId,simulationTime){
       const demandValue=Number(demand[0]?.demand||0);
       const basePrice=Number(good.basePrice||1);
       const pressure=(demandValue*.18)/Math.max(1,supplyValue);
-      const price=Number((basePrice*clamp(1+pressure,.55,3)).toFixed(4));
+      let price=Number((basePrice*clamp(1+pressure,.55,3)).toFixed(4));
+      const ceiling=Number(economicPolicy.priceCeilingMultiplier||0);
+      if(good.code==="FOOD"&&ceiling>0)price=Math.min(price,Number((basePrice*Math.max(.55,Math.min(3,ceiling))).toFixed(4)));
       await pool.query(
         `INSERT INTO emergent_market_state
           (id,simulation_id,location_id,good_code,price,supply,demand,updated_simulation_at,version)
@@ -373,6 +380,37 @@ async function restockMarkets(simulationId,simulationTime){
            SET balance=balance+?,lifetime_income=lifetime_income+?,last_updated_simulation_at=?,version=version+1 WHERE id=?`,
         [total,total,simulationTime,producerAccount[0].id]
       );
+      const policy=await latestEconomicPolicy(simulationId);
+      const subsidyRate=Math.max(0,Math.min(.35,Number(policy.productionSubsidyRate||0)));
+      if(subsidyRate>0){
+        const [govSystemRows]=await pool.query(
+          `SELECT attributes FROM emergent_systems
+            WHERE simulation_id=UUID_TO_BIN(?) AND system_type='GOVERNANCE' LIMIT 1`,
+          [simulationId]
+        );
+        const govId=parseJson(govSystemRows[0]?.attributes,{}).systemEntityId;
+        if(govId){
+          const [govRows]=await pool.query(
+            `SELECT id,balance FROM emergent_economy_accounts
+              WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) LIMIT 1 FOR UPDATE`,
+            [simulationId,govId]
+          );
+          const subsidy=Math.min(Number(govRows[0]?.balance||0),Number((total*subsidyRate).toFixed(4)));
+          if(govRows.length&&subsidy>0){
+            await pool.query(
+              `UPDATE emergent_economy_accounts
+                SET balance=balance-?,lifetime_spending=lifetime_spending+?,last_updated_simulation_at=?,version=version+1 WHERE id=?`,
+              [subsidy,subsidy,simulationTime,govRows[0].id]
+            );
+            await pool.query(
+              `UPDATE emergent_economy_accounts
+                SET balance=balance+?,lifetime_income=lifetime_income+?,last_updated_simulation_at=?,version=version+1 WHERE id=?`,
+              [subsidy,subsidy,simulationTime,producerAccount[0].id]
+            );
+            transfers.push({marketEntityId:market.entityId,producerEntityId:candidate.producer.entityId,goodCode:good.goodCode,quantity,unitPrice:subsidy/Math.max(.0001,quantity),total:subsidy,simulationAt:simulationTime,type:"GOVERNMENT_SUBSIDY"});
+          }
+        }
+      }
       await pool.query(
         `INSERT INTO emergent_trades
           (id,simulation_id,buyer_entity_id,seller_entity_id,location_id,good_code,quantity,unit_price,total,simulation_at)
