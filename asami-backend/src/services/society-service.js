@@ -145,7 +145,29 @@ async function ensureJobs(simulationId,simulationTime){
       );
     }
   }
-}
+
+  const [systems]=await pool.query(
+    'SELECT BIN_TO_UUID(id) systemId,attributes FROM emergent_systems WHERE simulation_id=UUID_TO_BIN(?) AND stage<>"ENDED"',
+    [simulationId]
+  );
+  for(const system of systems){
+    const attrs=parseJson(system.attributes,{}),definition=attrs.definition||{},systemEntityId=attrs.systemEntityId;
+    const work=Array.isArray(definition.activities)?definition.activities.find(activity=>{const category=normalize(activity?.category);return category==='WORK'||category==='PRODUCTION'||category==='CRAFT';}):null;
+    if(!work||!systemEntityId)continue;
+    const [businessRows]=await pool.query('SELECT production_capacity productionCapacity,status FROM emergent_businesses WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) LIMIT 1',[simulationId,systemEntityId]);
+    if(businessRows.length&&String(businessRows[0].status)!=='ACTIVE')continue;
+    const capacity=Math.max(.25,Math.min(10,Number(businessRows[0]?.productionCapacity||1)));
+    const maxWorkers=Math.max(1,Math.min(12,Math.ceil(capacity*3)));
+    let wage=Number(work.wagePerHour??.75);
+    wage=Math.max(wage,Math.max(0,Math.min(5,Number(economicPolicy.minimumWage||0))));
+    const safeWage=Number.isFinite(wage)?Math.max(.25,Math.min(5,wage)):.75;
+    const [members]=await pool.query('SELECT BIN_TO_UUID(entity_id) entityId FROM emergent_system_members WHERE simulation_id=UUID_TO_BIN(?) AND system_id=UUID_TO_BIN(?) ORDER BY joined_simulation_at LIMIT ?',[simulationId,system.systemId,maxWorkers]);
+    for(const member of members){
+      const [existing]=await pool.query('SELECT id FROM emergent_jobs WHERE simulation_id=UUID_TO_BIN(?) AND employee_entity_id=UUID_TO_BIN(?) AND status=\'ACTIVE\' LIMIT 1',[simulationId,member.entityId]);
+      if(existing.length)continue;
+      await pool.query('INSERT INTO emergent_jobs (id,simulation_id,employer_entity_id,employee_entity_id,role,wage_per_hour,status,hired_simulation_at,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?, ?,\'ACTIVE\',?,1)',[uuid(),simulationId,systemEntityId,member.entityId,String(work.name||'WORKER').slice(0,80),safeWage,simulationTime]);
+    }
+  }}
 
 async function matchLaborMarket(simulationId,simulationTime){
   const economicPolicy=await latestEconomicPolicy(simulationId);
@@ -181,8 +203,13 @@ async function matchLaborMarket(simulationId,simulationTime){
       [person.entityId,simulationId]
     );
 
+    const [systemCandidates]=await pool.query(
+      'SELECT JSON_UNQUOTE(JSON_EXTRACT(es.attributes,\'$.systemEntityId\')) employerId,BIN_TO_UUID(es.scope_location_id) locationId,es.system_type type,es.attributes FROM emergent_systems es JOIN emergent_businesses eb ON eb.simulation_id=es.simulation_id AND eb.entity_id=UUID_TO_BIN(JSON_UNQUOTE(JSON_EXTRACT(es.attributes,\'$.systemEntityId\'))) AND eb.status=\'ACTIVE\' JOIN emergent_system_members esm ON esm.simulation_id=es.simulation_id AND esm.system_id=es.id AND esm.entity_id=UUID_TO_BIN(?) WHERE es.simulation_id=UUID_TO_BIN(?) AND es.stage<>\'ENDED\'',
+      [person.entityId,simulationId]
+    );
+    const allCandidates=[...candidates,...systemCandidates];
     let best=null;
-    for(const candidate of candidates){
+    for(const candidate of allCandidates){
       const definition=definitionFromStructure(candidate);
       const activities=Array.isArray(definition.activities)?definition.activities:[];
       const work=activities.find(activity=>{
@@ -534,7 +561,51 @@ async function ensureBusinesses(simulationId,simulationTime){
     }
     created++;
   }
-  return created;
+  const [systems]=await pool.query(
+    'SELECT BIN_TO_UUID(id) systemId,attributes FROM emergent_systems WHERE simulation_id=UUID_TO_BIN(?) AND stage<>"ENDED"',
+    [simulationId]
+  );
+  for(const system of systems){
+    const attrs=parseJson(system.attributes,{}),definition=attrs.definition||{},systemEntityId=attrs.systemEntityId;
+    const economic=Boolean(definition.market||definition.production)||
+      (Array.isArray(definition.activities)&&definition.activities.some(activity=>{
+        const category=normalize(activity?.category);
+        return category==='WORK'||category==='PRODUCTION'||category==='CRAFT';
+      }));
+    if(!economic||!systemEntityId)continue;
+    const [existing]=await pool.query(
+      'SELECT id FROM emergent_businesses WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) LIMIT 1',
+      [simulationId,systemEntityId]
+    );
+    if(existing.length)continue;
+    const [origin]=await pool.query(
+      'SELECT BIN_TO_UUID(origin_entity_id) ownerEntityId FROM emergent_definition_catalog WHERE simulation_id=UUID_TO_BIN(?) AND code=? AND kind IN ("SYSTEM","INSTITUTION","STRUCTURE") ORDER BY created_simulation_at DESC LIMIT 1',
+      [simulationId,normalize(definition.code)]
+    );
+    const ownerEntityId=origin[0]?.ownerEntityId||systemEntityId;
+    await pool.query(
+      'INSERT INTO emergent_businesses (id,simulation_id,entity_id,owner_entity_id,status,production_capacity,created_simulation_at,updated_simulation_at,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),\'ACTIVE\',1,?,?,1)',
+      [uuid(),simulationId,systemEntityId,ownerEntityId,simulationTime,simulationTime]
+    );
+    if(String(ownerEntityId)!==String(systemEntityId)){
+      const [ownerAccount]=await pool.query(
+        'SELECT id,balance FROM emergent_economy_accounts WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) LIMIT 1 FOR UPDATE',
+        [simulationId,ownerEntityId]
+      );
+      const [businessAccount]=await pool.query(
+        'SELECT id,balance FROM emergent_economy_accounts WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) LIMIT 1 FOR UPDATE',
+        [simulationId,systemEntityId]
+      );
+      if(ownerAccount.length&&businessAccount.length){
+        const capital=Number(Math.min(10,Math.max(0,Number(ownerAccount[0].balance||0)*.25)).toFixed(4));
+        if(capital>0){
+          await pool.query('UPDATE emergent_economy_accounts SET balance=balance-?,lifetime_spending=lifetime_spending+?,last_updated_simulation_at=?,version=version+1 WHERE id=?',[capital,capital,simulationTime,ownerAccount[0].id]);
+          await pool.query('UPDATE emergent_economy_accounts SET balance=balance+?,lifetime_income=lifetime_income+?,last_updated_simulation_at=?,version=version+1 WHERE id=?',[capital,capital,simulationTime,businessAccount[0].id]);
+        }
+      }
+    }
+    created++;
+  }  return created;
 }
 
 
