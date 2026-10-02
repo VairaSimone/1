@@ -144,6 +144,78 @@ async function ensureJobs(simulationId,simulationTime){
     }
   }
 }
+
+async function matchLaborMarket(simulationId,simulationTime){
+  const [people]=await pool.query(
+    \`SELECT BIN_TO_UUID(e.id) entityId
+       FROM entities e JOIN entity_types et ON et.id=e.entity_type_id
+      WHERE e.simulation_id=UUID_TO_BIN(?) AND et.code='PERSON' AND e.status='ACTIVE'\`,
+    [simulationId]
+  );
+  let changed=0;
+  for(const person of people){
+    const [currentRows]=await pool.query(
+      \`SELECT id,wage_per_hour wage,employer_entity_id employerId
+         FROM emergent_jobs
+        WHERE simulation_id=UUID_TO_BIN(?) AND employee_entity_id=UUID_TO_BIN(?) AND status='ACTIVE'
+        LIMIT 1\`,
+      [simulationId,person.entityId]
+    );
+    const current=currentRows[0]||null;
+
+    const [candidates]=await pool.query(
+      \`SELECT
+          BIN_TO_UUID(es.entity_id) employerId,
+          BIN_TO_UUID(es.scope_location_id) locationId,
+          es.structure_type type,
+          es.attributes,
+          BIN_TO_UUID(es.project_id) projectId
+         FROM emergent_structures es
+         JOIN emergent_businesses eb ON eb.simulation_id=es.simulation_id AND eb.entity_id=es.entity_id AND eb.status='ACTIVE'
+         JOIN emergent_project_members epm ON epm.simulation_id=es.simulation_id AND epm.project_id=es.project_id
+          AND epm.entity_id=UUID_TO_BIN(?)
+        WHERE es.simulation_id=UUID_TO_BIN(?)\`,
+      [person.entityId,simulationId]
+    );
+
+    let best=null;
+    for(const candidate of candidates){
+      const definition=definitionFromStructure(candidate);
+      const activities=Array.isArray(definition.activities)?definition.activities:[];
+      const work=activities.find(activity=>{
+        const c=normalize(activity?.category);
+        return c==='WORK'||c==='PRODUCTION'||c==='CRAFT';
+      });
+      const wage=Number(work?.wagePerHour ?? (normalize(candidate.type)==='WORKSHOP'?.9:.75));
+      if(!Number.isFinite(wage))continue;
+      if(!best || wage>best.wage)best={...candidate,wage:Math.max(.25,Math.min(5,wage)),role:String(work?.name||'WORKER').slice(0,80)};
+    }
+    if(!best)continue;
+
+    const currentWage=Number(current?.wage||0);
+    const shouldSwitch=!current || (
+      String(current.employerId)!==String(best.employerId) &&
+      best.wage>currentWage*1.10
+    );
+    if(!shouldSwitch)continue;
+    if(current){
+      await pool.query(
+        \`UPDATE emergent_jobs SET status='ENDED',version=version+1
+          WHERE id=UUID_TO_BIN(?) AND status='ACTIVE'\`,
+        [current.id]
+      );
+    }
+    await pool.query(
+      \`INSERT INTO emergent_jobs
+        (id,simulation_id,employer_entity_id,employee_entity_id,role,wage_per_hour,status,hired_simulation_at,version)
+       VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,'ACTIVE',?,1)\`,
+      [uuid(),simulationId,best.employerId,person.entityId,best.role,best.wage,simulationTime]
+    );
+    changed++;
+  }
+  return changed;
+}
+
 async function evolvePrices(simulationId,simulationTime){
   const [markets]=await pool.query(
     `SELECT BIN_TO_UUID(es.entity_id) entityId,BIN_TO_UUID(es.scope_location_id) locationId,es.structure_type type,es.attributes
@@ -830,14 +902,15 @@ async function evolveSociety(simulationId,simulationTime){
   await ensureMarketInventory(simulationId,simulationTime);
   await ensureBusinesses(simulationId,simulationTime);
   await ensureJobs(simulationId,simulationTime);
+  const laborChanges=await matchLaborMarket(simulationId,simulationTime);
   const wholesale=await restockMarkets(simulationId,simulationTime);
   await evolvePrices(simulationId,simulationTime);
   await ensureGovernanceMembers(simulationId,simulationTime);
   const politics=await evolvePolitics(simulationId,simulationTime);
   const business=await evolveBusinesses(simulationId,simulationTime);
   const wealth=await recordWealth(simulationId,simulationTime);
-  logger.info({simulationId,simulationTime,wealth,politics,wholesale,business},"society evolution completed");
-  return {wealth,politics,wholesale,business};
+  logger.info({simulationId,simulationTime,wealth,politics,wholesale,business,laborChanges},"society evolution completed");
+  return {wealth,politics,wholesale,business,laborChanges};
 }
 
 async function getSocietySnapshot(simulationId){
@@ -866,4 +939,4 @@ async function getSocietySnapshot(simulationId){
   return {systems:decode(systems),goods,markets,accounts,jobs,trades,metrics,policies:decode(policies),conflicts:decode(conflicts),openEnded:{proposals:decodeOpen(openProposals),definitions:decodeOpen(openDefinitions)}};
 }
 
-module.exports={evolveSociety,evolvePolitics,executeEconomicAction,getSocietySnapshot,gini,ensureCatalog,restockMarkets,isMarketStructure,isProducerStructure,ensureBusinesses,evolveBusinesses};
+module.exports={evolveSociety,evolvePolitics,executeEconomicAction,getSocietySnapshot,gini,ensureCatalog,restockMarkets,isMarketStructure,isProducerStructure,ensureBusinesses,evolveBusinesses,matchLaborMarket};
