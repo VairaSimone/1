@@ -359,8 +359,11 @@ async function sendMessage({
     generated
   });
 
+  // A conversation is an experience, not the default source of autobiographical identity.
+  // Only durable/significant turns are stored, and the memory records the observer's
+  // concrete input rather than Asami's generated wording to avoid self-reinforcing prose.
   const shouldRemember=
-    significance.score>=.55 ||
+    significance.score>=.72 ||
     Boolean(generated?.rememberedReferences?.length) ||
     Boolean(generated?.stateEffects?.goalProposal) ||
     Boolean(generated?.stateEffects?.planProposal);
@@ -370,14 +373,16 @@ async function sendMessage({
       simulationId,
       entityId:asamiEntityId,
       eventId,
-      content:"Conversation with "+context.interlocutor.displayName+": they said \""+content+"\". I replied \""+reply+"\"",
-      importance:Math.max(.55,significance.score),
-      strength:significance.score >= 0.75 ? 0.98 : 0.88,
+      content:"Conversation with "+context.interlocutor.displayName+": they said \""+String(content||"").slice(0,1200)+"\"",
+      importance:Math.max(.55,Math.min(.82,significance.score)),
+      strength:significance.score >= 0.75 ? 0.96 : 0.86,
       confidence:generated ? 0.92 : 0.65,
       emotionalIntensity:Math.min(1,.20+cognition.emotionChanges.length*.04),
       simulationAt:simulationTime,
       metadata:{
         kind:"conversation",
+        memoryRole:"USER_INPUT",
+        derivedFromUser:true,
         conversationId:cid,
         interlocutorEntityId:senderEntityId,
         eventId,
