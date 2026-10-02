@@ -487,6 +487,60 @@ async function ensureGoalPlan({simulationId,entityId,simulationTime,needs}){
 
 function selectActiveStep(plan){const steps=Array.isArray(plan?.steps)?plan.steps.slice().sort((a,b)=>Number(a.sequence)-Number(b.sequence)):[];return steps.find(step=>step.status==="ACTIVE")||steps.find(step=>step.status==="PENDING")||null;}
 async function resolveGoalIdFromAction({simulationId,entityId,actionId}){if(!actionId)return null;const[rows]=await pool.query(`SELECT BIN_TO_UUID(source_goal_id) AS goalId FROM actions WHERE id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) LIMIT 1`,[actionId,simulationId,entityId]);return rows[0]?.goalId||null;}
+async function advancePersistentGoalFromAnyAutonomousAction({simulationId,entityId,actionType,outcome,simulationTime,actionResult=null,excludeGoalId=null}={}){
+  const actionId=actionResult?.actionId||null;
+  if(!actionId)return null;
+
+  const [actionRows]=await pool.query(
+    `SELECT source_type AS sourceType
+     FROM actions
+     WHERE id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?)
+     LIMIT 1`,
+    [actionId,simulationId,entityId]
+  );
+  if(String(actionRows[0]?.sourceType||"").toUpperCase()!=="AUTONOMOUS")return null;
+
+  const [rows]=await pool.query(
+    `SELECT BIN_TO_UUID(g.id) AS goalId,g.goal_type AS goalType,g.priority,g.created_simulation_at AS createdAt,
+            BIN_TO_UUID(p.id) AS planId,
+            BIN_TO_UUID(ps.id) AS stepId,ps.sequence,ps.status AS stepStatus,ps.result
+     FROM goals g
+     JOIN plans p
+       ON p.goal_id=g.id
+      AND p.simulation_id=g.simulation_id
+      AND p.entity_id=g.entity_id
+      AND p.status IN ('DRAFT','ACTIVE','PAUSED')
+     JOIN plan_steps ps
+       ON ps.plan_id=p.id
+      AND ps.status='ACTIVE'
+     WHERE g.simulation_id=UUID_TO_BIN(?)
+       AND g.entity_id=UUID_TO_BIN(?)
+       AND g.status IN ('DRAFT','ACTIVE','PAUSED')
+       AND g.goal_type IN ('PERSONAL','LONG_TERM')
+       AND g.id<>UUID_TO_BIN(?)
+     ORDER BY g.priority DESC,g.created_simulation_at ASC,ps.sequence ASC
+     LIMIT 10`,
+    [simulationId,entityId,excludeGoalId||"00000000-0000-0000-0000-000000000000"]
+  );
+
+  const action=normalizeAction(actionType);
+  const candidate=rows.find(row=>{
+    const stepResult=parseJson(row.result,{})||{};
+    return normalizeAction(stepResult.actionType)===action;
+  });
+  if(!candidate)return null;
+
+  return advancePlanForAction({
+    simulationId,
+    entityId,
+    goalId:candidate.goalId,
+    actionType:action,
+    outcome,
+    simulationTime,
+    actionResult
+  });
+}
+
 async function advancePlanForAction({simulationId,entityId,goalId,actionType,outcome,simulationTime,actionResult=null}){
   const resolvedGoalId=goalId||await resolveGoalIdFromAction({
     simulationId,
@@ -855,4 +909,4 @@ async function advancePlanForAction({simulationId,entityId,goalId,actionType,out
 
   return{changed,completed:false,progress,planId:refreshedPlan.id};
 }
-module.exports={GOAL_TEMPLATES,MAX_GOAL_AGE_HOURS,PERSONAL_GOAL_INTERVAL_HOURS,LONG_TERM_GOAL_INTERVAL_HOURS,PERSISTENT_GOAL_TYPES,selectTopNeed,selectActiveStep,createPlanForGoal,ensureGoalPlan,advancePlanForAction,abandonGoal,ensurePersistentGoals};
+module.exports={GOAL_TEMPLATES,MAX_GOAL_AGE_HOURS,PERSONAL_GOAL_INTERVAL_HOURS,LONG_TERM_GOAL_INTERVAL_HOURS,PERSISTENT_GOAL_TYPES,selectTopNeed,selectActiveStep,createPlanForGoal,ensureGoalPlan,advancePlanForAction,advancePersistentGoalFromAnyAutonomousAction,abandonGoal,ensurePersistentGoals};
