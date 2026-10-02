@@ -55,6 +55,16 @@ Il backend crea automaticamente la tabella `gemini_usage` al primo avvio. Il con
 
 Le decisioni autonome usano Gemini solo quando la scelta deterministica è debole o realmente ambigua. Le scelte evidenti restano interamente locali. Le decisioni ricevono inoltre il contesto di memoria, esperienza, piani e interruzioni recenti.
 
+## Mondo emergente
+
+Il world layer non è più limitato ai luoghi iniziali: durante la maintenance periodica gli abitanti possono generare progetti collettivi a partire da bisogni condivisi. Un progetto passa da proposta a supporto e, quando raggiunge la soglia richiesta, materializza una nuova location persistente con nome, attività, risorse e collegamenti al grafo del mondo.
+
+La stessa pipeline riconosce sistemi macro emergenti come economia, governance e insediamento, oltre a proposte politiche concorrenti e conflitti tra strutture o policy.
+
+Endpoint di osservazione:
+
+`GET /api/simulations/:simulationId/emergence`
+
 ## API principali
 
 - `GET /api/health`
