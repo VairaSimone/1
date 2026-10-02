@@ -7,7 +7,7 @@ const LOCATION_RESOURCES = {
   CAFE: { water: 80, food: 120, beds: 0, books: 8 }, GROCERY: { water: 160, food: 240, beds: 0, books: 0 },
   LIBRARY: { water: 24, food: 0, beds: 0, books: 180 }, SQUARE: { water: 20, food: 8, beds: 0, books: 0 },
   SCHOOL: { water: 40, food: 20, beds: 0, books: 80 }, COMMUNITY: { water: 35, food: 30, beds: 0, books: 30 },
-  GYM: { water: 70, food: 10, beds: 0, books: 0 }, CLINIC: { water: 80, food: 10, beds: 1, books: 15 },
+  GYM: { water: 70, food: 10, beds: 0, books: 0 }, CLINIC: { water: 80, food: 10, beds: 1, books: 15 }, EMERGENT: { water: 8, food: 0, beds: 0, books: 0 },
   NATURE: { water: 18, food: 0, beds: 0, books: 0 }, WORKSHOP: { water: 24, food: 8, beds: 0, books: 12 }
 };
 
@@ -16,7 +16,7 @@ const LOCATION_OBJECTS = {
   CAFE:["counter","tables","chairs","bookshelf","coffee_machine"], GROCERY:["shelves","checkout","refrigerated_case","produce_section"],
   LIBRARY:["bookshelves","reading_tables","chairs","water_fountain"], SQUARE:["benches","fountain","street_lamps"],
   SCHOOL:["classrooms","desks","library_shelves","water_fountain"], COMMUNITY:["meeting_room","chairs","kitchen","storage"],
-  GYM:["treadmills","weights","lockers","water_fountain"], CLINIC:["reception","exam_room","beds","water_station"],
+  GYM:["treadmills","weights","lockers","water_fountain"], CLINIC:["reception","exam_room","beds","water_station"], EMERGENT:["shelter","workspace","storage","water_station"],
   NATURE:["trail","pond","benches","signposts"], WORKSHOP:["workbenches","tools","storage","safety_sink"]
 };
 
