@@ -274,6 +274,33 @@ export interface SocietyConflict {
   createdAt: string
   resolvedAt: string | null
 }
+export interface SocietyProposal {
+  id: string
+  proposerEntityId: string
+  scopeLocationId: string | null
+  kind: string
+  code: string
+  title: string
+  definition: Record<string, unknown>
+  validation: Record<string, unknown>
+  supportScore: number
+  requiredSupport: number
+  status: string
+  createdAt: string
+  decidedAt: string | null
+}
+export interface SocietyDefinition {
+  id: string
+  kind: string
+  code: string
+  name: string
+  category: string
+  scopeLocationId: string | null
+  originEntityId: string | null
+  definition: Record<string, unknown>
+  status: string
+  createdAt: string
+}
 export interface SocietySnapshot {
   systems: SocietySystem[]
   goods: Array<{ code: string; name: string; category: string; unit: string; basePrice: number }>
@@ -284,4 +311,5 @@ export interface SocietySnapshot {
   metrics: SocietyMetric[]
   policies: SocietyPolicy[]
   conflicts: SocietyConflict[]
+  openEnded: { proposals: SocietyProposal[]; definitions: SocietyDefinition[] }
 }
