@@ -25,6 +25,7 @@ export function Society({ society, world }: { society: SocietySnapshot | null; w
   const proposed = society.policies.filter(policy => policy.status === 'PROPOSED')
   const conflicts = society.conflicts.filter(conflict => conflict.status === 'ACTIVE')
   const recentTrades = society.trades.slice(0, 8)
+  const businessMetric = society.businessMetrics?.[0] ?? null
   const openProposals = society.openEnded?.proposals ?? []
   const openDefinitions = society.openEnded?.definitions ?? []
 
@@ -63,6 +64,41 @@ export function Society({ society, world }: { society: SocietySnapshot | null; w
             <strong>{money(market.price)}</strong>
           </div>) : <EmptyState icon={<ShoppingBag size={20} />} title="Nessun mercato" text="Un mercato nasce quando una pressione collettiva diventa un progetto sostenuto." />}
         </div>
+      </Panel>
+    </div>
+
+    <div className="society-columns">
+      <Panel title="Imprese e ciclo economico" eyebrow="DINAMICA ECONOMICA">
+        <div className="society-card-list">
+          <div className="society-row">
+            <div className="society-row-icon"><Building2 size={16} /></div>
+            <div><strong>{businessMetric?.activeBusinessCount ?? 0} imprese attive</strong><span>{businessMetric?.failedBusinessCount ?? 0} fallite · {businessMetric?.businessCount ?? 0} totali</span></div>
+            <strong>{money(businessMetric?.profit ?? 0)}</strong>
+          </div>
+          <div className="society-row">
+            <div className="society-row-icon"><Users size={16} /></div>
+            <div><strong>{businessMetric?.employedCount ?? 0} occupati</strong><span>{businessMetric?.unemployedCount ?? 0} senza lavoro</span></div>
+            <strong>{pct((businessMetric?.unemployedCount ?? 0) / Math.max(1, (businessMetric?.employedCount ?? 0) + (businessMetric?.unemployedCount ?? 0)))}</strong>
+          </div>
+          <div className="society-row">
+            <div className="society-row-icon"><TrendingUp size={16} /></div>
+            <div><strong>Produzione</strong><span>valore prodotto nel ciclo recente</span></div>
+            <strong>{money(businessMetric?.productionValue ?? 0)}</strong>
+          </div>
+          <div className="society-row">
+            <div className="society-row-icon"><Coins size={16} /></div>
+            <div><strong>Ricavi</strong><span>input {money(businessMetric?.inputCost ?? 0)} · salari {money(businessMetric?.wageCost ?? 0)}</span></div>
+            <strong>{money(businessMetric?.revenue ?? 0)}</strong>
+          </div>
+        </div>
+      </Panel>
+
+      <Panel title="Imprese" eyebrow="STATO">
+        {society.businesses?.length ? <div className="society-card-list">{society.businesses.slice(0, 10).map(business => <div className="society-row" key={business.id}>
+          <div className="society-row-icon"><Building2 size={16} /></div>
+          <div><strong>{nameFor(business.entityId, world)}</strong><span>{labelize(business.status)} · capacità {Number(business.productionCapacity || 1).toFixed(2)}× · profitto {money(business.recentProfit)}</span></div>
+          <strong>{business.status === 'FAILED' ? 'CHIUSA' : money(business.recentRevenue)}</strong>
+        </div>)}</div> : <EmptyState icon={<Building2 size={20} />} title="Nessuna impresa" text="Le strutture economiche diventano imprese quando iniziano a produrre o commerciare." />}
       </Panel>
     </div>
 
