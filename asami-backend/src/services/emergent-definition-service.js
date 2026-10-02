@@ -190,12 +190,21 @@ async function validateDefinition(simulationId,definition,{scopeLocationId=null,
   if(totalResourceCost>0 && availableResourceTotal<totalResourceCost)errors.push("INSUFFICIENT_LOCAL_RESOURCES");
 
   for(const activity of normalized.activities){
-    const positiveInventory=(activity.effects||[]).some(effect=>effect.type==="INVENTORY_DELTA" && Number(effect.delta)>0);
-    const hasInput=(activity.effects||[]).some(effect =>
+    const effects=activity.effects||[];
+    const positiveInventory=effects.some(effect=>effect.type==="INVENTORY_DELTA" && Number(effect.delta)>0);
+    const hasInput=effects.some(effect =>
       (effect.type==="INVENTORY_DELTA" && Number(effect.delta)<0) ||
       (effect.type==="RESOURCE_DELTA" && Number(effect.delta)<0)
     );
     if(positiveInventory && !hasInput)errors.push("INVENTORY_CREATION_REQUIRES_INPUT");
+  }
+
+  for(const [resource,costValue] of Object.entries(normalized.resourceCosts||{})){
+    const consumed=normalized.activities
+      .flatMap(activity=>activity.effects||[])
+      .filter(effect=>effect.type==="RESOURCE_DELTA" && String(effect.resource||"").toLowerCase()===resource)
+      .reduce((sum,effect)=>sum+Math.max(0,-Number(effect.delta||0)),0);
+    if(consumed+1e-9<Number(costValue||0))errors.push("DECLARED_RESOURCE_COST_NOT_BACKED_BY_EFFECT_"+resource);
   }
 
   const minimumSupport=Math.max(3,Math.ceil(Math.max(0,Number(proposerCount)||0)*0.35));
