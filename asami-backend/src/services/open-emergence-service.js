@@ -334,6 +334,14 @@ function semanticDefinitionSignature(definition = {}) {
   });
 }
 
+function isMaterialEconomicDefinition(definition = {}) {
+  const category = normalize(definition.category);
+  const activities = Array.isArray(definition.activities) ? definition.activities : [];
+  return Boolean(definition.market || definition.production)
+    || ['MARKET','COMMERCE'].includes(category)
+    || activities.some(activity => ['WORK','PRODUCTION','CRAFT','COMMERCE'].includes(normalize(activity?.category)));
+}
+
 async function countRecentSimilarProposals(simulationId, scopeLocationId, definition, simulationTime) {
   const [rows] = await pool.query(
     "SELECT definition FROM emergent_world_proposals WHERE simulation_id=UUID_TO_BIN(?) AND scope_location_id=UUID_TO_BIN(?) AND status='ACCEPTED' AND created_simulation_at>=DATE_SUB(?,INTERVAL 7 DAY) ORDER BY created_simulation_at DESC LIMIT 30",
@@ -804,6 +812,20 @@ async function proposeForLocation(simulationId, simulationTime, scope, actors, g
     ? normalizeDefinition(generated)
     : deterministicFallbackDefinition(signal, proposer, simulationTime, { economicOpportunity });
 
+  if (economicOpportunity && !isMaterialEconomicDefinition(definition)) {
+    definition = deterministicFallbackDefinition(signal, proposer, simulationTime, { economicOpportunity: true });
+  }
+
+  if (!economicOpportunity && similarProposalCount >= 1) {
+    const generatedSignature = semanticDefinitionSignature(definition);
+    const duplicateRows = await pool.query(
+      "SELECT definition FROM emergent_world_proposals WHERE simulation_id=UUID_TO_BIN(?) AND scope_location_id=UUID_TO_BIN(?) AND status='ACCEPTED' AND created_simulation_at>=DATE_SUB(?,INTERVAL 7 DAY) ORDER BY created_simulation_at DESC LIMIT 30",
+      [simulationId, scope.locationId, simulationTime]
+    );
+    const duplicate = duplicateRows[0].some(row => semanticDefinitionSignature(parseJson(row.definition, {})) === generatedSignature);
+    if (duplicate) return null;
+  }
+
   let validation = await validateDefinition(simulationId, definition, {
     scopeLocationId: scope.locationId,
     localResources: scope.attributes?.resources || {},
@@ -874,8 +896,54 @@ async function proposeForLocation(simulationId, simulationTime, scope, actors, g
   const materialized = await materializeProposal(simulationId, simulationTime, proposal, scope, actors);
   return { ...proposal, materialized };
 }
+async function evolveEmergentSystems(simulationId, simulationTime) {
+  const [systems] = await pool.query(
+    "SELECT BIN_TO_UUID(id) id,system_type systemType,name,stage,attributes,created_simulation_at createdAt FROM emergent_systems WHERE simulation_id=UUID_TO_BIN(?) AND stage<> 'ENDED' ORDER BY created_simulation_at ASC",
+    [simulationId]
+  );
+  const now = new Date(simulationTime).getTime();
+  let changed = 0;
+  for (const system of systems) {
+    const attrs = parseJson(system.attributes, {});
+    const created = new Date(system.createdAt).getTime();
+    const ageHours = Number.isFinite(created) && Number.isFinite(now) ? Math.max(0, (now-created)/3600000) : 0;
+    const [memberRows] = await pool.query(
+      "SELECT COUNT(*) count FROM emergent_system_members WHERE simulation_id=UUID_TO_BIN(?) AND system_id=UUID_TO_BIN(?)",
+      [simulationId, system.id]
+    );
+    const members = Number(memberRows[0]?.count || 0);
+    const [businessRows] = await pool.query(
+      "SELECT status FROM emergent_businesses WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) LIMIT 1",
+      [simulationId, attrs.systemEntityId || ""]
+    );
+    const hasActiveBusiness = businessRows[0]?.status === 'ACTIVE';
+    let next = String(system.stage || 'EMERGING').toUpperCase();
+    if (next === 'EMERGING' && ageHours >= 12 && members >= 3) next = 'ACTIVE';
+    else if (next === 'ACTIVE' && ageHours >= 72 && members >= 3) next = 'MATURE';
+    else if (next === 'MATURE' && ageHours >= 168 && members < 2) next = 'DECLINING';
+    else if (next === 'DECLINING' && members === 0 && !hasActiveBusiness) next = 'ENDED';
+    if (next === String(system.stage || '').toUpperCase()) continue;
+    await pool.query(
+      "UPDATE emergent_systems SET stage=?,updated_simulation_at=?,version=version+1 WHERE id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?) AND stage=?",
+      [next, simulationTime, system.id, simulationId, system.stage]
+    );
+    await createEvent({
+      simulationId,
+      eventTypeCode: 'SOCIAL',
+      title: system.name + ' is now ' + next.toLowerCase(),
+      description: 'An emergent social system changed lifecycle stage after accumulating time, membership and observed conditions.',
+      simulationAt: simulationTime,
+      importance: next === 'ENDED' ? 0.72 : 0.61,
+      metadata: { emergent:true, openEnded:true, kind:'SYSTEM_STAGE_CHANGED', systemId:system.id, systemType:system.systemType, from:system.stage, to:next, members, ageHours:Number(ageHours.toFixed(2)), hasActiveBusiness }
+    });
+    changed++;
+  }
+  return { changed };
+}
+
 async function evolveOpenEnded(simulationId, simulationTime, { gemini = null } = {}) {
   await ensureCatalog(simulationId, simulationTime);
+  const systemLifecycle = await evolveEmergentSystems(simulationId, simulationTime);
   const [actors, locations] = await Promise.all([
     loadActors(simulationId),
     loadLocations(simulationId)
@@ -905,7 +973,7 @@ async function evolveOpenEnded(simulationId, simulationTime, { gemini = null } =
   }
 
   const capabilities = await ensureCapabilitiesForEmergentStructures(simulationId, simulationTime);
-  return { proposals, capabilities };
+  return { proposals, capabilities, systemLifecycle };
 }
 
 async function getOpenEndedSnapshot(simulationId) {
@@ -943,5 +1011,8 @@ module.exports = {
   topNeedSignal,
   deterministicFallbackDefinition,
   supportScore,
+  semanticDefinitionSignature,
+  isMaterialEconomicDefinition,
+  evolveEmergentSystems,
   ProposalSchema
 };
