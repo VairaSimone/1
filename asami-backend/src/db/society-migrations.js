@@ -10,7 +10,7 @@ async function ensureSocietyMigrations() {
 
   await pool.query(`CREATE TABLE IF NOT EXISTS emergent_goods (
     id BINARY(16) PRIMARY KEY, simulation_id BINARY(16) NOT NULL, code VARCHAR(64) NOT NULL, name VARCHAR(120) NOT NULL,
-    category VARCHAR(48) NOT NULL, unit VARCHAR(24) NOT NULL DEFAULT "unit", base_price DECIMAL(12,4) NOT NULL DEFAULT 1,
+    category VARCHAR(48) NOT NULL, unit VARCHAR(24) NOT NULL DEFAULT 'unit', base_price DECIMAL(12,4) NOT NULL DEFAULT 1,
     created_simulation_at DATETIME(3) NOT NULL, UNIQUE KEY uq_eg_sim_code (simulation_id,code)
   )`);
 
@@ -29,7 +29,7 @@ async function ensureSocietyMigrations() {
 
   await pool.query(`CREATE TABLE IF NOT EXISTS emergent_jobs (
     id BINARY(16) PRIMARY KEY, simulation_id BINARY(16) NOT NULL, employer_entity_id BINARY(16) NOT NULL, employee_entity_id BINARY(16) NOT NULL,
-    role VARCHAR(80) NOT NULL, wage_per_hour DECIMAL(12,4) NOT NULL, status VARCHAR(24) NOT NULL DEFAULT "ACTIVE",
+    role VARCHAR(80) NOT NULL, wage_per_hour DECIMAL(12,4) NOT NULL, status VARCHAR(24) NOT NULL DEFAULT 'ACTIVE',
     hired_simulation_at DATETIME(3) NOT NULL, version INT NOT NULL DEFAULT 1,
     UNIQUE KEY uq_ej_employee_active (simulation_id,employee_entity_id,status), KEY idx_ej_employer (simulation_id,employer_entity_id,status)
   )`);
