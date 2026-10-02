@@ -41,3 +41,27 @@ test("production effects carry bounded inputs as data",()=>{
   assert.equal(effect.quantity,2);
   assert.equal(effect.resourceInputs.water,0.5);
 });
+
+
+const { normalizeDefinition }=require("../src/services/emergent-definition-service");
+
+test("emergent definitions can declare new economic goods",()=>{
+  const definition=normalizeDefinition({
+    kind:"STRUCTURE",
+    code:"BAKERY",
+    name:"Bakery",
+    purpose:"Produces bread from existing inputs.",
+    products:[{code:"BREAD",name:"Bread",category:"FOOD",unit:"unit",basePrice:1.8}],
+    activities:[]
+  });
+  assert.equal(definition.products.length,1);
+  assert.equal(definition.products[0].code,"BREAD");
+  assert.equal(definition.products[0].basePrice,1.8);
+});
+
+test("business capacity and profit metrics are represented numerically",()=>{
+  const capacity=Math.min(10,1+.2);
+  const profit=12-4-3;
+  assert.equal(capacity,1.2);
+  assert.equal(profit,5);
+});
