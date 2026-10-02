@@ -9,6 +9,8 @@ const { validateCriticalDecision } = require("./decision-service");
 const { assertTransition } = require("./state-machine");
 const { calculateOutcomeDependentNeedDelta, persistNeedTransition, OUTCOME_DEPENDENT_NEED_EFFECTS } = require("./state-service");
 const logger = require("../lib/logger");
+const { executeEconomicAction } = require("./society-service");
+const { loadCapabilitiesForEntities } = require("./world-capability-service");
 
 const ACTION_DURATIONS_MINUTES={SLEEPING:480,RESTING:60,EATING:30,DRINKING:10,TALKING:20,PLAYING:60,STUDYING:90,READING:45,WORKING:240,EXPLORING:60,WALKING:30,WATCHING:45};
 const skillByAction={READING:"READING",STUDYING:"WRITING",TALKING:"COMMUNICATION",EXPLORING:"NAVIGATION",PLAYING:"SPORTS",EATING:"COOKING",WALKING:"NAVIGATION"};
@@ -163,6 +165,11 @@ async function startAction({simulationId,entityId,decisionId,intentionId=null,go
   }
 
   const normalizedAction=String(actionType||"").trim().toUpperCase();
+  let dynamicActivity=null;
+  if (!MOVE_ACTIONS.has(normalizedAction)) {
+    const capabilities=(await loadCapabilitiesForEntities(simulationId,[entityId])).get(String(entityId))||[];
+    dynamicActivity=capabilities.find(item=>item.code===normalizedAction)||null;
+  }
   const idempotencyKey=tickId
     ? [simulationId,tickId,entityId,decisionId||normalizedAction].join(":")
     : decisionId
@@ -172,7 +179,7 @@ async function startAction({simulationId,entityId,decisionId,intentionId=null,go
     const existing=await loadIdempotentAction(simulationId,idempotencyKey,relationshipIntent);
     if(existing)return existing;
   }
-  let duration=getActionDurationMinutes(normalizedAction),move=null,origin=null,destination=null,actionId=null,eventId=null;
+  let duration=Number(dynamicActivity?.parameters?.durationMinutes||getActionDurationMinutes(normalizedAction)),move=null,origin=null,destination=null,actionId=null,eventId=null;
   try{
     if(MOVE_ACTIONS.has(normalizedAction)){
       origin=await currentLocation(entityId,simulationId);
@@ -408,8 +415,10 @@ async function applyOutcomeDependentNeed({conn,simulationId,entityId,actionId,ac
 
 function classifyPhysicalOutcome(physical){if(!physical||typeof physical!=="object"||!Object.prototype.hasOwnProperty.call(physical,"ok"))return{outcome:"SUCCESS",success:true,failureReason:null};if(physical.ok)return{outcome:"SUCCESS",success:true,failureReason:null};const consumed=Number(physical.consumed||0);return{outcome:consumed>0?"PARTIAL":"FAILURE",success:false,failureReason:consumed>0?"RESOURCE_PARTIALLY_AVAILABLE":"RESOURCE_UNAVAILABLE"};}
 async function recordResourceFailureKnowledge({simulationId,entityId,locationId,simulationTime,physical}){if(!locationId||!physical?.resource||physical.ok)return null;const resource=String(physical.resource).trim().toLowerCase(),remaining=Number(physical.remaining);if(!resource||!Number.isFinite(remaining)||remaining>0)return null;const knowledgePayload={type:"RESOURCE_UNAVAILABLE",resource,locationId,simulationAt:simulationTime};const knowledgeId=await upsertKnowledge({simulationId,entityId,simulationTime,item:{knowledgeType:"WORLD_EXPERIENCE",content:JSON.stringify(knowledgePayload),subjectEntityId:entityId,objectEntityId:locationId,predicate:"RESOURCE_UNAVAILABLE",confidence:.98,importance:.85}});await createMemory({simulationId,entityId,eventId:null,locationId,type:"EPISODIC",content:`I tried to ${String(physical.actionType||"perform an action").toLowerCase()} here, but ${resource} was unavailable. I should consider another location or strategy next time.`,importance:.82,strength:.98,confidence:.98,emotionalIntensity:.35,simulationAt:simulationTime,metadata:{kind:"resource_failure",resource,locationId,remaining,learning:"RESOURCE_UNAVAILABLE"}});return{knowledgeId,resource,locationId,type:"RESOURCE_UNAVAILABLE"};}
-async function completeAction({simulationId,entityId,actionId,decisionId=null,eventId,intentionId=null,actionType,simulationTime,targetEntityId=null,targetLocationId=null,relationshipIntent="NONE"}){const[activeRows]=await pool.query(`SELECT status,result,version,started_simulation_at AS startedSimulationAt FROM actions WHERE id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?) LIMIT 1`,[actionId,entityId,simulationId]);if(!activeRows.length)return{completed:false,outcome:"FAILURE",success:false,failureReason:"ACTION_NOT_FOUND"};if(activeRows[0].status==="COMPLETED"){const stored=parseJson(activeRows[0].result,{})||{};return{completed:true,outcome:stored.outcome||"SUCCESS",success:stored.success!==false,failureReason:stored.failureReason||null,resource:stored.resource||null,needEffect:stored.needEffect||null,resourceLearning:stored.resourceLearning||null,eventId:stored.eventId||eventId,socialInteraction:stored.socialInteraction||null};}let committed=null;await withTransaction(async conn=>{const[lockedRows]=await conn.query(`SELECT status,result,version,started_simulation_at AS startedSimulationAt FROM actions WHERE id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?) LIMIT 1 FOR UPDATE`,[actionId,entityId,simulationId]);if(!lockedRows.length||lockedRows[0].status!=="ACTIVE")return;const before=parseJson(lockedRows[0].result,{})||{},physicalLocation=await currentLocation(entityId,simulationId,conn),physical=before.resourceFinalized?before.resource:await resolveActionResource({simulationId,locationId:physicalLocation,actionType,simulationTime,conn});physical.actionType=actionType;const outcome=classifyPhysicalOutcome(physical);
+async function completeAction({simulationId,entityId,actionId,decisionId=null,eventId,intentionId=null,actionType,simulationTime,targetEntityId=null,targetLocationId=null,relationshipIntent="NONE"}){const[activeRows]=await pool.query(`SELECT status,result,version,started_simulation_at AS startedSimulationAt FROM actions WHERE id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?) LIMIT 1`,[actionId,entityId,simulationId]);if(!activeRows.length)return{completed:false,outcome:"FAILURE",success:false,failureReason:"ACTION_NOT_FOUND"};if(activeRows[0].status==="COMPLETED"){const stored=parseJson(activeRows[0].result,{})||{};return{completed:true,outcome:stored.outcome||"SUCCESS",success:stored.success!==false,failureReason:stored.failureReason||null,resource:stored.resource||null,needEffect:stored.needEffect||null,resourceLearning:stored.resourceLearning||null,eventId:stored.eventId||eventId,socialInteraction:stored.socialInteraction||null};}let committed=null;await withTransaction(async conn=>{const[lockedRows]=await conn.query(`SELECT status,result,version,started_simulation_at AS startedSimulationAt FROM actions WHERE id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?) LIMIT 1 FOR UPDATE`,[actionId,entityId,simulationId]);if(!lockedRows.length||lockedRows[0].status!=="ACTIVE")return;const before=parseJson(lockedRows[0].result,{})||{},physicalLocation=await currentLocation(entityId,simulationId,conn),physical=before.resourceFinalized?before.resource:await resolveActionResource({simulationId,locationId:physicalLocation,actionType,simulationTime,conn});physical.actionType=actionType;
 const normalizedAction=String(actionType||"").toUpperCase();
+const economic=await executeEconomicAction({conn,simulationId,entityId,actionType:normalizedAction,simulationTime});
+const outcome=economic ? (economic.ok ? {outcome:"SUCCESS",success:true,failureReason:null} : {outcome:"FAILURE",success:false,failureReason:economic.failureReason||"ECONOMIC_ACTION_FAILED"}) : classifyPhysicalOutcome(physical);
 const configuredDurationMinutes=Number(before.durationMinutes);
 const startedAtMs=new Date(lockedRows[0].startedSimulationAt).getTime();
 const completedAtMs=new Date(simulationTime).getTime();
@@ -421,7 +430,7 @@ const durationMinutes=Number.isFinite(configuredDurationMinutes)&&configuredDura
     :getActionDurationMinutes(normalizedAction);
 const needEffect=await applyOutcomeDependentNeed({conn,simulationId,entityId,actionId,actionType:normalizedAction,simulationTime,durationMinutes,physical});
 let movementCompleted=true;if(MOVE_ACTIONS.has(String(actionType||"").toUpperCase())&&before.movement?.movementId){movementCompleted=await completeMovement({simulationId,entityId,destination:before.movement.destinationLocationId,movementId:before.movement.movementId,simulationTime,db:conn});if(!movementCompleted)throw Object.assign(new Error("Movement completion failed"),{code:"MOVEMENT_COMPLETION_FAILED"});}assertTransition("action","ACTIVE","COMPLETED");
-const result={...before,eventId,actionType,outcome:outcome.outcome,success:outcome.success,failureReason:outcome.failureReason,resource:physical,needEffect, targetEntityId,targetLocationId,relationshipIntent,resourceFinalized:true,postProcessingStatus:"PENDING"};const[updated]=await conn.query(`UPDATE actions SET status='COMPLETED',completed_simulation_at=?,result=?,post_processing_status='PENDING',version=version+1 WHERE id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?) AND status='ACTIVE'`,[simulationTime,JSON.stringify(result),actionId,entityId,simulationId]);if(updated.affectedRows)committed={physical,outcome,needEffect,resourceFinalized:true};});
+const result={...before,eventId,actionType,outcome:outcome.outcome,success:outcome.success,failureReason:outcome.failureReason,resource:physical,economic:economic||null,needEffect, targetEntityId,targetLocationId,relationshipIntent,resourceFinalized:true,postProcessingStatus:"PENDING"};const[updated]=await conn.query(`UPDATE actions SET status='COMPLETED',completed_simulation_at=?,result=?,post_processing_status='PENDING',version=version+1 WHERE id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?) AND status='ACTIVE'`,[simulationTime,JSON.stringify(result),actionId,entityId,simulationId]);if(updated.affectedRows)committed={physical,economic,outcome,needEffect,resourceFinalized:true};});
 if(committed&&!eventId){
   eventId=await ensureEventId({simulationId,entityId,actionId,eventId:null,actionType,simulationTime,targetEntityId,targetLocationId,relationshipIntent});
   const refreshedResult={eventId,actionType,outcome:committed.outcome.outcome,success:committed.outcome.success,failureReason:committed.outcome.failureReason,resource:committed.physical,needEffect:committed.needEffect||null,targetEntityId,targetLocationId,relationshipIntent,resourceFinalized:true};
@@ -438,6 +447,7 @@ const finalResult={
   success:committed.outcome.success,
   failureReason:committed.outcome.failureReason,
   resource:committed.physical,
+  economic:committed.economic||null,
   needEffect:committed.needEffect||null,
   targetEntityId,
   targetLocationId,
