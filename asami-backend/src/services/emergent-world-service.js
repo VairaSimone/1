@@ -5,6 +5,7 @@ const logger = require("../lib/logger");
 
 const PERSON = "00000000-0000-4000-8000-000000000001";
 const LOCATION = "00000000-0000-4000-8000-000000000003";
+const ORGANIZATION = "00000000-0000-4000-8000-000000000005";
 
 const PROJECT_RULES = [
   { projectType:"LOCAL_MARKET", issueCode:"FOOD_ACCESS", primaryNeed:"HUNGER", supportNeeds:["ACHIEVEMENT","SOCIAL_NEED"], threshold:.54, minPeople:3, requiredSupport:3, structureType:"MARKET", locationType:"MARKET", activities:["BUY_FOOD","SELL_FOOD","STORE_FOOD","EXCHANGE_GOODS"], resources:{food:80,water:25}, description:"Make food and everyday supplies easier to access locally." },
@@ -252,11 +253,21 @@ async function ensureSystem(simulationId,simulationTime,systemType,name,scopeLoc
   );
   if (existing.length) return existing[0].id;
   const id=uuid();
+  let systemEntityId=null;
+  if (["ECONOMY","GOVERNANCE"].includes(systemType)) {
+    systemEntityId=uuid();
+    await pool.query(
+      `INSERT INTO entities
+        (id,simulation_id,entity_type_id,display_name,description,status,attributes,created_simulation_at,version)
+        VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?, 'ACTIVE', ?, ?,1)`,
+      [systemEntityId,simulationId,ORGANIZATION,name,"An organization created by inhabitants as part of an emergent social system.",JSON.stringify({emergent:true,systemType,systemId:id}),simulationTime]
+    );
+  }
   await pool.query(
     `INSERT INTO emergent_systems
       (id,simulation_id,system_type,name,scope_location_id,stage,attributes,created_simulation_at,updated_simulation_at,version)
       VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,UUID_TO_BIN(?),'EMERGING',?,?,?,1)`,
-    [id,simulationId,systemType,name,scopeLocationId||null,JSON.stringify(attributes||{}),simulationTime,simulationTime]
+    [id,simulationId,systemType,name,scopeLocationId||null,JSON.stringify({...attributes,systemEntityId}),simulationTime,simulationTime]
   );
   await createEvent({
     simulationId,eventTypeCode:"SOCIAL",title:name+" began to emerge",
@@ -284,9 +295,12 @@ async function evolveMacroSystems(simulationId,simulationTime) {
 
   let settlementId=null;
   if(Number(people[0]?.count||0)>=8 && Number(structureCount[0]?.count||0)>=2) {
-    settlementId=await ensureSystem(simulationId,simulationTime,"SETTLEMENT","Emergent Settlement",null,{
-      formation:"EMERGENT",population:Number(people[0]?.count||0),persistentStructures:Number(structureCount[0]?.count||0),
-      settlementLevel:Number(people[0]?.count||0)>=12&&Number(structureCount[0]?.count||0)>=5?"TOWN":"HAMLET"
+    const population=Number(people[0]?.count||0);
+    const persistentStructures=Number(structureCount[0]?.count||0);
+    const settlementLevel=population>=20&&persistentStructures>=5?"CITY":population>=12&&persistentStructures>=3?"TOWN":"HAMLET";
+    const settlementName=settlementLevel==="CITY"?"Emergent City":settlementLevel==="TOWN"?"Emergent Town":"Emergent Settlement";
+    settlementId=await ensureSystem(simulationId,simulationTime,"SETTLEMENT",settlementName,null,{
+      formation:"EMERGENT",population,persistentStructures,settlementLevel
     });
   }
   return {economyId,governanceId,settlementId};
