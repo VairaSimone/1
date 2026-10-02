@@ -420,9 +420,24 @@ async function createStructure(simulationId, simulationTime, proposal, scope, ac
       emergent: true,
       openEnded: true,
       originProposalId: proposal.id,
-      definitionCode: definition.code
+      definitionCode: definition.code,
+      connections: [scope.locationId]
     })]
   );
+
+  const [originRows] = await pool.query(
+    "SELECT address_data AS addressData FROM locations WHERE entity_id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?) LIMIT 1 FOR UPDATE",
+    [scope.locationId, simulationId]
+  );
+  if (originRows.length) {
+    const originAddress = parseJson(originRows[0].addressData, {});
+    const connections = Array.isArray(originAddress.connections) ? originAddress.connections.map(String) : [];
+    if (!connections.includes(String(entityId))) connections.push(String(entityId));
+    await pool.query(
+      "UPDATE locations SET address_data=? WHERE entity_id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?)",
+      [JSON.stringify({ ...originAddress, connections }), scope.locationId, simulationId]
+    );
+  }
 
   const structureDefinitionId = await registerDefinition(simulationId, {
     kind: "STRUCTURE",
