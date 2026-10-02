@@ -81,7 +81,7 @@ async function evolvePolitics(simulationId,simulationTime){
   const [systems]=await pool.query(`SELECT BIN_TO_UUID(id) id FROM emergent_systems WHERE simulation_id=UUID_TO_BIN(?) AND system_type="GOVERNANCE" AND stage<>"ENDED" LIMIT 1`,[simulationId]);
   if(!systems.length)return {governanceId:null,enacted:[]};
   const governanceId=systems[0].id;
-  const [people]=await pool.query(`SELECT BIN_TO_UUID(e.id) entityId,e.display_name displayName FROM entities e JOIN entity_types et ON et.id=e.entity_type_id WHERE e.simulation_id=UUID_TO_BIN(?) AND et.id=UUID_TO_BIN("00000000-0000-4000-8000-000000000001") AND e.status="ACTIVE"`,[simulationId]);
+  const [people]=await pool.query(`SELECT BIN_TO_UUID(e.id) entityId,e.display_name displayName,COALESCE(ea.balance,20) balance,EXISTS(SELECT 1 FROM emergent_jobs ej WHERE ej.simulation_id=e.simulation_id AND ej.employee_entity_id=e.id AND ej.status="ACTIVE") employed FROM entities e JOIN entity_types et ON et.id=e.entity_type_id LEFT JOIN emergent_economy_accounts ea ON ea.simulation_id=e.simulation_id AND ea.entity_id=e.id WHERE e.simulation_id=UUID_TO_BIN(?) AND et.id=UUID_TO_BIN("00000000-0000-4000-8000-000000000001") AND e.status="ACTIVE"`,[simulationId]);
   const traitIds=people.map(x=>x.entityId),placeholders=traitIds.map(()=>"UUID_TO_BIN(?)").join(",");
   const traitRows=traitIds.length?(await pool.query(`SELECT BIN_TO_UUID(etc.entity_id) entityId,td.code,etc.value FROM entity_traits_current etc JOIN trait_definitions td ON td.id=etc.trait_id WHERE etc.entity_id IN (${placeholders})`.replace("${placeholders}",placeholders),traitIds))[0]:[];
   const traitMap=new Map();for(const row of traitRows){if(!traitMap.has(row.entityId))traitMap.set(row.entityId,{});traitMap.get(row.entityId)[normalize(row.code)]=Number(row.value)}
@@ -91,11 +91,12 @@ async function evolvePolitics(simulationId,simulationTime){
     for(const person of people){
       const [existing]=await pool.query(`SELECT id FROM emergent_policy_votes WHERE simulation_id=UUID_TO_BIN(?) AND policy_id=UUID_TO_BIN(?) AND voter_entity_id=UUID_TO_BIN(?) LIMIT 1`,[simulationId,policy.id,person.entityId]);
       if(existing.length)continue;
-      const traits=traitMap.get(person.entityId)||{},params=parseJson(policy.parameters,{}),rate=Number(params.contributionRate||0);
+      const traits=traitMap.get(person.entityId)||{},params=parseJson(policy.parameters,{}),rate=Number(params.contributionRate||0),balance=Number(person.balance||20),wealthSignal=clamp((balance-20)/40,-1,1),employmentSignal=person.employed?0.12:-0.08;
       const title=normalize(policy.title),isVoluntary=title.includes("VOLUNTARY")||normalize(params.fundingModel)==="VOLUNTARY";
-      const score=clamp((isVoluntary?Number(traits.INDEPENDENCE||.5)-.5:Number(traits.CONSCIENTIOUSNESS||.5)-.5)*1.25+Number(traits.EMPATHY||.5)*.25+.5);
+      const economicInterest=isVoluntary ? wealthSignal*.34 : -wealthSignal*.34;
+      const score=clamp((isVoluntary?Number(traits.INDEPENDENCE||.5)-.5:Number(traits.CONSCIENTIOUSNESS||.5)-.5)*1.25+Number(traits.EMPATHY||.5)*.25+economicInterest+employmentSignal+.5);
       const choice=score>=.5?"YES":"NO";
-      await pool.query(`INSERT INTO emergent_policy_votes(id,simulation_id,policy_id,voter_entity_id,choice,score,rationale,simulation_at) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,?)`,[uuid(),simulationId,policy.id,person.entityId,choice,score,JSON.stringify({independence:Number(traits.INDEPENDENCE||.5),conscientiousness:Number(traits.CONSCIENTIOUSNESS||.5),empathy:Number(traits.EMPATHY||.5),contributionRate:rate}),simulationTime]);
+      await pool.query(`INSERT INTO emergent_policy_votes(id,simulation_id,policy_id,voter_entity_id,choice,score,rationale,simulation_at) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,?)`,[uuid(),simulationId,policy.id,person.entityId,choice,score,JSON.stringify({independence:Number(traits.INDEPENDENCE||.5),conscientiousness:Number(traits.CONSCIENTIOUSNESS||.5),empathy:Number(traits.EMPATHY||.5),economicInterest:Number(economicInterest.toFixed(4)),wealthSignal:Number(wealthSignal.toFixed(4)),employmentSignal,contributionRate:rate}),simulationTime]);
     }
     const [tally]=await pool.query(`SELECT COUNT(*) total,SUM(choice="YES") yes FROM emergent_policy_votes WHERE simulation_id=UUID_TO_BIN(?) AND policy_id=UUID_TO_BIN(?)`,[simulationId,policy.id]);
     const total=Number(tally[0]?.total||0),yes=Number(tally[0]?.yes||0),ratio=total?yes/total:0;
