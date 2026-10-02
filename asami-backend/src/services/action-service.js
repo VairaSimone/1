@@ -154,7 +154,7 @@ async function startAction({simulationId,entityId,decisionId,intentionId=null,go
       validateCriticalDecision(
         decisionContext.needs||[],
         actionType,
-        targetLocationId:committed.economic?.locationId||committed.dynamic?.locationId||targetLocationId||null,
+        targetLocationId,
         recovery?{
           critical:{code:recovery.code,resource:recovery.resource||null},
           selectedAction:decisionContext.criticalAction||actionType,
