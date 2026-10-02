@@ -1,52 +1,76 @@
 # Emergent world
 
-Asami now contains an additive emergent-world layer. The initial world remains deterministic, but inhabitants can create persistent world structures when multiple agents experience a shared pressure in the same location.
+Asami now has an open-ended emergent-world layer. The base simulation remains deterministic, but inhabitants can propose new social concepts rather than selecting from a fixed project taxonomy.
 
 ## Causal loop
 
-`NEED -> SHARED PRESSURE -> PROPOSAL -> SUPPORTERS -> PROJECT -> WORLD STRUCTURE -> MACRO SYSTEM -> CONFLICT/POLICY`
+\`NEED STATE -> SHARED PRESSURE -> AGENT PROPOSAL -> DETERMINISTIC VALIDATION -> SOCIAL SUPPORT -> MATERIALIZATION -> NEW CAPABILITY -> ACTION -> PERSISTENT CONSEQUENCE\`
 
-Projects are created by an existing person entity. No player or API call is required.
+Gemini is used as a bounded generative design layer when available. It proposes data; it never receives direct authority to mutate MySQL or execute simulation code.
 
-## Current emergent project types
+## Open-ended proposal model
 
-- `LOCAL_MARKET`: shared hunger pressure can produce a new market location with food, water and exchange activities.
-- `COMMUNITY_HUB`: shared belonging/social pressure can produce a new community location.
-- `WORKSHOP_COOPERATIVE`: shared achievement/curiosity pressure can produce a new workshop location.
+An inhabitant can propose one of four data-defined kinds:
 
-Each proposal stores its generated name, activities, resource profile and emergence rationale.
+- \`STRUCTURE\`: a new physical/social place with its own activity set.
+- \`INSTITUTION\`: a durable social arrangement or organization.
+- \`ACTIVITY\`: a new locally available behavior.
+- \`SYSTEM\`: a new recurring coordination system.
 
-## Macro systems
+These are not semantic enums with fixed meanings. The agent supplies the code, name, purpose, activities, need weights, membership model and safe effects.
 
-The maintenance pass can recognize:
+## Deterministic safety boundary
 
-- `ECONOMY`: persistent productive structures create an emergent exchange system.
-- `GOVERNANCE`: population plus persistent structures or active conflicts create a civic coordination system and an organization entity.
-- `SETTLEMENT`: population plus persistent structures create an emergent settlement. At larger thresholds it is classified as `TOWN` or `CITY`.
+Every generated definition is normalized and validated before persistence.
 
-## Policies and conflicts
+The validator enforces:
 
-Once governance exists and an active conflict is present, the simulation can create multiple policy alternatives based on different personality profiles. Competing structures and competing policies are persisted as emergent conflicts.
+- bounded identifiers and text;
+- bounded activity count and activity duration;
+- only \`NEED_DELTA\`, \`RESOURCE_DELTA\` and \`INVENTORY_DELTA\` effects;
+- valid needs and existing goods only;
+- no positive \`RESOURCE_DELTA\` resource creation;
+- positive inventory requires an explicit input effect;
+- declared resource costs must be backed by executable consumption effects and by resources currently available at the scope location;
+- physical/social kinds require a valid local scope and a minimum support base;
+- duplicate definition and activity codes are rejected.
+
+The runtime repeats the same principle: an emergent activity can only mutate state through the small validated effect vocabulary. Dynamic effects run inside the action transaction with a savepoint, so a failed effect sequence does not leave partial mutations behind.
+
+## Social selection
+
+The simulation computes shared pressure from the active need catalogue itself. Need direction is inferred from each need's configured default value, so the emergence layer is not tied to fixed concepts such as hunger or belonging.
+
+A proposer is selected deterministically from the people experiencing the pressure. Gemini receives only compact local state, then returns one candidate definition. A deterministic support model estimates which nearby inhabitants would adopt it. A feasible proposal without sufficient support is stored as rejected and does not alter the world.
 
 ## Persistence
 
-The layer is persisted in:
+Open-ended concepts are stored in:
 
-- `emergent_projects`
-- `emergent_project_members`
-- `emergent_structures`
-- `emergent_systems`
-- `emergent_policies`
-- `emergent_conflicts`
+- \`emergent_world_proposals\`
+- \`emergent_definition_catalog\`
+- \`emergent_system_members\`
 
-The world observer already reads `entities` + `locations`, so newly materialized locations appear in the normal world snapshot.
+Materialized structures and systems still use:
+
+- \`emergent_structures\`
+- \`emergent_systems\`
+- \`emergent_projects\` (compatibility record for the existing world schema)
+
+The normal world and action pipelines consume the generated activity definitions through \`world_capabilities\`, so a new activity can become a real candidate in autonomous decision making without adding a new JavaScript action enum.
 
 ## API
 
-`GET /api/simulations/:simulationId/emergence`
+\`GET /api/simulations/:simulationId/emergence\`
 
-returns current projects, structures, macro systems, policies and conflicts.
+now includes:
 
-## Important design constraint
+- legacy/emergent projects, structures, systems, policies and conflicts;
+- \`openEnded.proposals\`;
+- \`openEnded.definitions\`.
 
-Gemini is not allowed to mutate the world directly. The emergent layer remains deterministic and persisted in MySQL. A future cognitive extension can propose new project types or names, but every proposal must pass deterministic feasibility and persistence rules before the world changes.
+## What is intentionally still fixed
+
+Core biological and locomotion primitives remain code-defined because they are simulation infrastructure rather than social inventions: sleeping, eating, drinking, movement, basic communication and their state transitions still have dedicated deterministic semantics.
+
+The social grammar itself is no longer restricted to \`LOCAL_MARKET\`, \`COMMUNITY_HUB\` or \`WORKSHOP_COOPERATIVE\`.
