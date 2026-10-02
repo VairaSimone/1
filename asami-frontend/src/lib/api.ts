@@ -1,4 +1,4 @@
-import type { AnalysisData, ChatMessage, ChatResponse, Clock, ConversationState, Dashboard, Development, DevelopmentHistoryItem, EventItem, Memory, Simulation, TimelineItem, MindData, WorldSnapshot } from '../types'
+import type { AnalysisData, ChatMessage, ChatResponse, Clock, ConversationState, Dashboard, Development, DevelopmentHistoryItem, EventItem, Memory, Simulation, TimelineItem, MindData, WorldSnapshot, SocietySnapshot } from '../types'
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/$/, '')
 const REQUEST_TIMEOUT_MS = 20000
@@ -44,6 +44,7 @@ export const api = {
     return request<WorldSnapshot>(`/simulations/${simulationId}/world${query}`)
   },
   mind: (simulationId: string, entityId: string) => request<MindData>(`/simulations/${simulationId}/mind/${entityId}`),
+  society: (simulationId: string) => request<SocietySnapshot>(`/simulations/${simulationId}/society`),
   causal: (simulationId: string, entityId: string, limit = 60) => request<MindData['causal']>(`/simulations/${simulationId}/causal/${entityId}?limit=${Math.max(1, Math.min(100, limit))}`),
   analysis: (simulationId: string, from?: string, to?: string, entityId?: string) => {
     const params = new URLSearchParams(); if (from) params.set('from', from); if (to) params.set('to', to); if (entityId) params.set('entityId', entityId)
