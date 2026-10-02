@@ -172,6 +172,7 @@ async function validateDefinition(simulationId,definition,{scopeLocationId=null,
       }else if(effect.type==="RESOURCE_DELTA"){
         if(!effect.resource||!CODE_RE.test(effect.resource))errors.push("INVALID_RESOURCE");
         if(!Number.isFinite(effect.delta)||Math.abs(effect.delta)>MAX_RESOURCE_DELTA)errors.push("INVALID_RESOURCE_DELTA");
+        if(Number(effect.delta)>0)errors.push("RESOURCE_CREATION_FORBIDDEN");
       }else if(effect.type==="INVENTORY_DELTA"){
         if(!goodCodes.has(effect.goodCode))errors.push("UNKNOWN_GOOD");
         if(!Number.isFinite(effect.delta)||Math.abs(effect.delta)>MAX_INVENTORY_DELTA)errors.push("INVALID_INVENTORY_DELTA");
@@ -181,7 +182,20 @@ async function validateDefinition(simulationId,definition,{scopeLocationId=null,
 
   const totalResourceCost=Object.values(normalized.resourceCosts).reduce((sum,value)=>sum+Number(value||0),0);
   const availableResourceTotal=Object.values(localResources||{}).reduce((sum,value)=>sum+Math.max(0,Number(value||0)),0);
+  for(const [resource,costValue] of Object.entries(normalized.resourceCosts||{})){
+    const available=Number(localResources?.[resource]||0);
+    if(available<Number(costValue||0))errors.push("INSUFFICIENT_LOCAL_RESOURCE_"+resource);
+  }
   if(totalResourceCost>0 && availableResourceTotal<totalResourceCost)errors.push("INSUFFICIENT_LOCAL_RESOURCES");
+
+  for(const activity of normalized.activities){
+    const positiveInventory=(activity.effects||[]).some(effect=>effect.type==="INVENTORY_DELTA" && Number(effect.delta)>0);
+    const hasInput=(activity.effects||[]).some(effect =>
+      (effect.type==="INVENTORY_DELTA" && Number(effect.delta)<0) ||
+      (effect.type==="RESOURCE_DELTA" && Number(effect.delta)<0)
+    );
+    if(positiveInventory && !hasInput)errors.push("INVENTORY_CREATION_REQUIRES_INPUT");
+  }
 
   const minimumSupport=Math.max(3,Math.ceil(Math.max(0,Number(proposerCount)||0)*0.35));
   if(["STRUCTURE","INSTITUTION","SYSTEM"].includes(normalized.kind) && !scopeLocationId)errors.push("SCOPE_LOCATION_REQUIRED");
@@ -280,6 +294,7 @@ async function applyInventoryEffect({conn,simulationId,entityId,simulationTime,e
 }
 
 async function executeDynamicActivity({conn,simulationId,entityId,actionId,actionType,simulationTime,targetLocationId=null}) {
+  await conn.query("SAVEPOINT dynamic_activity_effects");
   const normalizedAction=code(actionType);
   const [rows]=await conn.query(
     `SELECT BIN_TO_UUID(wc.location_id) locationId,wc.parameters,wc.name,wc.category
@@ -309,10 +324,13 @@ async function executeDynamicActivity({conn,simulationId,entityId,actionId,actio
     if(effect.type==="RESOURCE_DELTA")result=await applyResourceEffect({conn,simulationId,entityId,simulationTime,locationId,effect});
     if(effect.type==="INVENTORY_DELTA")result=await applyInventoryEffect({conn,simulationId,entityId,simulationTime,effect});
     if(!result)continue;
-    if(!result.ok)return {ok:false,failureReason:result.failureReason||"DYNAMIC_EFFECT_FAILED",effect,result};
+    if(!result.ok){
+      await conn.query("ROLLBACK TO SAVEPOINT dynamic_activity_effects");
+      return {ok:false,failureReason:result.failureReason||"DYNAMIC_EFFECT_FAILED",effect,result};
+    }
     effectResults.push(result.effect);
   }
-  await createDynamicEvent({conn,simulationId,entityId,actionType:normalizedAction,simulationTime,effectResults,locationId});
+  await conn.query("RELEASE SAVEPOINT dynamic_activity_effects");
   return {ok:true,dynamicActivity:true,activityCode:normalizedAction,effects:effectResults,locationId};
 }
 
