@@ -912,11 +912,14 @@ async function evolveEmergentSystems(simulationId, simulationTime) {
       [simulationId, system.id]
     );
     const members = Number(memberRows[0]?.count || 0);
-    const [businessRows] = await pool.query(
-      "SELECT status FROM emergent_businesses WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) LIMIT 1",
-      [simulationId, attrs.systemEntityId || ""]
-    );
-    const hasActiveBusiness = businessRows[0]?.status === 'ACTIVE';
+    let hasActiveBusiness = false;
+    if (attrs.systemEntityId) {
+      const [businessRows] = await pool.query(
+        "SELECT status FROM emergent_businesses WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) LIMIT 1",
+        [simulationId, attrs.systemEntityId]
+      );
+      hasActiveBusiness = businessRows[0]?.status === 'ACTIVE';
+    }
     let next = String(system.stage || 'EMERGING').toUpperCase();
     if (next === 'EMERGING' && ageHours >= 12 && members >= 3) next = 'ACTIVE';
     else if (next === 'ACTIVE' && ageHours >= 72 && members >= 3) next = 'MATURE';
