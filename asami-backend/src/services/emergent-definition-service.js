@@ -97,6 +97,15 @@ function normalizeDefinition(definition={}) {
       if(CODE_RE.test(code(k)) && Number.isFinite(n) && n>=0 && n<=50)resourceCosts[resource]=Number(n.toFixed(3));
     }
   }
+  const products=Array.isArray(source.products)
+    ?source.products.slice(0,3).map(item=>({
+      code:code(item?.code),
+      name:sanitizeText(item?.name,120,code(item?.code).replaceAll("_"," ").toLowerCase()),
+      category:sanitizeText(item?.category,48,"PRODUCT").toUpperCase(),
+      unit:sanitizeText(item?.unit,24,"unit"),
+      basePrice:Number(item?.basePrice)
+    })).filter(item=>CODE_RE.test(item.code)&&item.name.length>=3&&Number.isFinite(item.basePrice)&&item.basePrice>0&&item.basePrice<=100)
+    : [];
   return {
     schemaVersion:2,
     kind:normalize(source.kind),
@@ -105,6 +114,7 @@ function normalizeDefinition(definition={}) {
     category:sanitizeText(source.category,64,"EMERGENT").toUpperCase(),
     purpose:sanitizeText(source.purpose,600,"A new social possibility proposed by inhabitants."),
     activities,
+    products,
     resourceCosts,
     targetNeeds:Array.isArray(source.targetNeeds)
       ?source.targetNeeds.slice(0,8).map(item=>({code:code(item?.code),weight:Number(item?.weight)}))
@@ -164,6 +174,8 @@ async function validateDefinition(simulationId,definition,{scopeLocationId=null,
   );
   const needCodes=await loadActiveNeedCodes(simulationId);
   const goodCodes=await loadKnownGoodCodes(simulationId);
+  const proposalGoodCodes=new Set(normalized.products.map(product=>product.code));
+  const effectiveGoodCodes=new Set([...goodCodes,...proposalGoodCodes]);
   const seenActivities=new Set();
 
   if(normalized.kind==="ACTIVITY"){
@@ -194,10 +206,10 @@ async function validateDefinition(simulationId,definition,{scopeLocationId=null,
         if(!Number.isFinite(effect.delta)||Math.abs(effect.delta)>MAX_RESOURCE_DELTA)errors.push("INVALID_RESOURCE_DELTA");
         if(Number(effect.delta)>0)errors.push("RESOURCE_CREATION_FORBIDDEN");
       }else if(effect.type==="INVENTORY_DELTA"){
-        if(!goodCodes.has(effect.goodCode))errors.push("UNKNOWN_GOOD");
+        if(!effectiveGoodCodes.has(effect.goodCode))errors.push("UNKNOWN_GOOD");
         if(!Number.isFinite(effect.delta)||Math.abs(effect.delta)>MAX_INVENTORY_DELTA)errors.push("INVALID_INVENTORY_DELTA");
       }else if(effect.type==="PRODUCTION"){
-        if(!goodCodes.has(effect.goodCode))errors.push("UNKNOWN_PRODUCED_GOOD");
+        if(!effectiveGoodCodes.has(effect.goodCode))errors.push("UNKNOWN_PRODUCED_GOOD");
         if(!Number.isFinite(effect.quantity)||effect.quantity<=0||effect.quantity>5)errors.push("INVALID_PRODUCTION_QUANTITY");
         const resourceInputs=effect.resourceInputs||{},inventoryInputs=effect.inventoryInputs||{};
         if(!Object.keys(resourceInputs).length&&!Object.keys(inventoryInputs).length)errors.push("PRODUCTION_REQUIRES_INPUT");
@@ -207,7 +219,7 @@ async function validateDefinition(simulationId,definition,{scopeLocationId=null,
           if(Number(localResources?.[resource]||0)<Number(input))errors.push("INSUFFICIENT_PRODUCTION_RESOURCE_"+resource);
         }
         for(const [good,input] of Object.entries(inventoryInputs)){
-          if(!goodCodes.has(good))errors.push("UNKNOWN_PRODUCTION_INPUT_GOOD");
+          if(!effectiveGoodCodes.has(good))errors.push("UNKNOWN_PRODUCTION_INPUT_GOOD");
           if(!Number.isFinite(Number(input))||Number(input)<=0||Number(input)>5)errors.push("INVALID_PRODUCTION_INVENTORY_INPUT");
         }
       }
