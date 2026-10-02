@@ -162,6 +162,49 @@ async function ensureCapabilitiesForEmergentStructures(simulationId, simulationT
         simulationTime
       })) created += 1;
     }
+
+    const definitionRow = await pool.query(
+      "SELECT attributes FROM entities WHERE id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?) LIMIT 1",
+      [row.entityId, simulationId]
+    );
+    const attributes = parseJson(definitionRow[0][0]?.attributes, {});
+    const definition = attributes?.definition || {};
+    const category = normalize(definition.category);
+    const isMarket = row.structureType === "MARKET" || definition.market === true || category === "MARKET" || category === "COMMERCE";
+    const hasWork = row.structureType === "WORKSHOP" ||
+      Boolean(definition.production) ||
+      (Array.isArray(definition.activities) && definition.activities.some(activity => {
+        const c = normalize(activity?.category);
+        return c === "WORK" || c === "PRODUCTION" || c === "CRAFT";
+      }));
+
+    if (isMarket && await ensureCapability({
+      simulationId,
+      locationId: row.entityId,
+      sourceEntityId: row.entityId,
+      activityCode: "BUY_FOOD",
+      activityRow: {
+        code: "BUY_FOOD",
+        name: DEFAULTS.BUY_FOOD.name,
+        category: DEFAULTS.BUY_FOOD.category,
+        parameters: DEFAULTS.BUY_FOOD
+      },
+      simulationTime
+    })) created += 1;
+
+    if (hasWork && await ensureCapability({
+      simulationId,
+      locationId: row.entityId,
+      sourceEntityId: row.entityId,
+      activityCode: "WORK_JOB",
+      activityRow: {
+        code: "WORK_JOB",
+        name: DEFAULTS.WORK_JOB.name,
+        category: DEFAULTS.WORK_JOB.category,
+        parameters: DEFAULTS.WORK_JOB
+      },
+      simulationTime
+    })) created += 1;
   }
 
   for (const row of catalog) {
