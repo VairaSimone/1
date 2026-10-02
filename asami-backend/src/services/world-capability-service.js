@@ -165,6 +165,32 @@ async function ensureCapabilitiesForEmergentStructures(simulationId, simulationT
         activityRow,
         simulationTime
       })) created += 1;
+
+      // The structure is a real place, but its existence is discovered from
+      // the surrounding location. Expose a "portal" capability there so an
+      // inhabitant can decide to travel to the structure instead of requiring
+      // an accidental exploration to find it.
+      if (row.scopeLocationId && String(row.scopeLocationId) !== String(row.entityId)) {
+        const portalActivity = activityRow
+          ? {
+              ...activityRow,
+              parameters: {
+                ...(typeof activityRow.parameters === "object" ? activityRow.parameters : {}),
+                targetLocationId: row.entityId,
+                destinationLocationId: row.entityId,
+                emergentStructureId: row.entityId
+              }
+            }
+          : null;
+        if (await ensureCapability({
+          simulationId,
+          locationId: row.scopeLocationId,
+          sourceEntityId: row.entityId,
+          activityCode,
+          activityRow: portalActivity,
+          simulationTime
+        })) created += 1;
+      }
     }
 
     const definitionRow = await pool.query(
@@ -230,6 +256,47 @@ async function ensureCapabilitiesForEmergentStructures(simulationId, simulationT
           },
           simulationTime
         })) created += 1;
+      if (row.scopeLocationId && String(row.scopeLocationId) !== String(row.entityId)) {
+        for (const good of goods) {
+          for (const side of ["BUY", "SELL"]) {
+            const actionCode = `${side}_${normalize(good.code)}`;
+            const parameters = side === "BUY"
+              ? {
+                  code: actionCode,
+                  name: `Buy ${good.name}`,
+                  category: "ECONOMY",
+                  needWeights: good.code === "FOOD" ? { HUNGER: 2.9 } : {},
+                  gate: good.code === "FOOD" ? ["HUNGER", 0.25] : null,
+                  durationMinutes: 25,
+                  economicType: "BUY_GOOD",
+                  goodCode: normalize(good.code),
+                  targetLocationId: row.entityId,
+                  destinationLocationId: row.entityId,
+                  emergentStructureId: row.entityId
+                }
+              : {
+                  code: actionCode,
+                  name: `Sell ${good.name}`,
+                  category: "ECONOMY",
+                  needWeights: {},
+                  durationMinutes: 20,
+                  economicType: "SELL_GOOD",
+                  goodCode: normalize(good.code),
+                  targetLocationId: row.entityId,
+                  destinationLocationId: row.entityId,
+                  emergentStructureId: row.entityId
+                };
+            if (await ensureCapability({
+              simulationId,
+              locationId: row.scopeLocationId,
+              sourceEntityId: row.entityId,
+              activityCode: actionCode,
+              activityRow: { code: actionCode, name: parameters.name, category: "ECONOMY", parameters },
+              simulationTime
+            })) created += 1;
+          }
+        }
+      }
       }
     }
 
@@ -246,6 +313,27 @@ async function ensureCapabilitiesForEmergentStructures(simulationId, simulationT
       },
       simulationTime
     })) created += 1;
+
+    if (hasWork && row.scopeLocationId && String(row.scopeLocationId) !== String(row.entityId)) {
+      if (await ensureCapability({
+        simulationId,
+        locationId: row.scopeLocationId,
+        sourceEntityId: row.entityId,
+        activityCode: "WORK_JOB",
+        activityRow: {
+          code: "WORK_JOB",
+          name: DEFAULTS.WORK_JOB.name,
+          category: DEFAULTS.WORK_JOB.category,
+          parameters: {
+            ...DEFAULTS.WORK_JOB,
+            targetLocationId: row.entityId,
+            destinationLocationId: row.entityId,
+            emergentStructureId: row.entityId
+          }
+        },
+        simulationTime
+      })) created += 1;
+    }
   }
 
   const [economicSystems] = await pool.query(
