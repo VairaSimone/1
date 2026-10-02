@@ -65,6 +65,33 @@ async function ensureSocietyMigrations() {
     UNIQUE KEY uq_epv_vote (simulation_id,policy_id,voter_entity_id), KEY idx_epv_policy (simulation_id,policy_id)
   )`);
 
+
+
+  await pool.query(`CREATE TABLE IF NOT EXISTS emergent_definition_catalog (
+    id BINARY(16) PRIMARY KEY, simulation_id BINARY(16) NOT NULL, kind VARCHAR(24) NOT NULL, code VARCHAR(80) NOT NULL,
+    name VARCHAR(160) NOT NULL, category VARCHAR(64) NOT NULL, scope_location_id BINARY(16) NULL, origin_entity_id BINARY(16) NULL,
+    origin_proposal_id BINARY(16) NULL, definition JSON NOT NULL, status VARCHAR(24) NOT NULL DEFAULT 'ACTIVE',
+    created_simulation_at DATETIME(3) NOT NULL, updated_simulation_at DATETIME(3) NOT NULL, version INT NOT NULL DEFAULT 1,
+    UNIQUE KEY uq_edc_sim_kind_code (simulation_id,kind,code), KEY idx_edc_scope (simulation_id,scope_location_id,status),
+    KEY idx_edc_origin (simulation_id,origin_entity_id)
+  )`);
+
+  await pool.query(`CREATE TABLE IF NOT EXISTS emergent_world_proposals (
+    id BINARY(16) PRIMARY KEY, simulation_id BINARY(16) NOT NULL, proposer_entity_id BINARY(16) NOT NULL,
+    scope_location_id BINARY(16) NULL, kind VARCHAR(24) NOT NULL, code VARCHAR(80) NOT NULL, title VARCHAR(180) NOT NULL,
+    rationale JSON NULL, definition JSON NOT NULL, validation JSON NULL, support_score DECIMAL(8,5) NOT NULL DEFAULT 0,
+    required_support INT NOT NULL DEFAULT 3, status VARCHAR(24) NOT NULL DEFAULT 'PROPOSED',
+    created_simulation_at DATETIME(3) NOT NULL, decided_simulation_at DATETIME(3) NULL, version INT NOT NULL DEFAULT 1,
+    KEY idx_ewp_sim_status (simulation_id,status,created_simulation_at),
+    KEY idx_ewp_sim_code (simulation_id,kind,code), KEY idx_ewp_proposer (simulation_id,proposer_entity_id)
+  )`);
+
+  await pool.query(`CREATE TABLE IF NOT EXISTS emergent_system_members (
+    system_id BINARY(16) NOT NULL, simulation_id BINARY(16) NOT NULL, entity_id BINARY(16) NOT NULL,
+    role VARCHAR(48) NOT NULL DEFAULT 'MEMBER', support_score DECIMAL(8,5) NOT NULL DEFAULT 0,
+    joined_simulation_at DATETIME(3) NOT NULL, PRIMARY KEY (system_id,entity_id), KEY idx_esm_entity (simulation_id,entity_id)
+  )`);
+
   await pool.query(`CREATE TABLE IF NOT EXISTS emergent_governance_members (
     system_id BINARY(16) NOT NULL, simulation_id BINARY(16) NOT NULL, entity_id BINARY(16) NOT NULL, role VARCHAR(32) NOT NULL DEFAULT "MEMBER",
     support_score DECIMAL(8,5) NOT NULL DEFAULT 0, joined_simulation_at DATETIME(3) NOT NULL, PRIMARY KEY (system_id,entity_id)
