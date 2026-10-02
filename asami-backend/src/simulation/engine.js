@@ -10,6 +10,7 @@ const actionService = require("../services/action-service");
 const { createMemory, decayMemories, buildActionMemory, buildFailureMemory } = require("../services/memory-service");
 const { generateWorldEvents } = require("../services/world-service");
 const { ensureWorld, evolveRelationships } = require("../services/world-population-service");
+const { progressEmergence } = require("../services/emergent-world-service");
 const { seedPhysicalWorld, ensureCriticalResourceAvailability, maintainDistributedResources } = require("../services/physical-world-service");
 const { updateDevelopment } = require("../services/development-service");
 const { initiateConversation } = require("../services/chat-service");
@@ -412,6 +413,8 @@ class SimulationEngine {
             const violations=Array.isArray(integrity.violations)?integrity.violations:[];
             observability.increment(sim.id,"integrity_violation_total",violations.reduce((sum,item)=>sum+Number(item.count||0),0));
           }
+          setPhase("world.emergence");
+          await progressEmergence(sim.id, nextTime.toISOString());
           this.worldMaintenanceAt.set(sim.id, nextTime.getTime());
         }
         setPhase("world.events");
