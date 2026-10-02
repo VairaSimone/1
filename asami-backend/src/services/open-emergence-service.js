@@ -171,7 +171,7 @@ function selectProposer(actors, signal) {
   })[0] || null;
 }
 
-function deterministicFallbackDefinition(signal, proposer, simulationTime) {
+function deterministicFallbackDefinition(signal, proposer, simulationTime, { economicOpportunity = false } = {}) {
   const seed = hash(signal.needCode + "|" + proposer.entityId + "|" + simulationTime);
   const kinds = Array.from(KINDS);
   const kind = kinds[parseInt(seed.slice(0, 2), 16) % kinds.length];
@@ -179,21 +179,48 @@ function deterministicFallbackDefinition(signal, proposer, simulationTime) {
   const activityCode = kind === "ACTIVITY" ? baseCode : baseCode + "_ACT";
   const needLabel = signal.needCode.toLowerCase().replaceAll("_", " ");
   const needDelta = signal.direction === "LOW" ? 0.12 : -0.12;
-  const foodCrisis=signal.needCode==="HUNGER" && signal.direction==="HIGH";
+  const foodCrisis = signal.needCode === "HUNGER" && signal.direction === "HIGH";
+  const economicResponse = economicOpportunity && signal.needCode !== "THIRST";
+  if (economicResponse) {
+    const production = signal.needCode === "ACHIEVEMENT";
+    return normalizeDefinition({
+      kind: "STRUCTURE",
+      code: baseCode + "_EXCHANGE",
+      name: (proposer.displayName || "Locali") + " - local exchange",
+      category: "COMMERCE",
+      market: true,
+      production,
+      purpose: "A locally organized exchange created after recurring pressure revealed a need for durable material coordination.",
+      products: [],
+      targetNeeds: [{ code: signal.needCode, weight: 2 }],
+      activities: [{
+        code: production ? baseCode + "_MAKE_TOOLS" : baseCode + "_EXCHANGE",
+        name: production ? "Produce useful tools" : "Exchange useful goods locally",
+        category: production ? "PRODUCTION" : "COMMERCE",
+        durationMinutes: production ? 120 : 30,
+        needWeights: { [signal.needCode]: 1.5, ACHIEVEMENT: 0.5 },
+        gate: { needCode: signal.needCode, min: 0.30 },
+        effects: production
+          ? [{ type: "PRODUCTION", goodCode: "TOOLS", quantity: 2, resourceInputs: { water: 1 }, inventoryInputs: {} }]
+          : [{ type: "NEED_DELTA", needCode: signal.needCode, delta: needDelta }]
+      }],
+      formation: "BOTTOM_UP",
+      membership: "VOLUNTARY",
+      origin: "DETERMINISTIC_ECONOMIC_BRIDGE"
+    });
+  }
   return normalizeDefinition({
     kind: foodCrisis ? "STRUCTURE" : kind,
-    code: foodCrisis ? baseCode+"_SUPPLY" : baseCode,
-    name: foodCrisis ? (proposer.displayName||"Locali")+" - local food supply" : (proposer.displayName||"Locali")+" - "+needLabel+" initiative",
+    code: foodCrisis ? baseCode + "_SUPPLY" : baseCode,
+    name: foodCrisis ? (proposer.displayName || "Locali") + " - local food supply" : (proposer.displayName || "Locali") + " - " + needLabel + " initiative",
     category: foodCrisis ? "COMMERCE" : "EMERGENT",
     market: foodCrisis,
     production: foodCrisis,
-    purpose: foodCrisis
-      ? "A locally organized response to shared food scarcity."
-      : "A new autonomous response to a shared " + needLabel + " pressure.",
+    purpose: foodCrisis ? "A locally organized response to shared food scarcity." : "A new autonomous response to a shared " + needLabel + " pressure.",
     products: [],
     targetNeeds: [{ code: signal.needCode, weight: 2 }],
     activities: foodCrisis ? [{
-      code: baseCode+"_GROW_FOOD",
+      code: baseCode + "_GROW_FOOD",
       name: "Produce local food",
       category: "PRODUCTION",
       durationMinutes: 120,
@@ -214,7 +241,6 @@ function deterministicFallbackDefinition(signal, proposer, simulationTime) {
     origin: "DETERMINISTIC_FALLBACK"
   });
 }
-
 async function askGemini(gemini, { simulationTime, scope, signal, proposer, actors }) {
   if (!gemini || typeof gemini.generateJson !== "function") return null;
   const context = {
