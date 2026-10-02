@@ -183,13 +183,13 @@ async function startAction({simulationId,entityId,decisionId,intentionId=null,go
   let duration=Number(dynamicActivity?.parameters?.durationMinutes||getActionDurationMinutes(normalizedAction));
   let activityDurationMinutes=duration,move=null,origin=null,destination=null,actionId=null,eventId=null;
   try{
-    if(MOVE_ACTIONS.has(normalizedAction) || (targetLocationId && normalizedAction!=="WALKING" && normalizedAction!=="EXPLORING")){
+    if(targetLocationId && !MOVE_ACTIONS.has(normalizedAction)){
       origin=await currentLocation(entityId,simulationId);
       if(!origin)throw Object.assign(new Error("Targeted action requires a current entity location"),{code:"MOVEMENT_ORIGIN_REQUIRED"});
       if(targetLocationId && String(targetLocationId)!==String(origin)){
         const route=await routeDetails(simulationId,origin,targetLocationId);
         if(!route)throw Object.assign(new Error("Action destination is unreachable from the current location"),{code:"MOVEMENT_DESTINATION_UNREACHABLE"});
-        destination=route.path[1]||targetLocationId;
+        destination=targetLocationId;
         const speed=WALKING_SPEED_KMH;
         move=await startMovement({simulationId,entityId,origin,destination,simulationTime,distanceMeters:route.distanceMeters,speedKmh:speed});
         if(!move)throw Object.assign(new Error("Movement is already active for this entity"),{code:"MOVEMENT_ALREADY_ACTIVE"});
