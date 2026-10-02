@@ -88,6 +88,8 @@ export function Society({ society, world }: { society: SocietySnapshot | null; w
   const businessMetric = society.businessMetrics?.[0] ?? null
   const openProposals = society.openEnded?.proposals ?? []
   const openDefinitions = society.openEnded?.definitions ?? []
+  const macroDefinitions = openDefinitions.filter(item => ['STRUCTURE', 'INSTITUTION', 'SYSTEM'].includes(String(item.kind).toUpperCase()))
+  const derivedActivities = openDefinitions.filter(item => String(item.kind).toUpperCase() === 'ACTIVITY')
 
   return <div className="society-page">
     <div className="society-hero">
@@ -112,7 +114,7 @@ export function Society({ society, world }: { society: SocietySnapshot | null; w
         <div className="society-progress">
           {[
             { n: 1, label: 'Pressione', done: society.openEnded?.proposals?.length > 0 || society.openEnded?.definitions?.length > 0, text: 'Bisogni e idee iniziano a produrre proposte.' },
-            { n: 2, label: 'Strutture', done: society.openEnded?.definitions?.some(item => ['STRUCTURE', 'INSTITUTION', 'SYSTEM'].includes(String(item.kind).toUpperCase())) ?? false, text: 'Una proposta diventa una capacità persistente.' },
+            { n: 2, label: 'Strutture', done: macroDefinitions.length > 0, text: 'Una proposta diventa una struttura, istituzione o sistema persistente.' },
             { n: 3, label: 'Economia', done: society.markets.length > 0 || (society.businesses?.length ?? 0) > 0 || society.trades.length > 0, text: 'Compaiono mercato, produzione, lavoro e scambi.' },
             { n: 4, label: 'Governance', done: society.policies.length > 0 || society.conflicts.length > 0, text: 'Interessi differenti iniziano a produrre regole o conflitti.' },
           ].map((stage, index) => (
@@ -177,7 +179,8 @@ export function Society({ society, world }: { society: SocietySnapshot | null; w
       <Panel title="Cosa sta cambiando davvero" eyebrow="LETTURA RAPIDA">
         <div className="society-read-grid">
           <div><span>Nuove idee</span><strong>{society.openEnded?.proposals?.length ?? 0}</strong><p>proposte registrate</p></div>
-          <div><span>Capacità persistenti</span><strong>{society.openEnded?.definitions?.length ?? 0}</strong><p>definizioni attive</p></div>
+          <div><span>Invenzioni strutturali</span><strong>{macroDefinitions.length}</strong><p>strutture, istituzioni e sistemi</p></div>
+          <div><span>Attività derivate</span><strong>{derivedActivities.length}</strong><p>nuove capacità utilizzabili</p></div>
           <div><span>Mercati</span><strong>{society.markets.length}</strong><p>luoghi con prezzo</p></div>
           <div><span>Imprese</span><strong>{society.businesses?.filter(item => item.status === 'ACTIVE').length ?? 0}</strong><p>attive ora</p></div>
           <div><span>Lavoro</span><strong>{society.jobs.length}</strong><p>rapporti attivi</p></div>
@@ -269,7 +272,7 @@ export function Society({ society, world }: { society: SocietySnapshot | null; w
       </Panel>
     </div>
 
-    <Panel title="Invenzioni sociali" eyebrow="OPEN-ENDED" right={<span className="tiny-muted">{openDefinitions.length} definizioni attive · {openProposals.length} proposte</span>}>
+    <Panel title="Invenzioni sociali" eyebrow="OPEN-ENDED" right={<span className="tiny-muted">{macroDefinitions.length} invenzioni strutturali · {derivedActivities.length} attività · {openProposals.length} proposte</span>}>
       <div className="open-ended-grid">
         <div className="open-ended-list">
           {openProposals.length ? openProposals.slice(0, 8).map(proposal => <article className="open-ended-card" key={proposal.id}>
