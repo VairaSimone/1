@@ -310,12 +310,26 @@ async function loadCapabilitiesForEntities(simulationId, entityIds = []) {
     "AND wc.active=1 AND wc.code LIKE 'SELL_%'",
     [simulationId, ...ids]
   );
+  const [buyable] = await pool.query(
+    "SELECT BIN_TO_UUID(elc.entity_id) entityId,wc.code " +
+    "FROM entity_locations_current elc " +
+    "JOIN world_capabilities wc ON wc.location_id=elc.location_id AND wc.simulation_id=elc.simulation_id " +
+    "JOIN emergent_structures es ON es.simulation_id=wc.simulation_id AND es.scope_location_id=wc.location_id " +
+    "JOIN emergent_inventory ei ON ei.simulation_id=wc.simulation_id AND ei.owner_entity_id=es.entity_id " +
+    "  AND ei.good_code=SUBSTRING(wc.code,5) AND ei.quantity>0 " +
+    "WHERE elc.simulation_id=UUID_TO_BIN(?) AND elc.entity_id IN (" + placeholders + ") " +
+    "AND wc.active=1 AND wc.code LIKE 'BUY_%'",
+    [simulationId, ...ids]
+  );
   const allowedSell = new Set(sellable.map(row => `${row.entityId}|${normalize(row.code)}`));
+  const allowedBuy = new Set(buyable.map(row => `${row.entityId}|${normalize(row.code)}`));
   for (const [entityId, activities] of result.entries()) {
-    result.set(entityId, activities.filter(activity =>
-      !normalize(activity.code).startsWith("SELL_") ||
-      allowedSell.has(`${entityId}|${normalize(activity.code)}`)
-    ));
+    result.set(entityId, activities.filter(activity => {
+      const normalized=normalize(activity.code);
+      if(normalized.startsWith("SELL_")) return allowedSell.has(`${entityId}|${normalized}`);
+      if(normalized.startsWith("BUY_")) return allowedBuy.has(`${entityId}|${normalized}`);
+      return true;
+    }));
   }
   return result;
 }
