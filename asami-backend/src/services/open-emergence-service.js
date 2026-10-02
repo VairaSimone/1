@@ -452,7 +452,7 @@ async function createStructure(simulationId, simulationTime, proposal, scope, ac
   );
 
   await pool.query(
-    "INSERT INTO locations(entity_id,simulation_id,location_type,latitude,longitude,address_data) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,?,?)",
+    "INSERT INTO locations(entity_id,simulation_id,location_type,latitude,longitude,address_data) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,?)",
     [entityId, simulationId, "EMERGENT", latitude, longitude, JSON.stringify({
       emergent: true,
       openEnded: true,
