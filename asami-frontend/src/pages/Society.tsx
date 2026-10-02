@@ -1,6 +1,6 @@
 
 import { Activity, ArrowRight, Building2, CircleCheck, CircleDashed, Coins, Factory, Gavel, Handshake, Landmark, Scale, ShoppingBag, Sparkles, TrendingUp, Users, WalletCards } from 'lucide-react'
-import type { SocietySnapshot, WorldEvent, WorldSnapshot } from '../types'
+import type { SocietyEvent, SocietySnapshot, WorldSnapshot } from '../types'
 import { labelize, pct, formatSimTime } from '../lib/format'
 import { EmptyState, Panel, StatusPill } from '../components/Ui'
 import './Society.css'
@@ -50,7 +50,7 @@ function societyNarrative(society: SocietySnapshot) {
   return 'La società è ancora nella fase iniziale. Gli abitanti stanno costruendo pressione, esperienze e relazioni da cui potranno emergere nuove organizzazioni.'
 }
 
-function societyEventLabel(event: WorldEvent) {
+function societyEventLabel(event: SocietyEvent) {
   const kind = String(event.metadata?.kind || '').toUpperCase()
   if (kind === 'DEFINITION_ACCEPTED') return 'Nuova definizione'
   if (kind === 'SYSTEM_FORMED') return 'Nuovo sistema'
@@ -62,13 +62,13 @@ function societyEventLabel(event: WorldEvent) {
   return labelize(event.category || event.type || 'Evento')
 }
 
-function isSocietyEvent(event: WorldEvent) {
+function isSocietyEvent(event: SocietyEvent) {
   const text = [event.title, event.type, event.category, event.metadata?.kind]
     .map(value => String(value || '')).join(' ').toUpperCase()
   return Number(event.importance || 0) >= .6 || /EMERG|DEFINITION|SYSTEM_FORMED|BUSINESS|TRADE|POLICY|CONFLICT|GOVERN/.test(text)
 }
 
-function societyEventDetail(event: WorldEvent, world: WorldSnapshot | null) {
+function societyEventDetail(event: SocietyEvent, world: WorldSnapshot | null) {
   if (event.description) return event.description
   const location = event.locationId ? nameFor(event.locationId, world) : null
   return location ? `Luogo coinvolto · ${location}` : 'Il motore ha registrato un cambiamento persistente.'
@@ -158,7 +158,7 @@ export function Society({ society, world }: { society: SocietySnapshot | null; w
     <div className="society-columns society-change-grid">
       <Panel title="Cambiamenti recenti" eyebrow="CRONOLOGIA DEL MONDO">
         <div className="society-event-list">
-          {(world?.recentEvents || []).filter(isSocietyEvent).sort((a, b) => new Date(b.simulationAt).getTime() - new Date(a.simulationAt).getTime()).slice(0, 10).map(event => (
+          {(society.events || []).filter(isSocietyEvent).sort((a, b) => new Date(b.simulationAt).getTime() - new Date(a.simulationAt).getTime()).slice(0, 10).map(event => (
             <article className="society-event" key={event.id}>
               <div className="society-event-time">{formatSimTime(event.simulationAt)}</div>
               <div className="society-event-dot" />
@@ -168,7 +168,7 @@ export function Society({ society, world }: { society: SocietySnapshot | null; w
               </div>
             </article>
           ))}
-          {!(world?.recentEvents || []).some(isSocietyEvent) && (
+          {!(society.events || []).some(isSocietyEvent) && (
             <EmptyState icon={<CircleDashed size={20} />} title="Nessun cambiamento sociale recente" text="Le azioni ordinarie continuano, ma non è ancora stato registrato un cambiamento sociale abbastanza rilevante da apparire qui." />
           )}
         </div>
