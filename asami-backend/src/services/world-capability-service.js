@@ -28,10 +28,10 @@ async function ensureCapabilitiesForEmergentStructures(simulationId,simulationTi
     const codes=[...new Set([...(mappings[normalize(row.structureType)]||[]),...parseJson(row.activities,[]).map(normalize).filter(Boolean)])];
     for(const code of codes){
       const defaults=DEFAULTS[code]||{name:code.replaceAll("_"," ").toLowerCase(),category:"EMERGENT",needWeights:{},durationMinutes:45,effect:{type:"GENERIC"}};
-      const [existing]=await pool.query(`SELECT id FROM world_capabilities WHERE simulation_id=UUID_TO_BIN(?) AND location_id=UUID_TO_BIN(?) AND code=? LIMIT 1`,[simulationId,row.scopeLocationId,code]);
+      const [existing]=await pool.query(`SELECT id FROM world_capabilities WHERE simulation_id=UUID_TO_BIN(?) AND location_id=UUID_TO_BIN(?) AND code=? LIMIT 1`,[simulationId,row.entityId,code]);
       if(existing.length)continue;
       await pool.query(`INSERT INTO world_capabilities (id,simulation_id,location_id,source_entity_id,code,name,category,parameters,active,created_simulation_at,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,?,1,?,1)`,
-        [uuid(),simulationId,row.scopeLocationId,row.entityId,code,defaults.name,defaults.category,JSON.stringify(defaults),simulationTime]);
+        [uuid(),simulationId,row.entityId,row.entityId,code,defaults.name,defaults.category,JSON.stringify(defaults),simulationTime]);
       created++;
     }
   }
