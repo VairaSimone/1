@@ -761,14 +761,16 @@ async function advancePlanForAction({simulationId,entityId,goalId,actionType,out
 
   const goalStatus=String(goal.status||"").toUpperCase();
   const currentGoalVersion=Number(goal.version)||0;
+  let goalVersionAfterProgress=currentGoalVersion;
 
   if(progress<1&&["ACTIVE","DRAFT","PAUSED"].includes(goalStatus)){
-    await pool.query(
+    const[goalUpdated]=await pool.query(
       `UPDATE goals
        SET progress=?,version=version+1
        WHERE id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND version=? AND status IN ('ACTIVE','DRAFT','PAUSED')`,
       [progress,goalId,entityId,currentGoalVersion]
     );
+    if(goalUpdated.affectedRows)goalVersionAfterProgress=currentGoalVersion+1;
   }
 
   if(planCompleted){
@@ -778,7 +780,7 @@ async function advancePlanForAction({simulationId,entityId,goalId,actionType,out
       completedAt:simulationTime,
       progressModel:persistent?"CUMULATIVE_ACTIONS":"STEP_COMPLETION"
     };
-    await pool.query(
+    const[completedGoal]=await pool.query(
       `UPDATE goals
        SET progress=1,status='COMPLETED',completed_simulation_at=?,result=?,version=version+1
        WHERE id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND version=? AND status IN ('ACTIVE','DRAFT','PAUSED')`,
@@ -787,10 +789,10 @@ async function advancePlanForAction({simulationId,entityId,goalId,actionType,out
         JSON.stringify(completionResult),
         goalId,
         entityId,
-        currentGoalVersion+1
+        goalVersionAfterProgress
       ]
     );
-    return{changed:true,completed:true,progress:1,planId:refreshedPlan.id};
+    return{changed:true,completed:completedGoal.affectedRows===1,progress:1,planId:refreshedPlan.id};
   }
 
   if(failedSteps>0&&!persistent){
