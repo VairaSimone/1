@@ -241,7 +241,7 @@ function deterministicFallbackDefinition(signal, proposer, simulationTime, { eco
     origin: "DETERMINISTIC_FALLBACK"
   });
 }
-async function askGemini(gemini, { simulationTime, scope, signal, proposer, actors, economicOpportunity = false, similarProposalCount = 0, recentLocalDefinitions = [] }) {
+async function askGemini(gemini, { simulationTime, scope, signal, proposer, actors, economicOpportunity = false, similarProposalCount = 0, recurringPressureProposals = 0, recentLocalDefinitions = [] }) {
   if (!gemini || typeof gemini.generateJson !== "function") return null;
   const context = {
     simulationTime,
@@ -272,6 +272,7 @@ async function askGemini(gemini, { simulationTime, scope, signal, proposer, acto
     })),
     economicOpportunity,
     recurringSimilarProposals: Number(similarProposalCount || 0),
+    recurringPressureProposals: Number(recurringPressureProposals || 0),
     recentLocalDefinitions
   };
 
@@ -280,7 +281,7 @@ async function askGemini(gemini, { simulationTime, scope, signal, proposer, acto
     "One inhabitant is proposing a genuinely new social possibility in response to a shared local pressure.",
     "Invent a novel STRUCTURE, INSTITUTION, ACTIVITY, or SYSTEM. Do not assume a fixed project taxonomy.",
     "Treat existing local inventions as part of the society's history: do not recreate the same semantic solution. Extend, specialize, transform, or replace an existing solution when appropriate.",
-    "If recurringSimilarProposals is greater than zero, prefer a genuinely different consequence or a concrete evolution of the existing local invention rather than another renamed copy.",
+    "If recurringSimilarProposals or recurringPressureProposals is greater than zero, prefer a genuinely different consequence or a concrete evolution of the existing local invention rather than another renamed copy.",
     "The definition is data, not code. It may only use safe effects: NEED_DELTA, RESOURCE_DELTA, INVENTORY_DELTA, PRODUCTION.",
     "When economicOpportunity is true, the proposal must create a durable material/economic capability (market, commerce, production, or work) caused by recurring local pressure; never invent money or free resources.",
     "Never emit SQL, code, commands, external URLs, invented entity IDs, arbitrary formulas, or effects outside the safe vocabulary.",
