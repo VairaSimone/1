@@ -383,7 +383,7 @@ async function executeEconomicAction({conn,simulationId,entityId,actionType,simu
     await conn.query(`UPDATE emergent_economy_accounts SET balance=balance-?,lifetime_spending=lifetime_spending+?,last_updated_simulation_at=?,version=version+1 WHERE id=?`,[unitPrice,unitPrice,simulationTime,account[0].id]);
     await conn.query(`UPDATE emergent_economy_accounts SET balance=balance+?,lifetime_income=lifetime_income+?,last_updated_simulation_at=?,version=version+1 WHERE id=?`,[unitPrice,unitPrice,simulationTime,sellerAccount[0].id]);
     await conn.query(`INSERT INTO emergent_trades(id,simulation_id,buyer_entity_id,seller_entity_id,location_id,good_code,quantity,unit_price,total,simulation_at) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),"FOOD",1,?,?,?)`,[uuid(),simulationId,entityId,sellerId,locationId,unitPrice,unitPrice,simulationTime]);
-    return {ok:true,economicType:"TRADE",good:"FOOD",quantity:1,unitPrice,total:unitPrice,resource:"FOOD",sellerEntityId:sellerId,needEffect:null};
+    return {ok:true,economicType:"TRADE",good:"FOOD",quantity:1,unitPrice,total:unitPrice,resource:"FOOD",sellerEntityId:sellerId,locationId,needEffect:null};
   }
   if(action==="PRODUCE_GOODS"){
     const [location]=await conn.query(
