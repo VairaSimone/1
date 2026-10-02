@@ -265,34 +265,62 @@ async function hasRecentProposal(simulationId, scopeLocationId, simulationTime) 
 }
 
 function supportScore(definition, actors) {
-  const targetNeeds = (definition.targetNeeds || []).filter(item => Number.isFinite(Number(item.weight)) && Number(item.weight) !== 0);
-  const positiveWeights = targetNeeds.reduce((sum, item) => sum + Math.abs(Number(item.weight)), 0) || 1;
-  const activityEffects = definition.activities.flatMap(activity => activity.effects || []).filter(effect => effect.type === "NEED_DELTA");
+  const targetNeeds = (definition.targetNeeds || []).filter(
+    item => Number.isFinite(Number(item.weight)) && Number(item.weight) !== 0
+  );
+  const positiveWeights = targetNeeds.reduce(
+    (sum, item) => sum + Math.abs(Number(item.weight)),
+    0
+  ) || 1;
+
+  const activityEffects = definition.activities
+    .flatMap(activity => activity.effects || [])
+    .filter(effect => effect.type === "NEED_DELTA");
+
   const scores = actors.map(actor => {
     let utility = 0.46;
     let needFit = 0;
+
     for (const target of targetNeeds) {
-      const value = Number(actor.needs?.[code(target.code)] || 0);
-      needFit += value * Number(target.weight || 0);
+      const targetCode = code(target.code);
+      const value = Number(actor.needs?.[targetCode] || 0);
+      const defaultValue = Number(actor.needMeta?.[targetCode]?.defaultValue ?? 0.5);
+      const pressure = defaultValue > 0.5 ? 1 - value : value;
+      needFit += pressure * Number(target.weight || 0);
     }
+
     utility += 0.24 * clamp(Math.abs(needFit) / positiveWeights);
+
     for (const effect of activityEffects) {
-      const current = Number(actor.needs?.[code(effect.needCode)] || 0);
+      const effectCode = code(effect.needCode);
+      const current = Number(actor.needs?.[effectCode] || 0);
+      const defaultValue = Number(actor.needMeta?.[effectCode]?.defaultValue ?? 0.5);
       const delta = Number(effect.delta || 0);
-      if (delta < 0) utility += 0.16 * clamp(current) * Math.min(1, Math.abs(delta) / 0.2);
-      if (delta > 0) utility -= 0.12 * clamp(current);
+      const improvesPressure = defaultValue > 0.5 ? delta > 0 : delta < 0;
+
+      if (improvesPressure) {
+        utility += 0.16 * (defaultValue > 0.5 ? 1 - current : current) * Math.min(1, Math.abs(delta) / 0.2);
+      } else if (delta !== 0) {
+        utility -= 0.12 * Math.min(1, Math.abs(delta) / 0.2);
+      }
     }
+
     const independence = Number(actor.traits?.INDEPENDENCE || 0.5);
     const empathy = Number(actor.traits?.EMPATHY || 0.5);
     const conscientiousness = Number(actor.traits?.CONSCIENTIOUSNESS || 0.5);
-    if (normalize(definition.membership) === "VOLUNTARY") utility += 0.05 * (independence - 0.5);
-    if (normalize(definition.membership).includes("SHARED")) utility += 0.06 * (empathy - 0.5) + 0.04 * (conscientiousness - 0.5);
+    if (normalize(definition.membership) === "VOLUNTARY") {
+      utility += 0.05 * (independence - 0.5);
+    }
+    if (normalize(definition.membership).includes("SHARED")) {
+      utility += 0.06 * (empathy - 0.5) + 0.04 * (conscientiousness - 0.5);
+    }
+
     return clamp(utility);
   });
-  const supporters = scores.filter(score => score >= 0.52);
+
   return {
     score: average(scores),
-    supporters: supporters.length,
+    supporters: scores.filter(score => score >= 0.52).length,
     required: Math.max(3, Math.ceil(actors.length * 0.35)),
     perActor: scores
   };
