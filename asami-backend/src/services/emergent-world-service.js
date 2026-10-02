@@ -77,7 +77,7 @@ async function loadActors(simulationId) {
     ids
   );
   const byId=new Map(rows.map(x=>[String(x.entityId),{...x,needs:{}}]));
-  for (const row of needs) byId.get(String(row.entityId))?.needs[normalize(row.code)]=Number(row.value);
+  for (const row of needs) { const actor=byId.get(String(row.entityId)); if (actor) actor.needs[normalize(row.code)]=Number(row.value); }
   return [...byId.values()];
 }
 
@@ -365,7 +365,7 @@ async function createConflicts(simulationId,simulationTime) {
         `INSERT INTO emergent_conflicts
           (id,simulation_id,scope_location_id,conflict_type,left_type,left_id,right_type,right_id,intensity,status,metadata,created_simulation_at,version)
           VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),'RESOURCE_COMPETITION','STRUCTURE',UUID_TO_BIN(?),'STRUCTURE',UUID_TO_BIN(?),?,'ACTIVE',?, ?,1)`,
-        [uuid(),simulationId,left.scopeLocationId,left.id,right.id,left.type===right.type?.48:.56,JSON.stringify({leftType:left.type,rightType:right.type,reason:"emergent structures compete for local resources or space"}),simulationTime]
+        [uuid(),simulationId,left.scopeLocationId,left.id,right.id,left.type===right.type ? .48 : .56,JSON.stringify({leftType:left.type,rightType:right.type,reason:"emergent structures compete for local resources or space"}),simulationTime]
       );
       created++;
     }
