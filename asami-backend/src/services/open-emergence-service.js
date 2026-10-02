@@ -787,13 +787,14 @@ async function proposeForLocation(simulationId, simulationTime, scope, actors, g
   const economicState = economicRows[0] || {};
 
   const similarityProbe = deterministicFallbackDefinition(signal, proposer, simulationTime);
-  const similarProposalCount = await countRecentSimilarProposals(
-    simulationId, scope.locationId, similarityProbe, simulationTime
-  );
+  const [similarProposalCount, recurringPressureProposals] = await Promise.all([
+    countRecentSimilarProposals(simulationId, scope.locationId, similarityProbe, simulationTime),
+    countRecentPressureProposals(simulationId, scope.locationId, signal.needCode, simulationTime)
+  ]);
   const economicOpportunity = simulationAgeHours >= 72
     && Number(economicState.businessCount || 0) === 0
     && Number(economicState.marketCount || 0) === 0
-    && similarProposalCount >= 2;
+    && (similarProposalCount >= 2 || recurringPressureProposals >= 3);
 
   const [recentLocalDefinitions] = await pool.query(
     "SELECT kind,code,name,category,definition FROM emergent_definition_catalog WHERE simulation_id=UUID_TO_BIN(?) AND scope_location_id=UUID_TO_BIN(?) AND status='ACTIVE' ORDER BY created_simulation_at DESC LIMIT 12",
@@ -813,6 +814,7 @@ async function proposeForLocation(simulationId, simulationTime, scope, actors, g
     actors,
     economicOpportunity,
     similarProposalCount,
+    recurringPressureProposals,
     recentLocalDefinitions: recentLocalDefinitions.map(row => ({
       kind: row.kind,
       code: row.code,
