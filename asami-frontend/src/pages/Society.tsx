@@ -13,10 +13,6 @@ function nameFor(id: string | null | undefined, world: WorldSnapshot | null) {
     || id.slice(0, 8)
 }
 function latestMetric(society: SocietySnapshot | null) { return society?.metrics?.[0] || null }
-function statusClass(value: string) {
-  const v = String(value || '').toUpperCase()
-  return v === 'ENACTED' || v === 'ACTIVE' ? 'ok' : v === 'PROPOSED' || v === 'ORGANIZING' ? 'warn' : ''
-}
 
 export function Society({ society, world }: { society: SocietySnapshot | null; world: WorldSnapshot | null }) {
   if (!society) return <EmptyState icon={<Landmark size={22} />} title="Società non ancora materializzata" text="Il motore deve attraversare alcune iterazioni del mondo prima che compaiano economia, istituzioni e strutture emergenti." />
