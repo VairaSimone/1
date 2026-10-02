@@ -331,6 +331,37 @@ async function loadCapabilitiesForEntities(simulationId, entityIds = []) {
       return true;
     }));
   }
+
+  const [activeJobs] = await pool.query(
+    "SELECT BIN_TO_UUID(ej.employee_entity_id) employeeId,BIN_TO_UUID(es.scope_location_id) locationId,ej.role,ej.wage_per_hour wage " +
+    "FROM emergent_jobs ej JOIN emergent_structures es ON es.simulation_id=ej.simulation_id AND es.entity_id=ej.employer_entity_id " +
+    "WHERE ej.simulation_id=UUID_TO_BIN(?) AND ej.status='ACTIVE' AND ej.employee_entity_id IN (" + placeholders + ")",
+    [simulationId, ...ids]
+  );
+  for (const job of activeJobs) {
+    const list=result.get(String(job.employeeId))||[];
+    if(list.some(activity=>normalize(activity.code)==="WORK_JOB" && String(activity.locationId)===String(job.locationId)))continue;
+    list.push({
+      id:null,
+      code:"WORK_JOB",
+      name:`Work as ${job.role}`,
+      category:"WORK",
+      locationId:job.locationId,
+      sourceEntityId:null,
+      parameters:{
+        code:"WORK_JOB",
+        name:`Work as ${job.role}`,
+        category:"WORK",
+        needWeights:{ACHIEVEMENT:1.8},
+        gate:["ACHIEVEMENT",.22],
+        durationMinutes:120,
+        economicType:"WORK_JOB",
+        employerEntityId:null,
+        wagePerHour:Number(job.wage||0)
+      },
+      active:true
+    });
+  }
   return result;
 }
 
