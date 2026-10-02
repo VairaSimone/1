@@ -11,6 +11,7 @@ const { createMemory, decayMemories, buildActionMemory, buildFailureMemory } = r
 const { generateWorldEvents } = require("../services/world-service");
 const { ensureWorld, evolveRelationships } = require("../services/world-population-service");
 const { progressEmergence } = require("../services/emergent-world-service");
+const { evolveSociety } = require("../services/society-service");
 const { seedPhysicalWorld, ensureCriticalResourceAvailability, maintainDistributedResources } = require("../services/physical-world-service");
 const { updateDevelopment } = require("../services/development-service");
 const { initiateConversation } = require("../services/chat-service");
@@ -415,6 +416,8 @@ class SimulationEngine {
           }
           setPhase("world.emergence");
           await progressEmergence(sim.id, nextTime.toISOString());
+          setPhase("world.society");
+          await evolveSociety(sim.id, nextTime.toISOString());
           this.worldMaintenanceAt.set(sim.id, nextTime.getTime());
         }
         setPhase("world.events");
