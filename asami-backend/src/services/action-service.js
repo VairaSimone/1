@@ -180,8 +180,22 @@ async function startAction({simulationId,entityId,decisionId,intentionId=null,go
     const existing=await loadIdempotentAction(simulationId,idempotencyKey,relationshipIntent);
     if(existing)return existing;
   }
-  let duration=Number(dynamicActivity?.parameters?.durationMinutes||getActionDurationMinutes(normalizedAction)),move=null,origin=null,destination=null,actionId=null,eventId=null;
+  let duration=Number(dynamicActivity?.parameters?.durationMinutes||getActionDurationMinutes(normalizedAction));
+  let activityDurationMinutes=duration,move=null,origin=null,destination=null,actionId=null,eventId=null;
   try{
+    if(MOVE_ACTIONS.has(normalizedAction) || (targetLocationId && normalizedAction!=="WALKING" && normalizedAction!=="EXPLORING")){
+      origin=await currentLocation(entityId,simulationId);
+      if(!origin)throw Object.assign(new Error("Targeted action requires a current entity location"),{code:"MOVEMENT_ORIGIN_REQUIRED"});
+      if(targetLocationId && String(targetLocationId)!==String(origin)){
+        const route=await routeDetails(simulationId,origin,targetLocationId);
+        if(!route)throw Object.assign(new Error("Action destination is unreachable from the current location"),{code:"MOVEMENT_DESTINATION_UNREACHABLE"});
+        destination=route.path[1]||targetLocationId;
+        const speed=WALKING_SPEED_KMH;
+        move=await startMovement({simulationId,entityId,origin,destination,simulationTime,distanceMeters:route.distanceMeters,speedKmh:speed});
+        if(!move)throw Object.assign(new Error("Movement is already active for this entity"),{code:"MOVEMENT_ALREADY_ACTIVE"});
+        duration=activityDurationMinutes+move.durationMinutes;
+      }
+    }
     if(MOVE_ACTIONS.has(normalizedAction)){
       origin=await currentLocation(entityId,simulationId);
       if(!origin)throw Object.assign(new Error("Movement requires a current entity location"),{code:"MOVEMENT_ORIGIN_REQUIRED"});
@@ -224,6 +238,7 @@ async function startAction({simulationId,entityId,decisionId,intentionId=null,go
           planId:planId||null,
           planStepId:planStepId||null,
           durationMinutes:duration,
+          activityDurationMinutes,
           expectedCompletionSimulationAt:expectedCompletion.toISOString(),
           movement:move?{
             movementId:move.movementId,
@@ -430,9 +445,19 @@ async function applyEconomicNeedEffect({conn,entityId,actionId,simulationTime,ef
 }
 function classifyPhysicalOutcome(physical){if(!physical||typeof physical!=="object"||!Object.prototype.hasOwnProperty.call(physical,"ok"))return{outcome:"SUCCESS",success:true,failureReason:null};if(physical.ok)return{outcome:"SUCCESS",success:true,failureReason:null};const consumed=Number(physical.consumed||0);return{outcome:consumed>0?"PARTIAL":"FAILURE",success:false,failureReason:consumed>0?"RESOURCE_PARTIALLY_AVAILABLE":"RESOURCE_UNAVAILABLE"};}
 async function recordResourceFailureKnowledge({simulationId,entityId,locationId,simulationTime,physical}){if(!locationId||!physical?.resource||physical.ok)return null;const resource=String(physical.resource).trim().toLowerCase(),remaining=Number(physical.remaining);if(!resource||!Number.isFinite(remaining)||remaining>0)return null;const knowledgePayload={type:"RESOURCE_UNAVAILABLE",resource,locationId,simulationAt:simulationTime};const knowledgeId=await upsertKnowledge({simulationId,entityId,simulationTime,item:{knowledgeType:"WORLD_EXPERIENCE",content:JSON.stringify(knowledgePayload),subjectEntityId:entityId,objectEntityId:locationId,predicate:"RESOURCE_UNAVAILABLE",confidence:.98,importance:.85}});await createMemory({simulationId,entityId,eventId:null,locationId,type:"EPISODIC",content:`I tried to ${String(physical.actionType||"perform an action").toLowerCase()} here, but ${resource} was unavailable. I should consider another location or strategy next time.`,importance:.82,strength:.98,confidence:.98,emotionalIntensity:.35,simulationAt:simulationTime,metadata:{kind:"resource_failure",resource,locationId,remaining,learning:"RESOURCE_UNAVAILABLE"}});return{knowledgeId,resource,locationId,type:"RESOURCE_UNAVAILABLE"};}
-async function completeAction({simulationId,entityId,actionId,decisionId=null,eventId,intentionId=null,actionType,simulationTime,targetEntityId=null,targetLocationId=null,relationshipIntent="NONE"}){const[activeRows]=await pool.query(`SELECT status,result,version,started_simulation_at AS startedSimulationAt FROM actions WHERE id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?) LIMIT 1`,[actionId,entityId,simulationId]);if(!activeRows.length)return{completed:false,outcome:"FAILURE",success:false,failureReason:"ACTION_NOT_FOUND"};if(activeRows[0].status==="COMPLETED"){const stored=parseJson(activeRows[0].result,{})||{};return{completed:true,outcome:stored.outcome||"SUCCESS",success:stored.success!==false,failureReason:stored.failureReason||null,resource:stored.resource||null,economic:stored.economic||null,dynamic:stored.dynamic||null,needEffect:stored.needEffect||null,needEffects:stored.needEffects||[],resourceLearning:stored.resourceLearning||null,eventId:stored.eventId||eventId,socialInteraction:stored.socialInteraction||null};}let committed=null;await withTransaction(async conn=>{const[lockedRows]=await conn.query(`SELECT status,result,version,started_simulation_at AS startedSimulationAt FROM actions WHERE id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?) LIMIT 1 FOR UPDATE`,[actionId,entityId,simulationId]);if(!lockedRows.length||lockedRows[0].status!=="ACTIVE")return;const before=parseJson(lockedRows[0].result,{})||{},physicalLocation=await currentLocation(entityId,simulationId,conn),physical=before.resourceFinalized?before.resource:(String(actionType||"").toUpperCase()==="EATING" ? (await consumePurchasedFood({simulationId,entityId,simulationTime,db:conn}) || await resolveActionResource({simulationId,locationId:physicalLocation,actionType,simulationTime,conn})) : await resolveActionResource({simulationId,locationId:physicalLocation,actionType,simulationTime,conn}));physical.actionType=actionType;
+async function completeAction({simulationId,entityId,actionId,decisionId=null,eventId,intentionId=null,actionType,simulationTime,targetEntityId=null,targetLocationId=null,relationshipIntent="NONE"}){const[activeRows]=await pool.query(`SELECT status,result,version,started_simulation_at AS startedSimulationAt FROM actions WHERE id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?) LIMIT 1`,[actionId,entityId,simulationId]);if(!activeRows.length)return{completed:false,outcome:"FAILURE",success:false,failureReason:"ACTION_NOT_FOUND"};if(activeRows[0].status==="COMPLETED"){const stored=parseJson(activeRows[0].result,{})||{};return{completed:true,outcome:stored.outcome||"SUCCESS",success:stored.success!==false,failureReason:stored.failureReason||null,resource:stored.resource||null,economic:stored.economic||null,dynamic:stored.dynamic||null,needEffect:stored.needEffect||null,needEffects:stored.needEffects||[],resourceLearning:stored.resourceLearning||null,eventId:stored.eventId||eventId,socialInteraction:stored.socialInteraction||null};}let committed=null;await withTransaction(async conn=>{const[lockedRows]=await conn.query(`SELECT status,result,version,started_simulation_at AS startedSimulationAt FROM actions WHERE id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?) LIMIT 1 FOR UPDATE`,[actionId,entityId,simulationId]);if(!lockedRows.length||lockedRows[0].status!=="ACTIVE")return;const before=parseJson(lockedRows[0].result,{})||{};
+let movementCompleted=true;
+if(before.movement?.movementId){
+  movementCompleted=await completeMovement({
+    simulationId,entityId,destination:before.movement.destinationLocationId,
+    movementId:before.movement.movementId,simulationTime,db:conn
+  });
+  if(!movementCompleted)throw Object.assign(new Error("Movement completion failed"),{code:"MOVEMENT_COMPLETION_FAILED"});
+}
+const physicalLocation=await currentLocation(entityId,simulationId,conn);
+const physical=before.resourceFinalized?before.resource:(String(actionType||"").toUpperCase()==="EATING" ? (await consumePurchasedFood({simulationId,entityId,simulationTime,db:conn}) || await resolveActionResource({simulationId,locationId:physicalLocation,actionType,simulationTime,conn})) : await resolveActionResource({simulationId,locationId:physicalLocation,actionType,simulationTime,conn}));physical.actionType=actionType;
 const normalizedAction=String(actionType||"").toUpperCase();
-const economic=await executeEconomicAction({conn,simulationId,entityId,actionType:normalizedAction,simulationTime,durationMinutes:Number(before.durationMinutes)||30});
+const economic=await executeEconomicAction({conn,simulationId,entityId,actionType:normalizedAction,simulationTime,durationMinutes:Number(before.activityDurationMinutes)||Number(before.durationMinutes)||30});
 const dynamic=economic ? null : await executeDynamicActivity({
   conn,simulationId,entityId,actionId,actionType:normalizedAction,simulationTime,targetLocationId
 });
@@ -456,7 +481,7 @@ const durationMinutes=Number.isFinite(configuredDurationMinutes)&&configuredDura
     ?fallbackDurationMinutes
     :getActionDurationMinutes(normalizedAction);
 const needEffect=await applyOutcomeDependentNeed({conn,simulationId,entityId,actionId,actionType:normalizedAction,simulationTime,durationMinutes,physical});
-let movementCompleted=true;if(MOVE_ACTIONS.has(String(actionType||"").toUpperCase())&&before.movement?.movementId){movementCompleted=await completeMovement({simulationId,entityId,destination:before.movement.destinationLocationId,movementId:before.movement.movementId,simulationTime,db:conn});if(!movementCompleted)throw Object.assign(new Error("Movement completion failed"),{code:"MOVEMENT_COMPLETION_FAILED"});}assertTransition("action","ACTIVE","COMPLETED");
+assertTransition("action","ACTIVE","COMPLETED");
 const resolvedTargetLocationId=economic?.locationId||dynamic?.locationId||targetLocationId||null;
 const result={...before,eventId,actionType,outcome:outcome.outcome,success:outcome.success,failureReason:outcome.failureReason,resource:physical,economic:economic?{...economic,needEffect:economicNeedEffect}:null,dynamic:dynamic?{...dynamic}:null,needEffect:economicNeedEffect||needEffect||null,needEffects:dynamicNeedEffects,targetEntityId,targetLocationId:resolvedTargetLocationId,relationshipIntent,resourceFinalized:true,postProcessingStatus:"PENDING"};const[updated]=await conn.query(`UPDATE actions SET status='COMPLETED',completed_simulation_at=?,result=?,post_processing_status='PENDING',version=version+1 WHERE id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?) AND status='ACTIVE'`,[simulationTime,JSON.stringify(result),actionId,entityId,simulationId]);if(updated.affectedRows)committed={physical,economic:economic?{...economic,needEffect:economicNeedEffect}:null,dynamic:dynamic?{...dynamic}:null,outcome,needEffect:economicNeedEffect||needEffect||null,needEffects:dynamicNeedEffects,resourceFinalized:true};});
 if(committed&&!eventId){
