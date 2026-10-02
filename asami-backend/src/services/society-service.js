@@ -991,11 +991,11 @@ async function executeEconomicAction({conn,simulationId,entityId,actionType,simu
     const amount=Number((gross-tax).toFixed(4));
     const [employer]=await conn.query(`SELECT id,balance FROM emergent_economy_accounts WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) FOR UPDATE`,[simulationId,job[0].employerId]);
     const [employee]=await conn.query(`SELECT id,balance FROM emergent_economy_accounts WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) FOR UPDATE`,[simulationId,entityId]);
-    if(!employer.length||Number(employer[0].balance)<gross)return {ok:false,failureReason:"EMPLOYER_CANNOT_PAY",required:gross};
+    if(!employer.length||!employee.length)return {ok:false,failureReason:"ECONOMIC_ACCOUNT_MISSING"};
+
     let governmentAccount=null;
-    if(tax>0){
-      const [govRows]=await conn.query(`SELECT parameters FROM emergent_policies WHERE simulation_id=UUID_TO_BIN(?) AND status="ENACTED" ORDER BY updated_simulation_at DESC LIMIT 1`,[simulationId]);
-      const govParams=parseJson(govRows[0]?.parameters,{});
+    const subsidyRate=Math.max(0,Math.min(.35,Number(policy.wageSubsidyRate||0)));
+    if(tax>0||subsidyRate>0){
       const [systemRows]=await conn.query(`SELECT attributes FROM emergent_systems WHERE simulation_id=UUID_TO_BIN(?) AND system_type="GOVERNANCE" LIMIT 1`,[simulationId]);
       const govAttrs=parseJson(systemRows[0]?.attributes,{});
       const govId=govAttrs.systemEntityId;
@@ -1004,10 +1004,23 @@ async function executeEconomicAction({conn,simulationId,entityId,actionType,simu
         if(rows.length) governmentAccount=rows[0];
       }
     }
+    const wageSubsidy=governmentAccount&&subsidyRate>0
+      ?Math.min(Number(governmentAccount.balance||0),Number((gross*subsidyRate).toFixed(4)))
+      :0;
+    if(wageSubsidy>0){
+      await conn.query(`UPDATE emergent_economy_accounts SET balance=balance+?,lifetime_income=lifetime_income+?,last_updated_simulation_at=?,version=version+1 WHERE id=?`,[wageSubsidy,wageSubsidy,simulationTime,employer[0].id]);
+      await conn.query(`UPDATE emergent_economy_accounts SET balance=balance-?,lifetime_spending=lifetime_spending+?,last_updated_simulation_at=?,version=version+1 WHERE id=?`,[wageSubsidy,wageSubsidy,simulationTime,governmentAccount.id]);
+    }
+    if(Number(employer[0].balance)+wageSubsidy<gross){
+      await conn.query(`UPDATE emergent_jobs SET status='ENDED',version=version+1 WHERE id=UUID_TO_BIN(?) AND status='ACTIVE'`,[job[0].id]);
+      return {ok:false,failureReason:"EMPLOYER_CANNOT_PAY",required:gross,available:Number(employer[0].balance)+wageSubsidy};
+    }
+    if(tax>0){
+    }
     await conn.query(`UPDATE emergent_economy_accounts SET balance=balance-?,last_updated_simulation_at=?,version=version+1 WHERE id=?`,[gross,simulationTime,employer[0].id]);
     await conn.query(`UPDATE emergent_economy_accounts SET balance=balance+?,lifetime_income=lifetime_income+?,last_updated_simulation_at=?,version=version+1 WHERE id=?`,[amount,amount,simulationTime,employee[0].id]);
-    if(governmentAccount){await conn.query(`UPDATE emergent_economy_accounts SET balance=balance+?,lifetime_income=lifetime_income+?,last_updated_simulation_at=?,version=version+1 WHERE id=?`,[tax,tax,simulationTime,governmentAccount.id]);}
-    return {ok:true,economicType:"WAGE",grossWage:gross,netWage:amount,tax,workedHours,employerEntityId:job[0].employerId};
+    if(governmentAccount&&tax>0){await conn.query(`UPDATE emergent_economy_accounts SET balance=balance+?,lifetime_income=lifetime_income+?,last_updated_simulation_at=?,version=version+1 WHERE id=?`,[tax,tax,simulationTime,governmentAccount.id]);}
+    return {ok:true,economicType:"WAGE",grossWage:gross,netWage:amount,tax,wageSubsidy,workedHours,employerEntityId:job[0].employerId};
   }
   return null;
 }
