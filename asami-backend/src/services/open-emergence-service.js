@@ -801,11 +801,8 @@ async function proposeForLocation(simulationId, simulationTime, scope, actors, g
     [simulationId, scope.locationId]
   );
 
-  // A repeated semantic solution is not a new invention. Once the
-  // society has repeated the same response for several days, economicOpportunity
-  // lets the pressure evolve into durable material coordination instead.
-  if (!economicOpportunity && similarProposalCount >= 1) return null;
-
+  // Repeated pressure is part of the context, not an automatic veto.
+  // Gemini gets the local history and may evolve the existing solution.
   const generated = await askGemini(gemini, {
     simulationTime,
     scope,
