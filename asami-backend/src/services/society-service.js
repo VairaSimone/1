@@ -360,6 +360,178 @@ async function recordWealth(simulationId,simulationTime){
   return {population:pop,totalWealth:total,averageWealth:avg,gini:inequality};
 }
 
+
+async function ensureBusinesses(simulationId,simulationTime){
+  const [structures]=await pool.query(
+    \`SELECT BIN_TO_UUID(es.entity_id) entityId,BIN_TO_UUID(es.project_id) projectId,es.structure_type type,es.attributes
+       FROM emergent_structures es WHERE es.simulation_id=UUID_TO_BIN(?)\`,
+    [simulationId]
+  );
+  let created=0;
+  for(const structure of structures){
+    const producer=isProducerStructure(structure),market=isMarketStructure(structure);
+    if(!producer&&!market)continue;
+    const [existing]=await pool.query(
+      \`SELECT id FROM emergent_businesses WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) LIMIT 1\`,
+      [simulationId,structure.entityId]
+    );
+    if(existing.length)continue;
+    const [project]=await pool.query(
+      \`SELECT BIN_TO_UUID(proposer_entity_id) ownerEntityId
+         FROM emergent_projects WHERE simulation_id=UUID_TO_BIN(?) AND id=UUID_TO_BIN(?) LIMIT 1\`,
+      [simulationId,structure.projectId]
+    );
+    await pool.query(
+      \`INSERT INTO emergent_businesses
+        (id,simulation_id,entity_id,owner_entity_id,status,production_capacity,created_simulation_at,updated_simulation_at,version)
+        VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),'ACTIVE',1,?,?,1)\`,
+      [uuid(),simulationId,structure.entityId,project[0]?.ownerEntityId||structure.entityId,simulationTime,simulationTime]
+    );
+    created++;
+  }
+  return created;
+}
+
+async function evolveBusinesses(simulationId,simulationTime){
+  const [businesses]=await pool.query(
+    \`SELECT BIN_TO_UUID(id) id,BIN_TO_UUID(entity_id) entityId,status,production_capacity productionCapacity,
+            recent_revenue recentRevenue,recent_input_cost recentInputCost,recent_wage_cost recentWageCost,
+            failure_count failureCount,last_evaluated_simulation_at lastEvaluated
+       FROM emergent_businesses WHERE simulation_id=UUID_TO_BIN(?)\`,
+    [simulationId]
+  );
+  let active=0,failed=0,totalRevenue=0,totalInputCost=0,totalWageCost=0,totalProfit=0,totalProductionValue=0,totalInvestment=0;
+
+  for(const business of businesses){
+    const last=business.lastEvaluated?new Date(business.lastEvaluated).getTime():NaN;
+    const now=new Date(simulationTime).getTime();
+    if(Number.isFinite(last)&&Number.isFinite(now)&&now-last<6*3600000) {
+      if(String(business.status)==='ACTIVE')active++; else failed++;
+      totalRevenue+=Number(business.recentRevenue||0);
+      totalInputCost+=Number(business.recentInputCost||0);
+      totalWageCost+=Number(business.recentWageCost||0);
+      totalProfit+=Number(business.recentRevenue||0)-Number(business.recentInputCost||0)-Number(business.recentWageCost||0);
+      continue;
+    }
+
+    const [revenueRows]=await pool.query(
+      \`SELECT COALESCE(SUM(total),0) value FROM emergent_trades
+        WHERE simulation_id=UUID_TO_BIN(?) AND seller_entity_id=UUID_TO_BIN(?) AND simulation_at>=DATE_SUB(?,INTERVAL 6 HOUR)\`,
+      [simulationId,business.entityId,simulationTime]
+    );
+    const [inputRows]=await pool.query(
+      \`SELECT COALESCE(SUM(total),0) value FROM emergent_trades
+        WHERE simulation_id=UUID_TO_BIN(?) AND buyer_entity_id=UUID_TO_BIN(?) AND simulation_at>=DATE_SUB(?,INTERVAL 6 HOUR)\`,
+      [simulationId,business.entityId,simulationTime]
+    );
+    const [wageRows]=await pool.query(
+      \`SELECT COALESCE(SUM(CAST(JSON_UNQUOTE(JSON_EXTRACT(result,'$.economic.grossWage')) AS DECIMAL(16,4))),0) value
+         FROM actions
+        WHERE simulation_id=UUID_TO_BIN(?) AND action_type='WORK_JOB'
+          AND completed_simulation_at>=DATE_SUB(?,INTERVAL 6 HOUR)
+          AND JSON_UNQUOTE(JSON_EXTRACT(result,'$.outcome'))='SUCCESS'
+          AND JSON_UNQUOTE(JSON_EXTRACT(result,'$.economic.employerEntityId'))=?\`,
+      [simulationId,simulationTime,business.entityId]
+    );
+    const [productionRows]=await pool.query(
+      \`SELECT COALESCE(SUM(eph.quantity*eg.base_price),0) value
+         FROM emergent_production_history eph
+         JOIN emergent_goods eg ON eg.simulation_id=eph.simulation_id AND eg.code=eph.good_code
+        WHERE eph.simulation_id=UUID_TO_BIN(?) AND eph.structure_entity_id=UUID_TO_BIN(?) AND eph.simulation_at>=DATE_SUB(?,INTERVAL 6 HOUR)\`,
+      [simulationId,business.entityId,simulationTime]
+    );
+    const revenue=Number(revenueRows[0]?.value||0),inputCost=Number(inputRows[0]?.value||0),wageCost=Number(wageRows[0]?.value||0);
+    const profit=Number((revenue-inputCost-wageCost).toFixed(4));
+    const productionValue=Number(productionRows[0]?.value||0);
+
+    const [accountRows]=await pool.query(
+      \`SELECT id,balance FROM emergent_economy_accounts
+        WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) LIMIT 1 FOR UPDATE\`,
+      [simulationId,business.entityId]
+    );
+    const balance=Number(accountRows[0]?.balance||0);
+    const [jobReserveRows]=await pool.query(
+      \`SELECT COALESCE(SUM(wage_per_hour*2),0) value FROM emergent_jobs
+        WHERE simulation_id=UUID_TO_BIN(?) AND employer_entity_id=UUID_TO_BIN(?) AND status='ACTIVE'\`,
+      [simulationId,business.entityId]
+    );
+    const nextWageReserve=Number(jobReserveRows[0]?.value||0);
+
+    let capacity=Number(business.productionCapacity||1),investment=0,failures=Number(business.failureCount||0),status=String(business.status||"ACTIVE");
+    if(status==='ACTIVE' && profit>0.5 && accountRows.length){
+      investment=Number(Math.min(profit*.15,Math.max(0,balance-nextWageReserve*.5)).toFixed(4));
+      if(investment>0){
+        await pool.query(
+          \`UPDATE emergent_economy_accounts SET balance=balance-?,lifetime_spending=lifetime_spending+?,last_updated_simulation_at=?,version=version+1 WHERE id=?\`,
+          [investment,investment,simulationTime,accountRows[0].id]
+        );
+        capacity=Number(Math.min(10,capacity+Math.max(.05,Math.min(.5,investment/10))).toFixed(4));
+        totalInvestment+=investment;
+      }
+    }
+
+    const shouldFail=status==='ACTIVE' && (
+      failures>=2 ||
+      (balance<Math.max(.25,nextWageReserve*.35) && profit<0 && revenue<=0)
+    );
+    if(shouldFail){
+      status='FAILED';
+      failures++;
+      await pool.query(
+        \`UPDATE emergent_jobs SET status='ENDED',version=version+1
+          WHERE simulation_id=UUID_TO_BIN(?) AND employer_entity_id=UUID_TO_BIN(?) AND status='ACTIVE'\`,
+        [simulationId,business.entityId]
+      );
+      await createEvent({
+        simulationId,eventTypeCode:"ECONOMIC",
+        title:"Business failure: "+business.entityId.slice(0,8),
+        description:"The business could no longer sustain its current activity.",
+        simulationAt:simulationTime,importance:.78,
+        metadata:{emergent:true,kind:"BUSINESS_FAILED",businessEntityId:business.entityId,revenue,inputCost,wageCost,profit}
+      });
+    } else if(status==='ACTIVE' && profit<0){
+      failures++;
+    } else if(status==='ACTIVE' && profit>=0){
+      failures=0;
+    }
+
+    if(accountRows.length){
+      await pool.query(
+        \`UPDATE emergent_businesses
+          SET status=?,production_capacity=?,recent_revenue=?,recent_input_cost=?,recent_wage_cost=?,
+              recent_profit=?,cumulative_profit=cumulative_profit+?,cumulative_investment=cumulative_investment+?,
+              failure_count=?,last_evaluated_simulation_at=?,updated_simulation_at=?,version=version+1
+          WHERE id=UUID_TO_BIN(?)\`,
+        [status,capacity,revenue,inputCost,wageCost,profit,profit,investment,failures,simulationTime,simulationTime,business.id]
+      );
+    }
+    if(status==='ACTIVE')active++;else failed++;
+    totalRevenue+=revenue;totalInputCost+=inputCost;totalWageCost+=wageCost;totalProfit+=profit;totalProductionValue+=productionValue;
+  }
+
+  const [employmentRows]=await pool.query(
+    \`SELECT
+       SUM(et.code='PERSON') people,
+       SUM(et.code='PERSON' AND EXISTS(
+         SELECT 1 FROM emergent_jobs ej
+          WHERE ej.simulation_id=e.simulation_id AND ej.employee_entity_id=e.id AND ej.status='ACTIVE'
+       )) employed
+      FROM entities e JOIN entity_types et ON et.id=e.entity_type_id
+     WHERE e.simulation_id=UUID_TO_BIN(?) AND e.status='ACTIVE'\`,
+    [simulationId]
+  );
+  const people=Number(employmentRows[0]?.people||0),employed=Number(employmentRows[0]?.employed||0);
+  const unemployed=Math.max(0,people-employed);
+  await pool.query(
+    \`INSERT INTO emergent_business_metrics
+      (id,simulation_id,business_count,active_business_count,failed_business_count,unemployed_count,employed_count,
+       revenue,input_cost,wage_cost,profit,production_value,investment,simulation_at)
+      VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,?,?,?,?,?,?,?,?,?)\`,
+    [uuid(),simulationId,businesses.length,active,failed,unemployed,employed,totalRevenue,totalInputCost,totalWageCost,totalProfit,totalProductionValue,totalInvestment,simulationTime]
+  );
+  return {businessCount:businesses.length,activeBusinessCount:active,failedBusinessCount:failed,employed,unemployed,revenue:totalRevenue,inputCost:totalInputCost,wageCost:totalWageCost,profit:totalProfit,productionValue:totalProductionValue,investment:totalInvestment};
+}
+
 async function executeEconomicAction({conn,simulationId,entityId,actionType,simulationTime,durationMinutes=120}){
   const action=normalize(actionType);
   if(action==="BUY_FOOD"){
@@ -485,14 +657,16 @@ async function evolveSociety(simulationId,simulationTime){
   await ensureCatalog(simulationId,simulationTime);
   await ensureAccounts(simulationId,simulationTime);
   await ensureMarketInventory(simulationId,simulationTime);
+  await ensureBusinesses(simulationId,simulationTime);
   await ensureJobs(simulationId,simulationTime);
   const wholesale=await restockMarkets(simulationId,simulationTime);
   await evolvePrices(simulationId,simulationTime);
   await ensureGovernanceMembers(simulationId,simulationTime);
   const politics=await evolvePolitics(simulationId,simulationTime);
+  const business=await evolveBusinesses(simulationId,simulationTime);
   const wealth=await recordWealth(simulationId,simulationTime);
-  logger.info({simulationId,simulationTime,wealth,politics,wholesale},"society evolution completed");
-  return {wealth,politics,wholesale};
+  logger.info({simulationId,simulationTime,wealth,politics,wholesale,business},"society evolution completed");
+  return {wealth,politics,wholesale,business};
 }
 
 async function getSocietySnapshot(simulationId){
@@ -521,4 +695,4 @@ async function getSocietySnapshot(simulationId){
   return {systems:decode(systems),goods,markets,accounts,jobs,trades,metrics,policies:decode(policies),conflicts:decode(conflicts),openEnded:{proposals:decodeOpen(openProposals),definitions:decodeOpen(openDefinitions)}};
 }
 
-module.exports={evolveSociety,evolvePolitics,executeEconomicAction,getSocietySnapshot,gini,ensureCatalog,restockMarkets,isMarketStructure,isProducerStructure};
+module.exports={evolveSociety,evolvePolitics,executeEconomicAction,getSocietySnapshot,gini,ensureCatalog,restockMarkets,isMarketStructure,isProducerStructure,ensureBusinesses,evolveBusinesses};
