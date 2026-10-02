@@ -154,7 +154,7 @@ test("Routine dialogue uses minimal thinking and compact structured output",()=>
   assert.match(geminiSource,/thinkingLevel:advanced\?"low":"minimal"/);
   assert.match(geminiSource,/GEMINI_AUTONOMY_COMPACT_OUTPUT_TOKEN_CEILING/);
   assert.match(envSource,/GEMINI_AUTONOMY_COMPACT_OUTPUT_TOKEN_CEILING: z\.coerce\.number/);
-  assert.match(envSource,/\.min\(512\)\.max\(4096\)/);
+  assert.match(envSource,/\.min\(1024\)\.max\(4096\)/);
 });
 
 test("Autonomy uses advanced output only for high-value decisions",()=>{
