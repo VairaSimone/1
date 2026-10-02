@@ -357,6 +357,24 @@ async function applyProductionEffect({conn,simulationId,entityId,simulationTime,
   const producerEntityId=structureRows[0]?.producerEntityId;
   if(!producerEntityId)return {ok:false,failureReason:"NO_PRODUCTION_STRUCTURE",effect};
 
+  const [jobRows]=await conn.query(
+    `SELECT id FROM emergent_jobs
+      WHERE simulation_id=UUID_TO_BIN(?) AND employer_entity_id=UUID_TO_BIN(?)
+        AND employee_entity_id=UUID_TO_BIN(?) AND status='ACTIVE' LIMIT 1 FOR UPDATE`,
+    [simulationId,producerEntityId,entityId]
+  );
+  if(!jobRows.length)return {ok:false,failureReason:"PRODUCTION_REQUIRES_ACTIVE_JOB",effect};
+
+  const [businessRows]=await conn.query(
+    `SELECT production_capacity,status FROM emergent_businesses
+      WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) LIMIT 1 FOR UPDATE`,
+    [simulationId,producerEntityId]
+  );
+  if(businessRows.length && String(businessRows[0].status)!=='ACTIVE'){
+    return {ok:false,failureReason:"BUSINESS_NOT_ACTIVE",effect};
+  }
+  const capacity=Math.max(.25,Math.min(10,Number(businessRows[0]?.production_capacity||1)));
+
   const resourceInputs=effect.resourceInputs||{};
   const inventoryInputs=effect.inventoryInputs||{};
 
@@ -393,7 +411,8 @@ async function applyProductionEffect({conn,simulationId,entityId,simulationTime,
     "SELECT id,quantity FROM emergent_inventory WHERE simulation_id=UUID_TO_BIN(?) AND owner_entity_id=UUID_TO_BIN(?) AND good_code=? LIMIT 1 FOR UPDATE",
     [simulationId,producerEntityId,effect.goodCode]
   );
-  const output=Number(effect.quantity);
+  const baseOutput=Number(effect.quantity);
+  const output=Number((baseOutput*capacity).toFixed(4));
   if(outputRows.length){
     await conn.query("UPDATE emergent_inventory SET quantity=quantity+?,updated_simulation_at=?,version=version+1 WHERE id=?",
       [output,simulationTime,outputRows[0].id]);
@@ -404,7 +423,17 @@ async function applyProductionEffect({conn,simulationId,entityId,simulationTime,
     );
   }
 
-  return {ok:true,effect:{...effect,producerEntityId,outputQuantity:output}};
+  await conn.query(
+    `INSERT INTO emergent_production_history
+      (id,simulation_id,producer_entity_id,structure_entity_id,good_code,quantity,inputs,simulation_at)
+      VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,?)`,
+    [
+      uuid(),simulationId,entityId,producerEntityId,effect.goodCode,output,
+      JSON.stringify({resourceInputs,inventoryInputs,capacity}),simulationTime
+    ]
+  );
+
+  return {ok:true,effect:{...effect,producerEntityId,outputQuantity:output,capacity}};
 }
 
 async function executeDynamicActivity({conn,simulationId,entityId,actionId,actionType,simulationTime,targetLocationId=null}) {
