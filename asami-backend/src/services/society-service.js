@@ -1209,7 +1209,7 @@ async function evolveSociety(simulationId,simulationTime){
 }
 
 async function getSocietySnapshot(simulationId){
-  const [[systems],[goods],[markets],[accounts],[jobs],[trades],[metrics],[policies],[conflicts],[businessMetrics],[businesses]] = await Promise.all([
+  const [[systems],[goods],[markets],[accounts],[jobs],[trades],[metrics],[policies],[conflicts],[businessMetrics],[businesses],[events]] = await Promise.all([
     pool.query(`SELECT BIN_TO_UUID(id) id,system_type systemType,name,stage,attributes,created_simulation_at createdAt,updated_simulation_at updatedAt FROM emergent_systems WHERE simulation_id=UUID_TO_BIN(?) ORDER BY created_simulation_at DESC LIMIT 30`,[simulationId]),
     pool.query(`SELECT code,name,category,unit,base_price basePrice FROM emergent_goods WHERE simulation_id=UUID_TO_BIN(?) ORDER BY code`,[simulationId]),
     pool.query(`SELECT BIN_TO_UUID(location_id) locationId,good_code goodCode,price,supply,demand,updated_simulation_at updatedAt FROM emergent_market_state WHERE simulation_id=UUID_TO_BIN(?) ORDER BY updated_simulation_at DESC LIMIT 50`,[simulationId]),
@@ -1220,7 +1220,20 @@ async function getSocietySnapshot(simulationId){
     pool.query(`SELECT BIN_TO_UUID(id) id,BIN_TO_UUID(proposer_entity_id) proposerEntityId,BIN_TO_UUID(governance_system_id) governanceSystemId,issue_code issueCode,title,statement,parameters,support_score supportScore,opposition_score oppositionScore,status,created_simulation_at createdAt FROM emergent_policies WHERE simulation_id=UUID_TO_BIN(?) ORDER BY created_simulation_at DESC LIMIT 50`,[simulationId]),
     pool.query(`SELECT BIN_TO_UUID(id) id,BIN_TO_UUID(scope_location_id) scopeLocationId,conflict_type conflictType,left_type leftType,BIN_TO_UUID(left_id) leftId,right_type rightType,BIN_TO_UUID(right_id) rightId,intensity,status,metadata,created_simulation_at createdAt,resolved_simulation_at resolvedAt FROM emergent_conflicts WHERE simulation_id=UUID_TO_BIN(?) ORDER BY created_simulation_at DESC LIMIT 50`,[simulationId])
 ,    pool.query(`SELECT business_count businessCount,active_business_count activeBusinessCount,failed_business_count failedBusinessCount,unemployed_count unemployedCount,employed_count employedCount,revenue,input_cost inputCost,wage_cost wageCost,profit,production_value productionValue,investment,simulation_at simulationAt FROM emergent_business_metrics WHERE simulation_id=UUID_TO_BIN(?) ORDER BY simulation_at DESC LIMIT 48`,[simulationId]),
-    pool.query(`SELECT BIN_TO_UUID(id) id,BIN_TO_UUID(entity_id) entityId,BIN_TO_UUID(owner_entity_id) ownerEntityId,status,production_capacity productionCapacity,recent_revenue recentRevenue,recent_input_cost recentInputCost,recent_wage_cost recentWageCost,recent_profit recentProfit,cumulative_profit cumulativeProfit,cumulative_investment cumulativeInvestment,failure_count failureCount,last_evaluated_simulation_at lastEvaluated,updated_simulation_at updatedAt FROM emergent_businesses WHERE simulation_id=UUID_TO_BIN(?) ORDER BY updated_simulation_at DESC LIMIT 80`,[simulationId])
+    pool.query(`SELECT BIN_TO_UUID(id) id,BIN_TO_UUID(entity_id) entityId,BIN_TO_UUID(owner_entity_id) ownerEntityId,status,production_capacity productionCapacity,recent_revenue recentRevenue,recent_input_cost recentInputCost,recent_wage_cost recentWageCost,recent_profit recentProfit,cumulative_profit cumulativeProfit,cumulative_investment cumulativeInvestment,failure_count failureCount,last_evaluated_simulation_at lastEvaluated,updated_simulation_at updatedAt FROM emergent_businesses WHERE simulation_id=UUID_TO_BIN(?) ORDER BY updated_simulation_at DESC LIMIT 80`,[simulationId]),
+    pool.query(
+      `SELECT BIN_TO_UUID(e.id) id,et.code type,et.category,e.title,e.description,e.simulation_at simulationAt,e.importance,e.status,
+              JSON_UNQUOTE(JSON_EXTRACT(e.metadata,'$.locationId')) locationId,e.metadata
+         FROM events e
+         JOIN event_types et ON et.id=e.event_type_id
+        WHERE e.simulation_id=UUID_TO_BIN(?)
+          AND e.status<>'CANCELLED'
+          AND JSON_UNQUOTE(JSON_EXTRACT(e.metadata,'$.emergent'))='true'
+          AND JSON_UNQUOTE(JSON_EXTRACT(e.metadata,'$.kind')) IS NOT NULL
+        ORDER BY e.simulation_at DESC
+        LIMIT 40`,
+      [simulationId]
+    )
   ]);
   const [[openProposals],[openDefinitions]]=await Promise.all([
     pool.query(`SELECT BIN_TO_UUID(id) id,BIN_TO_UUID(proposer_entity_id) proposerEntityId,BIN_TO_UUID(scope_location_id) scopeLocationId,
@@ -1233,7 +1246,7 @@ async function getSocietySnapshot(simulationId){
   ]);
   const decode=rows=>rows.map(row=>{for(const k of ["attributes","parameters","metadata"])if(row[k]!==undefined)row[k]=parseJson(row[k],row[k]);return row;});
   const decodeOpen=rows=>rows.map(row=>{for(const k of ["definition","validation"])if(row[k]!==undefined)row[k]=parseJson(row[k],row[k]);return row;});
-  return {systems:decode(systems),goods,markets,accounts,jobs,trades,metrics,policies:decode(policies),conflicts:decode(conflicts),businessMetrics,businesses,openEnded:{proposals:decodeOpen(openProposals),definitions:decodeOpen(openDefinitions)}};
+  return {systems:decode(systems),goods,markets,accounts,jobs,trades,metrics,policies:decode(policies),conflicts:decode(conflicts),businessMetrics,businesses,events:decode(events),openEnded:{proposals:decodeOpen(openProposals),definitions:decodeOpen(openDefinitions)}};
 }
 
 module.exports={evolveSociety,evolvePolitics,executeEconomicAction,consumePurchasedFood,getSocietySnapshot,gini,ensureCatalog,restockMarkets,isMarketStructure,isProducerStructure,ensureBusinesses,evolveBusinesses,matchLaborMarket,latestEconomicPolicy,ensureEconomicPolicyProposal};
