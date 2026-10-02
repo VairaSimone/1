@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../lib/api'
-import type { ChatMessage, ConversationState, Dashboard, Development, DevelopmentHistoryItem, EventItem, Memory, Simulation, TimelineItem, WorldActivity, WorldAction, WorldMovement, WorldSnapshot, WsMessage } from '../types'
+import type { ChatMessage, ConversationState, Dashboard, Development, DevelopmentHistoryItem, EventItem, Memory, Simulation, TimelineItem, WorldActivity, WorldAction, WorldMovement, WorldSnapshot, WsMessage, SocietySnapshot } from '../types'
 
 const ACTIVE_SIM_KEY = 'asami.activeSimulationId'
 const ASAMI_ENTITY_KEY = 'asami.entityId'
@@ -110,6 +110,7 @@ export function useSimulation() {
   const [development, setDevelopment] = useState<{ current: Development | null; history: DevelopmentHistoryItem[] }>({ current: null, history: [] })
   const [world, setWorld] = useState<WorldSnapshot | null>(null)
   const [worldActivities, setWorldActivities] = useState<WorldActivity[]>([])
+  const [society, setSociety] = useState<SocietySnapshot | null>(null)
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [conversationState, setConversationState] = useState<ConversationState | null>(null)
   const [clockSpeed, setClockSpeed] = useState(1)
@@ -131,7 +132,7 @@ export function useSimulation() {
   const setSimulationId = useCallback((id: string) => {
     setSimulationIdState(id)
     localStorage.setItem(ACTIVE_SIM_KEY, id)
-    setDashboard(null); setTimeline([]); setEvents([]); setMemories([]); setDevelopment({ current: null, history: [] }); setWorld(null); setWorldActivities([]); setMessages([]); setConversationId(''); setConversationState(null)
+    setDashboard(null); setTimeline([]); setEvents([]); setMemories([]); setDevelopment({ current: null, history: [] }); setWorld(null); setWorldActivities([]); setSociety(null); setMessages([]); setConversationId(''); setConversationState(null)
     localStorage.removeItem('asami.conversationId')
   }, [])
 
@@ -165,12 +166,12 @@ export function useSimulation() {
       const worldPromise = worldDue
         ? refreshWorldOnly()
         : Promise.resolve(null)
-      const [sim, clockData, entity, nextDashboard, nextWorld] = await Promise.all([simPromise, clockPromise, asamiPromise, asamiPromise.then((e) => api.dashboard(simulationId, e.id)), worldPromise])
+      const [sim, clockData, entity, nextDashboard, nextWorld, nextSociety] = await Promise.all([simPromise, clockPromise, asamiPromise, asamiPromise.then((e) => api.dashboard(simulationId, e.id)), worldPromise, api.society(simulationId)])
       if (clockData.clock) setClockSpeed(Number(clockData.clock.speed))
       setSimulations((prev) => prev.some((x) => x.id === sim.id) ? prev.map((x) => x.id === sim.id ? sim : x) : [sim, ...prev])
       const observer = await api.observer(simulationId)
       setChatSenderIdState(observer.id); localStorage.setItem(CHAT_SENDER_KEY, observer.id)
-      setAsamiIdState(entity.id); localStorage.setItem(ASAMI_ENTITY_KEY, entity.id); setDashboard(nextDashboard); if (nextWorld) setWorld(nextWorld)
+      setAsamiIdState(entity.id); localStorage.setItem(ASAMI_ENTITY_KEY, entity.id); setDashboard(nextDashboard); if (nextWorld) setWorld(nextWorld); setSociety(nextSociety)
       const [nextTimeline, nextEvents, nextMemories, nextDevelopment] = await Promise.all([
         api.timeline(simulationId, entity.id, 200), api.events(simulationId, 100), api.memories(simulationId, entity.id, 100), api.development(simulationId, entity.id),
       ])
@@ -181,6 +182,15 @@ export function useSimulation() {
 
   useEffect(() => { loadSimulations().catch((e) => setError(e instanceof Error ? e.message : 'Backend non raggiungibile.')).finally(() => setLoading(false)) }, [loadSimulations])
   useEffect(() => { if (simulationId) refresh().catch(() => undefined) }, [simulationId, refresh])
+
+  useEffect(() => {
+    if (!simulationId) return
+    let cancelled = false
+    const load = () => api.society(simulationId).then((next) => { if (!cancelled) setSociety(next) }).catch(() => undefined)
+    load()
+    const timer = window.setInterval(load, 5000)
+    return () => { cancelled = true; window.clearInterval(timer) }
+  }, [simulationId])
 
   useEffect(() => {
     if (!simulationId) return
@@ -748,5 +758,5 @@ export function useSimulation() {
   }, [simulationId, conversationId])
   const setChatSenderId = useCallback((id: string) => { setChatSenderIdState(id); localStorage.setItem(CHAT_SENDER_KEY, id) }, [])
 
-  return { simulations, simulation, simulationId, asamiId, dashboard, timeline, events, memories, development, world, worldActivities, messages, conversationState, clockSpeed, chatSenderId, loading, refreshing, error, wsConnected, setSimulationId, setChatSenderId, createSimulation, refresh, control, changeSpeed, sendMessage }
+  return { simulations, simulation, simulationId, asamiId, dashboard, timeline, events, memories, development, world, worldActivities, society, messages, conversationState, clockSpeed, chatSenderId, loading, refreshing, error, wsConnected, setSimulationId, setChatSenderId, createSimulation, refresh, control, changeSpeed, sendMessage }
 }
