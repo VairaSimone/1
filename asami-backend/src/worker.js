@@ -12,6 +12,7 @@ const { ensureDatabaseWithRetry }=require("./db/database-init");
 const { pingWithRetry,close }=require("./db/pool");
 const { ensurePlanningStatusMigrations }=require("./db/schema-migrations");
 const { ensureEmergentWorldMigrations }=require("./db/emergent-world-migrations");
+const { ensureSocietyMigrations }=require("./db/society-migrations");
 const { bootstrapCoreDefinitions }=require("./services/bootstrap-service");
 const { GeminiService }=require("./ai/gemini");
 const { RealtimeHub }=require("./realtime/hub");
@@ -29,6 +30,7 @@ async function main(){
   if(staleTicks) logger.warn({staleTicks},"stale simulation ticks reconciled at startup");
   await bootstrapCoreDefinitions();
   await ensureEmergentWorldMigrations();
+  await ensureSocietyMigrations();
   const gemini=new GeminiService(); await gemini.init();
   await cognitiveV2.install({gemini});
   await cognitiveV3.install();
