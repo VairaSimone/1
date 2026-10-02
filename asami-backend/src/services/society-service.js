@@ -534,35 +534,176 @@ async function evolveBusinesses(simulationId,simulationTime){
 
 async function executeEconomicAction({conn,simulationId,entityId,actionType,simulationTime,durationMinutes=120}){
   const action=normalize(actionType);
-  if(action==="BUY_FOOD"){
-    const [loc]=await conn.query(`SELECT BIN_TO_UUID(location_id) locationId FROM entity_locations_current WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) LIMIT 1`,[simulationId,entityId]);
-    const locationId=loc[0]?.locationId;if(!locationId)return {ok:false,failureReason:"NO_LOCATION"};
+  const buyMatch=action.match(/^BUY_(?:GOOD_)?([A-Z][A-Z0-9_]*)$/);
+  if(buyMatch){
+    const goodCode=normalize(buyMatch[1]);
+    const [loc]=await conn.query(
+      \`SELECT BIN_TO_UUID(location_id) locationId FROM entity_locations_current
+        WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) LIMIT 1\`,
+      [simulationId,entityId]
+    );
+    const locationId=loc[0]?.locationId;
+    if(!locationId)return {ok:false,failureReason:"NO_LOCATION"};
+
     const [sellerRows]=await conn.query(
-      `SELECT BIN_TO_UUID(entity_id) entityId,structure_type type,attributes
+      \`SELECT BIN_TO_UUID(entity_id) entityId,structure_type type,attributes
          FROM emergent_structures
-        WHERE simulation_id=UUID_TO_BIN(?) AND scope_location_id=UUID_TO_BIN(?)`,
+        WHERE simulation_id=UUID_TO_BIN(?) AND scope_location_id=UUID_TO_BIN(?)\`,
       [simulationId,locationId]
     );
     const seller=sellerRows.find(isMarketStructure);
     if(!seller)return {ok:false,failureReason:"NO_MARKET"};
     const sellerId=seller.entityId;
-    const [price]=await conn.query(`SELECT price FROM emergent_market_state WHERE simulation_id=UUID_TO_BIN(?) AND location_id=UUID_TO_BIN(?) AND good_code="FOOD" LIMIT 1`,[simulationId,locationId]);
-    const unitPrice=Number(price[0]?.price||1);
-    const [stock]=await conn.query(`SELECT id,quantity FROM emergent_inventory WHERE simulation_id=UUID_TO_BIN(?) AND owner_entity_id=UUID_TO_BIN(?) AND good_code="FOOD" FOR UPDATE`,[simulationId,sellerId]);
-    const [account]=await conn.query(`SELECT id,balance FROM emergent_economy_accounts WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) FOR UPDATE`,[simulationId,entityId]);
-    if(!stock.length||Number(stock[0].quantity)<1)return {ok:false,failureReason:"FOOD_OUT_OF_STOCK",resource:"FOOD"};
-    if(!account.length||Number(account[0].balance)<unitPrice)return {ok:false,failureReason:"INSUFFICIENT_FUNDS",price:unitPrice};
-    const [sellerAccount]=await conn.query(`SELECT id,balance FROM emergent_economy_accounts WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) FOR UPDATE`,[simulationId,sellerId]);
+
+    const [priceRows]=await conn.query(
+      \`SELECT price FROM emergent_market_state
+        WHERE simulation_id=UUID_TO_BIN(?) AND location_id=UUID_TO_BIN(?) AND good_code=? LIMIT 1\`,
+      [simulationId,locationId,goodCode]
+    );
+    const unitPrice=Number(priceRows[0]?.price||0);
+    if(unitPrice<=0)return {ok:false,failureReason:"GOOD_NOT_PRICED",goodCode};
+
+    const [stock]=await conn.query(
+      \`SELECT id,quantity FROM emergent_inventory
+        WHERE simulation_id=UUID_TO_BIN(?) AND owner_entity_id=UUID_TO_BIN(?) AND good_code=? LIMIT 1 FOR UPDATE\`,
+      [simulationId,sellerId,goodCode]
+    );
+    const [account]=await conn.query(
+      \`SELECT id,balance FROM emergent_economy_accounts
+        WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) LIMIT 1 FOR UPDATE\`,
+      [simulationId,entityId]
+    );
+    if(!stock.length||Number(stock[0].quantity)<1)return {ok:false,failureReason:"GOOD_OUT_OF_STOCK",goodCode};
+    if(!account.length||Number(account[0].balance)<unitPrice)return {ok:false,failureReason:"INSUFFICIENT_FUNDS",price:unitPrice,goodCode};
+
+    const [sellerAccount]=await conn.query(
+      \`SELECT id,balance FROM emergent_economy_accounts
+        WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) LIMIT 1 FOR UPDATE\`,
+      [simulationId,sellerId]
+    );
     if(!sellerAccount.length)return {ok:false,failureReason:"SELLER_ACCOUNT_MISSING"};
-    await conn.query(`UPDATE emergent_inventory SET quantity=quantity-1,updated_simulation_at=?,version=version+1 WHERE id=?`,[simulationTime,stock[0].id]);
-    const [buyerFood]=await conn.query(`SELECT id,quantity FROM emergent_inventory WHERE simulation_id=UUID_TO_BIN(?) AND owner_entity_id=UUID_TO_BIN(?) AND good_code="FOOD" FOR UPDATE`,[simulationId,entityId]);
-    if(buyerFood.length) await conn.query(`UPDATE emergent_inventory SET quantity=quantity+1,updated_simulation_at=?,version=version+1 WHERE id=?`,[simulationTime,buyerFood[0].id]);
-    else await conn.query(`INSERT INTO emergent_inventory(id,simulation_id,owner_entity_id,good_code,quantity,updated_simulation_at,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),"FOOD",1,?,1)`,[uuid(),simulationId,entityId,simulationTime]);
-    await conn.query(`UPDATE emergent_economy_accounts SET balance=balance-?,lifetime_spending=lifetime_spending+?,last_updated_simulation_at=?,version=version+1 WHERE id=?`,[unitPrice,unitPrice,simulationTime,account[0].id]);
-    await conn.query(`UPDATE emergent_economy_accounts SET balance=balance+?,lifetime_income=lifetime_income+?,last_updated_simulation_at=?,version=version+1 WHERE id=?`,[unitPrice,unitPrice,simulationTime,sellerAccount[0].id]);
-    await conn.query(`INSERT INTO emergent_trades(id,simulation_id,buyer_entity_id,seller_entity_id,location_id,good_code,quantity,unit_price,total,simulation_at) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),"FOOD",1,?,?,?)`,[uuid(),simulationId,entityId,sellerId,locationId,unitPrice,unitPrice,simulationTime]);
-    return {ok:true,economicType:"TRADE",good:"FOOD",quantity:1,unitPrice,total:unitPrice,resource:"FOOD",sellerEntityId:sellerId,locationId,needEffect:null};
+
+    await conn.query(
+      \`UPDATE emergent_inventory SET quantity=quantity-1,updated_simulation_at=?,version=version+1 WHERE id=?\`,
+      [simulationTime,stock[0].id]
+    );
+    const [buyerStock]=await conn.query(
+      \`SELECT id,quantity FROM emergent_inventory
+        WHERE simulation_id=UUID_TO_BIN(?) AND owner_entity_id=UUID_TO_BIN(?) AND good_code=? LIMIT 1 FOR UPDATE\`,
+      [simulationId,entityId,goodCode]
+    );
+    if(buyerStock.length){
+      await conn.query(
+        \`UPDATE emergent_inventory SET quantity=quantity+1,updated_simulation_at=?,version=version+1 WHERE id=?\`,
+        [simulationTime,buyerStock[0].id]
+      );
+    }else{
+      await conn.query(
+        \`INSERT INTO emergent_inventory(id,simulation_id,owner_entity_id,good_code,quantity,updated_simulation_at,version)
+          VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,1)\`,
+        [uuid(),simulationId,entityId,goodCode,1,simulationTime]
+      );
+    }
+    await conn.query(
+      \`UPDATE emergent_economy_accounts SET balance=balance-?,lifetime_spending=lifetime_spending+?,last_updated_simulation_at=?,version=version+1 WHERE id=?\`,
+      [unitPrice,unitPrice,simulationTime,account[0].id]
+    );
+    await conn.query(
+      \`UPDATE emergent_economy_accounts SET balance=balance+?,lifetime_income=lifetime_income+?,last_updated_simulation_at=?,version=version+1 WHERE id=?\`,
+      [unitPrice,unitPrice,simulationTime,sellerAccount[0].id]
+    );
+    await conn.query(
+      \`INSERT INTO emergent_trades
+        (id,simulation_id,buyer_entity_id,seller_entity_id,location_id,good_code,quantity,unit_price,total,simulation_at)
+        VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,?,?)\`,
+      [uuid(),simulationId,entityId,sellerId,locationId,goodCode,1,unitPrice,unitPrice,simulationTime]
+    );
+    return {ok:true,economicType:"TRADE",good:goodCode,quantity:1,unitPrice,total:unitPrice,sellerEntityId:sellerId,locationId};
   }
+
+  const sellMatch=action.match(/^SELL_(?:GOOD_)?([A-Z][A-Z0-9_]*)$/);
+  if(sellMatch){
+    const goodCode=normalize(sellMatch[1]);
+    const [loc]=await conn.query(
+      \`SELECT BIN_TO_UUID(location_id) locationId FROM entity_locations_current
+        WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) LIMIT 1\`,
+      [simulationId,entityId]
+    );
+    const locationId=loc[0]?.locationId;
+    if(!locationId)return {ok:false,failureReason:"NO_LOCATION"};
+    const [marketRows]=await conn.query(
+      \`SELECT BIN_TO_UUID(entity_id) entityId,structure_type type,attributes
+         FROM emergent_structures
+        WHERE simulation_id=UUID_TO_BIN(?) AND scope_location_id=UUID_TO_BIN(?)\`,
+      [simulationId,locationId]
+    );
+    const market=marketRows.find(isMarketStructure);
+    if(!market)return {ok:false,failureReason:"NO_MARKET"};
+    const marketId=market.entityId;
+    const [inventory]=await conn.query(
+      \`SELECT id,quantity FROM emergent_inventory
+        WHERE simulation_id=UUID_TO_BIN(?) AND owner_entity_id=UUID_TO_BIN(?) AND good_code=? LIMIT 1 FOR UPDATE\`,
+      [simulationId,entityId,goodCode]
+    );
+    if(!inventory.length||Number(inventory[0].quantity)<1)return {ok:false,failureReason:"GOOD_NOT_IN_INVENTORY",goodCode};
+    const [priceRows]=await conn.query(
+      \`SELECT price FROM emergent_market_state
+        WHERE simulation_id=UUID_TO_BIN(?) AND location_id=UUID_TO_BIN(?) AND good_code=? LIMIT 1\`,
+      [simulationId,locationId,goodCode]
+    );
+    const marketPrice=Number(priceRows[0]?.price||0);
+    if(marketPrice<=0)return {ok:false,failureReason:"GOOD_NOT_PRICED",goodCode};
+    const unitPrice=Number((marketPrice*.80).toFixed(4));
+    const [sellerAccount]=await conn.query(
+      \`SELECT id FROM emergent_economy_accounts
+        WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) LIMIT 1 FOR UPDATE\`,
+      [simulationId,entityId]
+    );
+    const [marketAccount]=await conn.query(
+      \`SELECT id,balance FROM emergent_economy_accounts
+        WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) LIMIT 1 FOR UPDATE\`,
+      [simulationId,marketId]
+    );
+    if(!sellerAccount.length||!marketAccount.length)return {ok:false,failureReason:"ECONOMIC_ACCOUNT_MISSING"};
+    if(Number(marketAccount[0].balance)<unitPrice)return {ok:false,failureReason:"MARKET_CANNOT_BUY",required:unitPrice};
+    await conn.query(
+      \`UPDATE emergent_inventory SET quantity=quantity-1,updated_simulation_at=?,version=version+1 WHERE id=?\`,
+      [simulationTime,inventory[0].id]
+    );
+    const [marketStock]=await conn.query(
+      \`SELECT id,quantity FROM emergent_inventory
+        WHERE simulation_id=UUID_TO_BIN(?) AND owner_entity_id=UUID_TO_BIN(?) AND good_code=? LIMIT 1 FOR UPDATE\`,
+      [simulationId,marketId,goodCode]
+    );
+    if(marketStock.length){
+      await conn.query(
+        \`UPDATE emergent_inventory SET quantity=quantity+1,updated_simulation_at=?,version=version+1 WHERE id=?\`,
+        [simulationTime,marketStock[0].id]
+      );
+    }else{
+      await conn.query(
+        \`INSERT INTO emergent_inventory(id,simulation_id,owner_entity_id,good_code,quantity,updated_simulation_at,version)
+         VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,1)\`,
+        [uuid(),simulationId,marketId,goodCode,1,simulationTime]
+      );
+    }
+    await conn.query(
+      \`UPDATE emergent_economy_accounts SET balance=balance+?,lifetime_income=lifetime_income+?,last_updated_simulation_at=?,version=version+1 WHERE id=?\`,
+      [unitPrice,unitPrice,simulationTime,sellerAccount[0].id]
+    );
+    await conn.query(
+      \`UPDATE emergent_economy_accounts SET balance=balance-?,lifetime_spending=lifetime_spending+?,last_updated_simulation_at=?,version=version+1 WHERE id=?\`,
+      [unitPrice,unitPrice,simulationTime,marketAccount[0].id]
+    );
+    await conn.query(
+      \`INSERT INTO emergent_trades
+        (id,simulation_id,buyer_entity_id,seller_entity_id,location_id,good_code,quantity,unit_price,total,simulation_at)
+        VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,?,?)\`,
+      [uuid(),simulationId,marketId,entityId,locationId,goodCode,1,unitPrice,unitPrice,simulationTime]
+    );
+    return {ok:true,economicType:"TRADE",good:goodCode,quantity:1,unitPrice,total:unitPrice,buyerEntityId:marketId,locationId};
+  }
+
   if(action==="PRODUCE_GOODS"){
     const [location]=await conn.query(
       `SELECT BIN_TO_UUID(location_id) locationId
