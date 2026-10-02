@@ -248,6 +248,29 @@ async function ensureCapabilitiesForEmergentStructures(simulationId, simulationT
     })) created += 1;
   }
 
+  const [economicSystems] = await pool.query(
+    'SELECT BIN_TO_UUID(id) systemId,scope_location_id scopeLocationId,system_type systemType,attributes FROM emergent_systems WHERE simulation_id=UUID_TO_BIN(?) AND stage<>"ENDED"',
+    [simulationId]
+  );
+  for (const system of economicSystems) {
+    const attributes = parseJson(system.attributes, {});
+    const definition = attributes.definition || {};
+    const systemEntityId = attributes.systemEntityId;
+    const isMarket = Boolean(definition.market) || ['MARKET','COMMERCE'].includes(normalize(definition.category));
+    if (!isMarket || !systemEntityId || !system.scopeLocationId) continue;
+    for (const good of goods) {
+      const actionCode = `BUY_${normalize(good.code)}`;
+      if (await ensureCapability({
+        simulationId, locationId: system.scopeLocationId, sourceEntityId: systemEntityId, activityCode: actionCode,
+        activityRow: {code:actionCode,name:`Buy ${good.name}`,category:'ECONOMY',parameters:{code:actionCode,name:`Buy ${good.name}`,category:'ECONOMY',needWeights:good.code==='FOOD'?{HUNGER:2.9}:{},gate:good.code==='FOOD'?['HUNGER',.25]:null,durationMinutes:25,economicType:'BUY_GOOD',goodCode:normalize(good.code)}}, simulationTime
+      })) created += 1;
+      const sellCode = `SELL_${normalize(good.code)}`;
+      if (await ensureCapability({
+        simulationId, locationId: system.scopeLocationId, sourceEntityId: systemEntityId, activityCode: sellCode,
+        activityRow: {code:sellCode,name:`Sell ${good.name}`,category:'ECONOMY',parameters:{code:sellCode,name:`Sell ${good.name}`,category:'ECONOMY',needWeights:{},durationMinutes:20,economicType:'SELL_GOOD',goodCode:normalize(good.code)}}, simulationTime
+      })) created += 1;
+    }
+  }
   for (const row of catalog) {
     if (!row.scopeLocationId) continue;
     const definition = normalizeDefinition(row);
@@ -335,8 +358,12 @@ async function loadCapabilitiesForEntities(simulationId, entityIds = []) {
   const [activeJobs] = await pool.query(
     "SELECT BIN_TO_UUID(ej.employee_entity_id) employeeId,BIN_TO_UUID(es.scope_location_id) locationId,ej.role,ej.wage_per_hour wage " +
     "FROM emergent_jobs ej JOIN emergent_structures es ON es.simulation_id=ej.simulation_id AND es.entity_id=ej.employer_entity_id " +
+    "WHERE ej.simulation_id=UUID_TO_BIN(?) AND ej.status='ACTIVE' AND ej.employee_entity_id IN (" + placeholders + ")" +
+    " UNION ALL " +
+    "SELECT BIN_TO_UUID(ej.employee_entity_id) employeeId,es.scope_location_id locationId,ej.role,ej.wage_per_hour wage " +
+    "FROM emergent_jobs ej JOIN emergent_systems es ON es.simulation_id=ej.simulation_id AND JSON_UNQUOTE(JSON_EXTRACT(es.attributes,'$.systemEntityId'))=BIN_TO_UUID(ej.employer_entity_id) " +
     "WHERE ej.simulation_id=UUID_TO_BIN(?) AND ej.status='ACTIVE' AND ej.employee_entity_id IN (" + placeholders + ")",
-    [simulationId, ...ids]
+    [simulationId, ...ids, simulationId, ...ids]
   );
   for (const job of activeJobs) {
     const list=result.get(String(job.employeeId))||[];
