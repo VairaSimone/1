@@ -1,0 +1,35 @@
+
+.society-page{display:flex;flex-direction:column;gap:20px}
+.society-hero{display:flex;justify-content:space-between;gap:24px;align-items:flex-end;padding:6px 0 2px}
+.society-hero h1{margin:7px 0;font-size:clamp(28px,3.2vw,40px);letter-spacing:-.05em}
+.society-hero p{margin:0;color:#74829b;font-size:11px;line-height:1.7;max-width:840px}
+.society-hero-badge{display:flex;align-items:center;gap:7px;padding:8px 10px;border:1px solid rgba(111,222,207,.13);background:rgba(111,222,207,.04);border-radius:999px;color:#80b7af;font:500 9px "DM Mono",monospace;white-space:nowrap}
+.society-metrics{grid-template-columns:repeat(4,minmax(0,1fr))}
+.society-columns{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;align-items:start}
+.society-card-list,.wealth-list,.market-list{display:flex;flex-direction:column}
+.society-row,.market-row,.wealth-row{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:11px;align-items:center;padding:12px 0;border-top:1px solid rgba(104,124,165,.1)}
+.society-row:first-child,.market-row:first-child,.wealth-row:first-child{border-top:0}
+.society-row-icon{width:34px;height:34px;border-radius:10px;display:grid;place-items:center;background:rgba(144,164,255,.07);color:#9badff}
+.society-row-icon.conflict{color:#e2af83}
+.society-row strong,.society-row span,.market-row strong,.market-row span,.wealth-row strong,.wealth-row span{display:block}
+.society-row strong,.market-row strong,.wealth-row strong{font-size:10px;line-height:1.4}
+.society-row span,.market-row span,.wealth-row span{color:#69768e;font-size:9px;margin-top:4px}
+.market-row{grid-template-columns:minmax(0,1fr) auto;padding:14px 0}
+.market-row>strong{font-size:14px}
+.wealth-rank{color:#56647d;font:600 9px "DM Mono",monospace;width:25px}
+.wealth-row{grid-template-columns:30px minmax(0,1fr) auto}
+.policy-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:11px}
+.policy-card{border:1px solid rgba(104,124,165,.12);background:rgba(8,14,25,.48);border-radius:12px;padding:14px}
+.policy-top{display:flex;justify-content:space-between;align-items:center;color:#93a7ff;margin-bottom:10px}
+.policy-card>strong{font-size:11px;line-height:1.4;display:block}
+.policy-card p{margin:7px 0;color:#6e7b93;font-size:9px;line-height:1.55}
+.policy-card small{display:block;margin-top:9px;color:#56637a;font:500 8px "DM Mono",monospace}
+.policy-meter{display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:8px;font-size:8px;color:#65728a}
+.policy-meter>div{height:5px;background:#1a2437;border-radius:99px;overflow:hidden}.policy-meter i{display:block;height:100%;background:linear-gradient(90deg,#8297ff,#71decf);border-radius:inherit}
+.policy-meter b{font:600 8px "DM Mono",monospace;color:#a9b4c8}
+.society-model{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px}
+.society-model>div{padding:13px;border:1px solid rgba(104,124,165,.1);border-radius:11px;background:rgba(8,14,25,.42)}
+.society-model span{display:grid;place-items:center;width:24px;height:24px;border-radius:8px;background:rgba(144,164,255,.08);color:#94a8ff;font:600 9px "DM Mono",monospace}
+.society-model strong{display:block;margin:9px 0 5px;font-size:10px}.society-model p{margin:0;color:#66748c;font-size:9px;line-height:1.55}
+@media(max-width:1000px){.society-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.society-columns,.policy-grid{grid-template-columns:1fr}.society-model{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:620px){.society-metrics{grid-template-columns:1fr}.society-model{grid-template-columns:1fr}.society-hero{align-items:flex-start;flex-direction:column}}
