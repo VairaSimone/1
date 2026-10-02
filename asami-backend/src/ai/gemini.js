@@ -486,7 +486,7 @@ class GeminiService {
         retryAfterMs,
         kind
       };
-      logger.debug({kind,retryAfterMs},"all Gemini models are temporarily blocked; deterministic fallback used");
+      logger.debug({kind,retryAfterMs},"all Gemini models unavailable; deterministic fallback used");
       return null;
     }
 
@@ -567,7 +567,7 @@ class GeminiService {
             abortSignal:controller.signal,
             httpOptions:{
               timeout:timeoutMs,
-              retryOptions:{attempts:2,initialDelay:250}
+              retryOptions:{attempts:1,initialDelay:0}
             }
           }
         });
