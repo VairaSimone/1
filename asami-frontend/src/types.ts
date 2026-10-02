@@ -191,3 +191,97 @@ export interface AnalysisData {
   patterns: AnalysisPattern[]
   breakdowns: { actions: { label: string; value: number }[]; events: { label: string; value: number }[]; decisions: { label: string; value: number }[] }
 }
+
+
+export interface SocietySystem {
+  id: string
+  systemType: string
+  name: string
+  stage: string
+  scopeLocationId: string | null
+  attributes: Record<string, unknown>
+  createdAt: string
+  updatedAt: string
+}
+export interface SocietyAccount {
+  entityId: string
+  balance: number
+  lifetimeIncome: number
+  lifetimeSpending: number
+  updatedAt: string
+}
+export interface SocietyMarket {
+  locationId: string
+  goodCode: string
+  price: number
+  supply: number
+  demand: number
+  updatedAt: string
+}
+export interface SocietyJob {
+  id: string
+  employerEntityId: string
+  employeeEntityId: string
+  role: string
+  wagePerHour: number
+  status: string
+  hiredAt: string
+}
+export interface SocietyTrade {
+  id: string
+  buyerEntityId: string
+  sellerEntityId: string
+  locationId: string
+  goodCode: string
+  quantity: number
+  unitPrice: number
+  total: number
+  simulationAt: string
+}
+export interface SocietyMetric {
+  populationCount: number
+  totalWealth: number
+  averageWealth: number
+  gini: number
+  averageFoodPrice: number
+  totalTradeValue: number
+  simulationAt: string
+}
+export interface SocietyPolicy {
+  id: string
+  proposerEntityId: string
+  governanceSystemId: string | null
+  issueCode: string
+  title: string
+  statement: string
+  parameters: Record<string, unknown>
+  supportScore: number
+  oppositionScore: number
+  status: string
+  createdAt: string
+}
+export interface SocietyConflict {
+  id: string
+  scopeLocationId: string | null
+  conflictType: string
+  leftType: string
+  leftId: string
+  rightType: string
+  rightId: string
+  intensity: number
+  status: string
+  metadata: Record<string, unknown>
+  createdAt: string
+  resolvedAt: string | null
+}
+export interface SocietySnapshot {
+  systems: SocietySystem[]
+  goods: Array<{ code: string; name: string; category: string; unit: string; basePrice: number }>
+  markets: SocietyMarket[]
+  accounts: SocietyAccount[]
+  jobs: SocietyJob[]
+  trades: SocietyTrade[]
+  metrics: SocietyMetric[]
+  policies: SocietyPolicy[]
+  conflicts: SocietyConflict[]
+}
