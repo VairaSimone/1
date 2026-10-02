@@ -22,7 +22,10 @@ async function ensureCatalog(simulationId,simulationTime){
 }
 
 async function ensureAccounts(simulationId,simulationTime){
-  const [entities]=await pool.query(`SELECT BIN_TO_UUID(e.id) id FROM entities e WHERE e.simulation_id=UUID_TO_BIN(?) AND e.status="ACTIVE"`,[simulationId]);
+  const [entities]=await pool.query(`SELECT DISTINCT BIN_TO_UUID(e.id) id
+    FROM entities e JOIN entity_types et ON et.id=e.entity_type_id
+    WHERE e.simulation_id=UUID_TO_BIN(?) AND e.status="ACTIVE"
+      AND (et.code IN ("PERSON","ORGANIZATION") OR EXISTS (SELECT 1 FROM emergent_structures es WHERE es.simulation_id=e.simulation_id AND es.entity_id=e.id))`,[simulationId]);
   for(const entity of entities){
     const [rows]=await pool.query(`SELECT balance FROM emergent_economy_accounts WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) LIMIT 1`,[simulationId,entity.id]);
     if(!rows.length){
@@ -117,7 +120,10 @@ async function ensureGovernanceMembers(simulationId,simulationTime){
 }
 
 async function recordWealth(simulationId,simulationTime){
-  const [rows]=await pool.query(`SELECT BIN_TO_UUID(entity_id) entityId,balance FROM emergent_economy_accounts WHERE simulation_id=UUID_TO_BIN(?) ORDER BY balance DESC`,[simulationId]);
+  const [rows]=await pool.query(`SELECT BIN_TO_UUID(ea.entity_id) entityId,ea.balance
+    FROM emergent_economy_accounts ea JOIN entities e ON e.id=ea.entity_id AND e.simulation_id=ea.simulation_id
+    JOIN entity_types et ON et.id=e.entity_type_id
+    WHERE ea.simulation_id=UUID_TO_BIN(?) AND et.code="PERSON" ORDER BY ea.balance DESC`,[simulationId]);
   const pop=rows.length;if(!pop)return null;
   const values=rows.map(r=>Number(r.balance||0)),total=values.reduce((s,v)=>s+v,0),avg=total/pop,inequality=gini(values);
   for(let i=0;i<rows.length;i++)await pool.query(`INSERT INTO emergent_wealth_history(id,simulation_id,entity_id,balance,rank_position,population_count,simulation_at) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,?)`,[uuid(),simulationId,rows[i].entityId,Number(rows[i].balance||0),i+1,pop,simulationTime]);
@@ -148,6 +154,17 @@ async function executeEconomicAction({conn,simulationId,entityId,actionType,simu
     await conn.query(`UPDATE emergent_economy_accounts SET balance=balance+?,lifetime_income=lifetime_income+?,last_updated_simulation_at=?,version=version+1 WHERE id=?`,[unitPrice,unitPrice,simulationTime,sellerAccount[0].id]);
     await conn.query(`INSERT INTO emergent_trades(id,simulation_id,buyer_entity_id,seller_entity_id,location_id,good_code,quantity,unit_price,total,simulation_at) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),"FOOD",1,?,?,?)`,[uuid(),simulationId,entityId,sellerId,locationId,unitPrice,unitPrice,simulationTime]);
     return {ok:true,economicType:"TRADE",good:"FOOD",quantity:1,unitPrice,total:unitPrice,resource:"FOOD",sellerEntityId:sellerId,needEffect:{code:"HUNGER",delta:-.35}};
+  }
+  if(action==="PRODUCE_GOODS"){
+    const [location]=await conn.query(`SELECT BIN_TO_UUID(location_id) locationId FROM entity_locations_current WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) LIMIT 1`,[simulationId,entityId]);
+    const locationId=location[0]?.locationId;if(!locationId)return {ok:false,failureReason:"NO_LOCATION"};
+    const [structure]=await conn.query(`SELECT BIN_TO_UUID(entity_id) employerId FROM emergent_structures WHERE simulation_id=UUID_TO_BIN(?) AND scope_location_id=UUID_TO_BIN(?) AND structure_type="WORKSHOP" LIMIT 1`,[simulationId,locationId]);
+    const producer=structure[0]?.employerId;if(!producer)return {ok:false,failureReason:"NO_WORKSHOP"};
+    const [stock]=await conn.query(`SELECT id,quantity FROM emergent_inventory WHERE simulation_id=UUID_TO_BIN(?) AND owner_entity_id=UUID_TO_BIN(?) AND good_code="TOOLS" FOR UPDATE`,[simulationId,producer]);
+    const quantity=2;
+    if(stock.length) await conn.query(`UPDATE emergent_inventory SET quantity=quantity+?,updated_simulation_at=?,version=version+1 WHERE id=?`,[quantity,simulationTime,stock[0].id]);
+    else await conn.query(`INSERT INTO emergent_inventory(id,simulation_id,owner_entity_id,good_code,quantity,updated_simulation_at,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),"TOOLS",?,?,1)`,[uuid(),simulationId,producer,quantity,simulationTime]);
+    return {ok:true,economicType:"PRODUCTION",good:"TOOLS",quantity,producerEntityId:producer};
   }
   if(action==="WORK_JOB"){
     const [job]=await conn.query(`SELECT id,wage_per_hour wage,employer_entity_id employerId FROM emergent_jobs WHERE simulation_id=UUID_TO_BIN(?) AND employee_entity_id=UUID_TO_BIN(?) AND status="ACTIVE" LIMIT 1 FOR UPDATE`,[simulationId,entityId]);
