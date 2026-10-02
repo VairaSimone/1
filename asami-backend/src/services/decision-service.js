@@ -887,8 +887,12 @@ async function makeDecision({
   const aiHasSocialTarget =
     aiAction !== "TALKING" ||
     Boolean(aiChoice?.targetEntityId || aiCandidate?.targetEntityId);
+  const knownActivity = Array.isArray(context?.activityTypes) &&
+    context.activityTypes.some(activity =>
+      normalizeAction(activity?.code || activity) === aiAction
+    );
   const validAiAction = Boolean(
-    aiAction && ACTIONS.includes(aiAction) && aiHasSocialTarget
+    aiAction && (ACTIONS.includes(aiAction) || knownActivity) && aiHasSocialTarget
   );
   const aiBlockedByCritical = Boolean(
     criticalAction && aiAction && aiAction !== criticalAction
