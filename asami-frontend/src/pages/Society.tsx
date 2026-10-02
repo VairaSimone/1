@@ -1,5 +1,5 @@
 
-import { Building2, Coins, Gavel, Handshake, Landmark, Scale, ShoppingBag, TrendingUp, Users, WalletCards } from 'lucide-react'
+import { Building2, Coins, Gavel, Handshake, Landmark, Scale, ShoppingBag, Sparkles, TrendingUp, Users, WalletCards } from 'lucide-react'
 import type { SocietySnapshot, WorldSnapshot } from '../types'
 import { labelize, pct, formatSimTime } from '../lib/format'
 import { EmptyState, Panel, StatusPill } from '../components/Ui'
@@ -25,6 +25,8 @@ export function Society({ society, world }: { society: SocietySnapshot | null; w
   const proposed = society.policies.filter(policy => policy.status === 'PROPOSED')
   const conflicts = society.conflicts.filter(conflict => conflict.status === 'ACTIVE')
   const recentTrades = society.trades.slice(0, 8)
+  const openProposals = society.openEnded?.proposals ?? []
+  const openDefinitions = society.openEnded?.definitions ?? []
 
   return <div className="society-page">
     <div className="society-hero">
@@ -79,6 +81,30 @@ export function Society({ society, world }: { society: SocietySnapshot | null; w
         </div>)}</div> : <EmptyState icon={<WalletCards size={20} />} title="Nessuna ricchezza registrata" text="Gli abitanti ricevono un conto economico quando il motore socioeconomico viene inizializzato." />}
       </Panel>
     </div>
+
+    <Panel title="Invenzioni sociali" eyebrow="OPEN-ENDED" right={<span className="tiny-muted">{openDefinitions.length} definizioni attive · {openProposals.length} proposte</span>}>
+      <div className="open-ended-grid">
+        <div className="open-ended-list">
+          {openProposals.length ? openProposals.slice(0, 8).map(proposal => <article className="open-ended-card" key={proposal.id}>
+            <div className="open-ended-top"><Sparkles size={15} /><StatusPill value={proposal.status} /></div>
+            <strong>{proposal.title}</strong>
+            <span>{labelize(proposal.kind)} · {proposal.code}</span>
+            <p>proposto da {nameFor(proposal.proposerEntityId, world)} · supporto {pct(proposal.supportScore)} · soglia {proposal.requiredSupport}</p>
+          </article>) : <EmptyState icon={<Sparkles size={20} />} title="Nessuna nuova proposta" text="Quando un gruppo sperimenta una pressione comune, un abitante può generare una nuova struttura, istituzione, attività o sistema." />}
+        </div>
+        <div className="open-ended-list">
+          {openDefinitions.length ? openDefinitions.slice(0, 8).map(definition => {
+            const activities = Array.isArray(definition.definition?.activities) ? definition.definition.activities : []
+            return <article className="open-ended-card active" key={definition.id}>
+              <div className="open-ended-top"><Sparkles size={15} /><StatusPill value={definition.status} /></div>
+              <strong>{definition.name}</strong>
+              <span>{labelize(definition.kind)} · {labelize(definition.category)} · {definition.code}</span>
+              <p>{activities.length} attività derivate · scope {definition.scopeLocationId ? definition.scopeLocationId.slice(0, 8) : 'globale'}</p>
+            </article>
+          }) : <EmptyState icon={<Sparkles size={20} />} title="Nessuna definizione attiva" text="Le proposte accettate diventano definizioni persistenti che il motore può rendere disponibili come capacità." />}
+        </div>
+      </div>
+    </Panel>
 
     <Panel title="Politica e leggi" eyebrow="GOVERNANCE" right={<span className="tiny-muted">{enacted.length} leggi in vigore · {proposed.length} proposte</span>}>
       <div className="policy-grid">
