@@ -292,7 +292,13 @@ async function restockMarkets(simulationId,simulationTime){
            SET balance=balance+?,lifetime_income=lifetime_income+?,last_updated_simulation_at=?,version=version+1 WHERE id=?`,
         [total,total,simulationTime,producerAccount[0].id]
       );
-      transfers.push({marketEntityId:market.entityId,producerEntityId:candidate.producer.entityId,goodCode:good.goodCode,quantity,unitPrice,total,simulationAt:simulationTime});
+      await pool.query(
+        `INSERT INTO emergent_trades
+          (id,simulation_id,buyer_entity_id,seller_entity_id,location_id,good_code,quantity,unit_price,total,simulation_at)
+          VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,?,?)`,
+        [uuid(),simulationId,market.entityId,candidate.producer.entityId,market.locationId,good.goodCode,quantity,unitPrice,total,simulationTime]
+      );
+      transfers.push({marketEntityId:market.entityId,producerEntityId:candidate.producer.entityId,goodCode:good.goodCode,quantity,unitPrice,total,simulationAt:simulationTime,type:"WHOLESALE"});
     }
   }
   return {transfers,totalValue:Number(transfers.reduce((sum,item)=>sum+item.total,0).toFixed(4))};
