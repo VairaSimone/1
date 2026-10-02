@@ -35,48 +35,268 @@ async function ensureAccounts(simulationId,simulationTime){
   }
 }
 
+function definitionFromStructure(row) {
+  return parseJson(row.attributes, {})?.definition || {};
+}
+
+function isMarketStructure(row) {
+  const definition=definitionFromStructure(row);
+  const category=normalize(definition.category);
+  return normalize(row.type)==="MARKET" ||
+    Boolean(definition.market===true) ||
+    category==="MARKET" ||
+    category==="COMMERCE";
+}
+
+function isProducerStructure(row) {
+  const definition=definitionFromStructure(row);
+  if(definition.production && typeof definition.production==="object") return true;
+  const activities=Array.isArray(definition.activities)?definition.activities:[];
+  return activities.some(activity=>{
+    const category=normalize(activity?.category);
+    return category==="WORK"||category==="PRODUCTION"||category==="CRAFT";
+  }) || ["WORKSHOP","FARM"].includes(normalize(row.type));
+}
+
 async function ensureMarketInventory(simulationId,simulationTime){
-  const [markets]=await pool.query(`SELECT BIN_TO_UUID(es.entity_id) entityId,BIN_TO_UUID(es.scope_location_id) locationId,es.structure_type type FROM emergent_structures es WHERE es.simulation_id=UUID_TO_BIN(?)`,[simulationId]);
-  for(const market of markets){
-    if(!["MARKET","WORKSHOP"].includes(normalize(market.type)))continue;
-    const good=normalize(market.type)==="MARKET"?"FOOD":"TOOLS";
-    const seed=normalize(market.type)==="MARKET"?120:24;
-    const [rows]=await pool.query(`SELECT quantity FROM emergent_inventory WHERE simulation_id=UUID_TO_BIN(?) AND owner_entity_id=UUID_TO_BIN(?) AND good_code=? LIMIT 1`,[simulationId,market.entityId,good]);
-    if(!rows.length){
-      await pool.query(`INSERT INTO emergent_inventory(id,simulation_id,owner_entity_id,good_code,quantity,updated_simulation_at,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,1)`,[uuid(),simulationId,market.entityId,good,seed,simulationTime]);
-    }else if(Number(rows[0].quantity)<5){
-      await pool.query(`UPDATE emergent_inventory SET quantity=?,updated_simulation_at=?,version=version+1 WHERE simulation_id=UUID_TO_BIN(?) AND owner_entity_id=UUID_TO_BIN(?) AND good_code=?`,[seed,simulationTime,simulationId,market.entityId,good]);
-    }
+  const [structures]=await pool.query(
+    \`SELECT BIN_TO_UUID(es.entity_id) entityId,es.structure_type type,es.attributes
+       FROM emergent_structures es
+      WHERE es.simulation_id=UUID_TO_BIN(?)\`,
+    [simulationId]
+  );
+  for(const market of structures){
+    if(!isMarketStructure(market))continue;
+    const [rows]=await pool.query(
+      \`SELECT quantity FROM emergent_inventory
+        WHERE simulation_id=UUID_TO_BIN(?) AND owner_entity_id=UUID_TO_BIN(?) AND good_code='FOOD'
+        LIMIT 1\`,
+      [simulationId,market.entityId]
+    );
+    if(rows.length)continue;
+    await pool.query(
+      \`INSERT INTO emergent_inventory
+        (id,simulation_id,owner_entity_id,good_code,quantity,updated_simulation_at,version)
+        VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),'FOOD',12,?,1)\`,
+      [uuid(),simulationId,market.entityId,simulationTime]
+    );
   }
 }
-
 async function ensureJobs(simulationId,simulationTime){
-  const [structures]=await pool.query(`SELECT BIN_TO_UUID(es.id) id,BIN_TO_UUID(es.entity_id) employerId,BIN_TO_UUID(es.scope_location_id) locationId,es.structure_type type,BIN_TO_UUID(es.project_id) projectId FROM emergent_structures es WHERE es.simulation_id=UUID_TO_BIN(?)`,[simulationId]);
+  const [structures]=await pool.query(
+    \`SELECT BIN_TO_UUID(es.entity_id) employerId,BIN_TO_UUID(es.project_id) projectId,
+            es.structure_type type,es.attributes
+       FROM emergent_structures es
+      WHERE es.simulation_id=UUID_TO_BIN(?)\`,
+    [simulationId]
+  );
+
   for(const structure of structures){
-    const role=normalize(structure.type)==="WORKSHOP"?"CRAFTSPERSON":"SELLER";
-    const wage=normalize(structure.type)==="WORKSHOP"?.9:.75;
-    const [members]=await pool.query(`SELECT BIN_TO_UUID(entity_id) entityId FROM emergent_project_members WHERE simulation_id=UUID_TO_BIN(?) AND project_id=UUID_TO_BIN(?) AND entity_id<>UUID_TO_BIN(?) ORDER BY joined_simulation_at LIMIT 8`,[simulationId,structure.projectId,structure.employerId]);
+    const definition=definitionFromStructure(structure);
+    const workActivities=Array.isArray(definition.activities)
+      ?definition.activities.filter(activity=>{
+          const category=normalize(activity?.category);
+          return category==="WORK"||category==="PRODUCTION"||category==="CRAFT";
+        })
+      : [];
+    const shouldHire=isProducerStructure(structure)||workActivities.length>0;
+    if(!shouldHire)continue;
+
+    const role=workActivities[0]?.name
+      ? String(workActivities[0].name).slice(0,80)
+      : normalize(structure.type)==="WORKSHOP"?"CRAFTSPERSON":"WORKER";
+    const wage=Number(
+      workActivities[0]?.wagePerHour ??
+      (normalize(definition.category)==="HIGH_SKILL" ? 1.1 : 0.75)
+    );
+    const safeWage=Number.isFinite(wage)?Math.max(0.25,Math.min(5,wage)):0.75;
+
+    const [members]=await pool.query(
+      \`SELECT BIN_TO_UUID(entity_id) entityId
+         FROM emergent_project_members
+        WHERE simulation_id=UUID_TO_BIN(?) AND project_id=UUID_TO_BIN(?) AND entity_id<>UUID_TO_BIN(?)
+        ORDER BY joined_simulation_at LIMIT 8\`,
+      [simulationId,structure.projectId,structure.employerId]
+    );
+
     for(const member of members){
-      const [existing]=await pool.query(`SELECT id FROM emergent_jobs WHERE simulation_id=UUID_TO_BIN(?) AND employee_entity_id=UUID_TO_BIN(?) AND status="ACTIVE" LIMIT 1`,[simulationId,member.entityId]);
+      const [existing]=await pool.query(
+        \`SELECT id FROM emergent_jobs
+          WHERE simulation_id=UUID_TO_BIN(?) AND employee_entity_id=UUID_TO_BIN(?) AND status='ACTIVE' LIMIT 1\`,
+        [simulationId,member.entityId]
+      );
       if(existing.length)continue;
-      await pool.query(`INSERT INTO emergent_jobs(id,simulation_id,employer_entity_id,employee_entity_id,role,wage_per_hour,status,hired_simulation_at,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?, "ACTIVE",?,1)`,
-        [uuid(),simulationId,structure.employerId,member.entityId,role,wage,simulationTime]);
+      await pool.query(
+        \`INSERT INTO emergent_jobs
+          (id,simulation_id,employer_entity_id,employee_entity_id,role,wage_per_hour,status,hired_simulation_at,version)
+          VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,'ACTIVE',?,1)\`,
+        [uuid(),simulationId,structure.employerId,member.entityId,role,safeWage,simulationTime]
+      );
+    }
+  }
+}
+async function evolvePrices(simulationId,simulationTime){
+  const [markets]=await pool.query(
+    \`SELECT BIN_TO_UUID(es.entity_id) entityId,BIN_TO_UUID(es.scope_location_id) locationId,es.structure_type type,es.attributes
+       FROM emergent_structures es
+      WHERE es.simulation_id=UUID_TO_BIN(?)\`,
+    [simulationId]
+  );
+  const marketRows=markets.filter(isMarketStructure);
+  const [goods]=await pool.query(
+    \`SELECT code,base_price basePrice FROM emergent_goods WHERE simulation_id=UUID_TO_BIN(?) ORDER BY code\`,
+    [simulationId]
+  );
+
+  for(const market of marketRows){
+    for(const good of goods){
+      const [stock]=await pool.query(
+        \`SELECT COALESCE(SUM(quantity),0) supply FROM emergent_inventory
+          WHERE simulation_id=UUID_TO_BIN(?) AND owner_entity_id=UUID_TO_BIN(?) AND good_code=?\`,
+        [simulationId,market.entityId,good.code]
+      );
+      const [demand]=await pool.query(
+        \`SELECT COUNT(*) demand FROM emergent_trades
+          WHERE simulation_id=UUID_TO_BIN(?) AND seller_entity_id=UUID_TO_BIN(?)
+            AND good_code=? AND simulation_at>=DATE_SUB(?,INTERVAL 24 HOUR)\`,
+        [simulationId,market.entityId,good.code,simulationTime]
+      );
+      const supplyValue=Number(stock[0]?.supply||0);
+      const demandValue=Number(demand[0]?.demand||0);
+      const basePrice=Number(good.basePrice||1);
+      const pressure=(demandValue*.18)/Math.max(1,supplyValue);
+      const price=Number((basePrice*clamp(1+pressure,.55,3)).toFixed(4));
+      await pool.query(
+        \`INSERT INTO emergent_market_state
+          (id,simulation_id,location_id,good_code,price,supply,demand,updated_simulation_at,version)
+          VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,?,?,1)
+          ON DUPLICATE KEY UPDATE price=VALUES(price),supply=VALUES(supply),demand=VALUES(demand),
+            updated_simulation_at=VALUES(updated_simulation_at),version=version+1\`,
+        [uuid(),simulationId,market.locationId,good.code,price,supplyValue,demandValue,simulationTime]
+      );
     }
   }
 }
 
-async function evolvePrices(simulationId,simulationTime){
-  const [markets]=await pool.query(`SELECT BIN_TO_UUID(es.entity_id) entityId,BIN_TO_UUID(es.scope_location_id) locationId FROM emergent_structures es WHERE es.simulation_id=UUID_TO_BIN(?) AND es.structure_type="MARKET"`,[simulationId]);
-  for(const market of markets){
-    const [stock]=await pool.query(`SELECT COALESCE(SUM(quantity),0) supply FROM emergent_inventory WHERE simulation_id=UUID_TO_BIN(?) AND owner_entity_id=UUID_TO_BIN(?) AND good_code="FOOD"`,[simulationId,market.entityId]);
-    const [demand]=await pool.query(`SELECT COUNT(*) demand FROM actions WHERE simulation_id=UUID_TO_BIN(?) AND action_type="BUY_FOOD" AND completed_simulation_at>=DATE_SUB(?,INTERVAL 24 HOUR) AND JSON_UNQUOTE(JSON_EXTRACT(result,"$.outcome"))="SUCCESS" AND JSON_UNQUOTE(JSON_EXTRACT(result,"$.targetLocationId"))=?`,[simulationId,simulationTime,market.locationId]);
-    const [base]=await pool.query(`SELECT base_price FROM emergent_goods WHERE simulation_id=UUID_TO_BIN(?) AND code="FOOD" LIMIT 1`,[simulationId]);
-    const supplyValue=Number(stock[0]?.supply||0),demandValue=Number(demand[0]?.demand||0),basePrice=Number(base[0]?.base_price||1);
-    const price=Number((basePrice*clamp(1+(demandValue*.18)/Math.max(5,supplyValue),.55,3)).toFixed(4));
-    await pool.query(`INSERT INTO emergent_market_state(id,simulation_id,location_id,good_code,price,supply,demand,updated_simulation_at,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),"FOOD",?,?,?,?,1) ON DUPLICATE KEY UPDATE price=VALUES(price),supply=VALUES(supply),demand=VALUES(demand),updated_simulation_at=VALUES(updated_simulation_at),version=version+1`,[uuid(),simulationId,market.locationId,price,supplyValue,demandValue,simulationTime]);
-  }
+async function loadLocationGraph(simulationId){
+  const [rows]=await pool.query(
+    \`SELECT BIN_TO_UUID(e.id) locationId,l.address_data addressData
+       FROM locations l JOIN entities e ON e.id=l.entity_id
+      WHERE l.simulation_id=UUID_TO_BIN(?) AND e.simulation_id=UUID_TO_BIN(?) AND e.status='ACTIVE'\`,
+    [simulationId,simulationId]
+  );
+  return rows.map(row=>({locationId:row.locationId,connections:parseJson(row.addressData,{})?.connections||[]}));
 }
 
+function graphDistance(graph,originId,targetId){
+  if(String(originId)===String(targetId))return 0;
+  const byId=new Map(graph.map(row=>[String(row.locationId),row]));
+  const queue=[[String(originId),0]],seen=new Set([String(originId)]);
+  while(queue.length){
+    const [current,distance]=queue.shift();
+    const row=byId.get(current);
+    for(const next of Array.isArray(row?.connections)?row.connections:[]){
+      const id=String(next);
+      if(id===String(targetId))return distance+1;
+      if(!seen.has(id)&&byId.has(id)){seen.add(id);queue.push([id,distance+1]);}
+    }
+  }
+  return Infinity;
+}
+
+async function restockMarkets(simulationId,simulationTime){
+  const [rows]=await pool.query(
+    \`SELECT BIN_TO_UUID(es.entity_id) entityId,BIN_TO_UUID(es.scope_location_id) locationId,es.structure_type type,es.attributes
+       FROM emergent_structures es WHERE es.simulation_id=UUID_TO_BIN(?)\`,
+    [simulationId]
+  );
+  const markets=rows.filter(isMarketStructure), producers=rows.filter(isProducerStructure);
+  if(!markets.length||!producers.length)return {transfers:0,value:0};
+  const graph=await loadLocationGraph(simulationId);
+  const transfers=[];
+
+  for(const market of markets){
+    const [marketAccount]=await pool.query(
+      \`SELECT id,balance FROM emergent_economy_accounts
+        WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) FOR UPDATE\`,
+      [simulationId,market.entityId]
+    );
+    if(!marketAccount.length)continue;
+
+    const [goods]=await pool.query(
+      \`SELECT DISTINCT good_code goodCode FROM emergent_inventory
+        WHERE simulation_id=UUID_TO_BIN(?) AND owner_entity_id IN (SELECT entity_id FROM emergent_structures WHERE simulation_id=UUID_TO_BIN(?)) AND quantity>0\`,
+      [simulationId,simulationId]
+    );
+
+    for(const good of goods){
+      const candidates=[];
+      for(const producer of producers){
+        if(String(producer.entityId)===String(market.entityId))continue;
+        const distance=graphDistance(graph,producer.locationId,market.locationId);
+        if(!Number.isFinite(distance))continue;
+        const [stock]=await pool.query(
+          \`SELECT id,quantity FROM emergent_inventory
+            WHERE simulation_id=UUID_TO_BIN(?) AND owner_entity_id=UUID_TO_BIN(?) AND good_code=? AND quantity>0
+            FOR UPDATE\`,
+          [simulationId,producer.entityId,good.goodCode]
+        );
+        if(stock.length&&Number(stock[0].quantity)>0)candidates.push({producer,stock:stock[0],distance});
+      }
+      candidates.sort((a,b)=>a.distance-b.distance);
+      const candidate=candidates[0];
+      if(!candidate)continue;
+
+      const [priceRows]=await pool.query(
+        \`SELECT price FROM emergent_market_state
+          WHERE simulation_id=UUID_TO_BIN(?) AND location_id=UUID_TO_BIN(?) AND good_code=? LIMIT 1\`,
+        [simulationId,market.locationId,good.goodCode]
+      );
+      const unitPrice=Number(priceRows[0]?.price||1)*0.72;
+      const quantity=Math.min(4,Number(candidate.stock.quantity||0));
+      const total=Number((unitPrice*quantity).toFixed(4));
+      if(quantity<=0||Number(marketAccount[0].balance)<total)continue;
+
+      const [producerAccount]=await pool.query(
+        \`SELECT id FROM emergent_economy_accounts
+          WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) FOR UPDATE\`,
+        [simulationId,candidate.producer.entityId]
+      );
+      if(!producerAccount.length)continue;
+
+      await pool.query(\`UPDATE emergent_inventory SET quantity=quantity-?,updated_simulation_at=?,version=version+1 WHERE id=?\`,
+        [quantity,simulationTime,candidate.stock.id]);
+      const [marketStock]=await pool.query(
+        \`SELECT id FROM emergent_inventory
+          WHERE simulation_id=UUID_TO_BIN(?) AND owner_entity_id=UUID_TO_BIN(?) AND good_code=? FOR UPDATE\`,
+        [simulationId,market.entityId,good.goodCode]
+      );
+      if(marketStock.length){
+        await pool.query(\`UPDATE emergent_inventory SET quantity=quantity+?,updated_simulation_at=?,version=version+1 WHERE id=?\`,
+          [quantity,simulationTime,marketStock[0].id]);
+      }else{
+        await pool.query(
+          \`INSERT INTO emergent_inventory(id,simulation_id,owner_entity_id,good_code,quantity,updated_simulation_at,version)
+           VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,1)\`,
+          [uuid(),simulationId,market.entityId,good.goodCode,quantity,simulationTime]
+        );
+      }
+
+      await pool.query(
+        \`UPDATE emergent_economy_accounts
+           SET balance=balance-?,lifetime_spending=lifetime_spending+?,last_updated_simulation_at=?,version=version+1 WHERE id=?\`,
+        [total,total,simulationTime,marketAccount[0].id]
+      );
+      await pool.query(
+        \`UPDATE emergent_economy_accounts
+           SET balance=balance+?,lifetime_income=lifetime_income+?,last_updated_simulation_at=?,version=version+1 WHERE id=?\`,
+        [total,total,simulationTime,producerAccount[0].id]
+      );
+      transfers.push({marketEntityId:market.entityId,producerEntityId:candidate.producer.entityId,goodCode:good.goodCode,quantity,unitPrice,total,simulationAt:simulationTime});
+    }
+  }
+  return {transfers,totalValue:Number(transfers.reduce((sum,item)=>sum+item.total,0).toFixed(4))};
+}
 async function evolvePolitics(simulationId,simulationTime){
   const [systems]=await pool.query(`SELECT BIN_TO_UUID(id) id FROM emergent_systems WHERE simulation_id=UUID_TO_BIN(?) AND system_type="GOVERNANCE" AND stage<>"ENDED" LIMIT 1`,[simulationId]);
   if(!systems.length)return {governanceId:null,enacted:[]};
@@ -208,12 +428,13 @@ async function evolveSociety(simulationId,simulationTime){
   await ensureAccounts(simulationId,simulationTime);
   await ensureMarketInventory(simulationId,simulationTime);
   await ensureJobs(simulationId,simulationTime);
+  const wholesale=await restockMarkets(simulationId,simulationTime);
   await evolvePrices(simulationId,simulationTime);
   await ensureGovernanceMembers(simulationId,simulationTime);
   const politics=await evolvePolitics(simulationId,simulationTime);
   const wealth=await recordWealth(simulationId,simulationTime);
-  logger.info({simulationId,simulationTime,wealth,politics},"society evolution completed");
-  return {wealth,politics};
+  logger.info({simulationId,simulationTime,wealth,politics,wholesale},"society evolution completed");
+  return {wealth,politics,wholesale};
 }
 
 async function getSocietySnapshot(simulationId){
@@ -242,4 +463,4 @@ async function getSocietySnapshot(simulationId){
   return {systems:decode(systems),goods,markets,accounts,jobs,trades,metrics,policies:decode(policies),conflicts:decode(conflicts),openEnded:{proposals:decodeOpen(openProposals),definitions:decodeOpen(openDefinitions)}};
 }
 
-module.exports={evolveSociety,evolvePolitics,executeEconomicAction,getSocietySnapshot,gini,ensureCatalog};
+module.exports={evolveSociety,evolvePolitics,executeEconomicAction,getSocietySnapshot,gini,ensureCatalog,restockMarkets,isMarketStructure,isProducerStructure};
