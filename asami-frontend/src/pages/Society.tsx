@@ -1,6 +1,6 @@
 
-import { Building2, Coins, Gavel, Handshake, Landmark, Scale, ShoppingBag, Sparkles, TrendingUp, Users, WalletCards } from 'lucide-react'
-import type { SocietySnapshot, WorldSnapshot } from '../types'
+import { Activity, ArrowRight, Building2, CircleCheck, CircleDashed, Coins, Factory, Gavel, Handshake, Landmark, Scale, ShoppingBag, Sparkles, TrendingUp, Users, WalletCards } from 'lucide-react'
+import type { SocietySnapshot, WorldEvent, WorldSnapshot } from '../types'
 import { labelize, pct, formatSimTime } from '../lib/format'
 import { EmptyState, Panel, StatusPill } from '../components/Ui'
 import './Society.css'
@@ -13,6 +13,66 @@ function nameFor(id: string | null | undefined, world: WorldSnapshot | null) {
     || id.slice(0, 8)
 }
 function latestMetric(society: SocietySnapshot | null) { return society?.metrics?.[0] || null }
+
+function societyStage(society: SocietySnapshot) {
+  const proposals = society.openEnded?.proposals?.length ?? 0
+  const definitions = society.openEnded?.definitions?.length ?? 0
+  const structures = society.openEnded?.definitions?.filter(item => ['STRUCTURE', 'INSTITUTION', 'SYSTEM'].includes(String(item.kind).toUpperCase())).length ?? 0
+  const economy = society.markets.length > 0 || (society.businesses?.length ?? 0) > 0 || society.trades.length > 0
+  const governance = society.policies.length > 0 || society.conflicts.length > 0
+
+  if (governance) return 4
+  if (economy) return 3
+  if (structures > 0) return 2
+  if (proposals > 0 || definitions > 0) return 1
+  return 0
+}
+
+function societyNarrative(society: SocietySnapshot) {
+  const activeBusinesses = society.businesses?.filter(item => item.status === 'ACTIVE').length ?? 0
+  const totalBusinesses = society.businesses?.length ?? 0
+  const activeJobs = society.jobs.filter(item => item.status === 'ACTIVE').length
+  const proposalCount = society.openEnded?.proposals?.length ?? 0
+  const definitionCount = society.openEnded?.definitions?.length ?? 0
+
+  if (society.trades.length > 0) {
+    return 'La società è entrata in una fase economica osservabile: ci sono già scambi registrati. I prossimi segnali da seguire sono prezzi, produzione, salari e distribuzione della ricchezza.'
+  }
+  if (society.markets.length > 0) {
+    return 'Esiste almeno un mercato con domanda e offerta misurate, ma non risultano ancora scambi recenti. Il passaggio importante da osservare è quando qualcuno inizia a comprare, vendere o produrre per quel mercato.'
+  }
+  if (activeBusinesses > 0 || totalBusinesses > 0 || activeJobs > 0) {
+    return 'L’economia sta iniziando a prendere forma: imprese e rapporti di lavoro sono già tracciati. Ora il sistema può iniziare a far circolare ricavi, salari e beni.'
+  }
+  if (definitionCount > 0 || proposalCount > 0) {
+    return 'Il mondo è nella fase di sperimentazione sociale: gli abitanti stanno producendo nuove attività, strutture o istituzioni. Per ora queste innovazioni non hanno ancora generato un mercato o un ciclo economico completo.'
+  }
+  return 'La società è ancora nella fase iniziale. Gli abitanti stanno costruendo pressione, esperienze e relazioni da cui potranno emergere nuove organizzazioni.'
+}
+
+function societyEventLabel(event: WorldEvent) {
+  const kind = String(event.metadata?.kind || '').toUpperCase()
+  if (kind === 'DEFINITION_ACCEPTED') return 'Nuova definizione'
+  if (kind === 'SYSTEM_FORMED') return 'Nuovo sistema'
+  if (kind.includes('POLICY')) return 'Politica'
+  if (kind.includes('BUSINESS')) return 'Impresa'
+  if (kind.includes('TRADE')) return 'Scambio'
+  if (kind.includes('CONFLICT')) return 'Conflitto'
+  if (kind) return labelize(kind)
+  return labelize(event.category || event.type || 'Evento')
+}
+
+function isSocietyEvent(event: WorldEvent) {
+  const text = [event.title, event.type, event.category, event.metadata?.kind]
+    .map(value => String(value || '')).join(' ').toUpperCase()
+  return Number(event.importance || 0) >= .6 || /EMERG|DEFINITION|SYSTEM_FORMED|BUSINESS|TRADE|POLICY|CONFLICT|GOVERN/.test(text)
+}
+
+function societyEventDetail(event: WorldEvent, world: WorldSnapshot | null) {
+  if (event.description) return event.description
+  const location = event.locationId ? nameFor(event.locationId, world) : null
+  return location ? `Luogo coinvolto · ${location}` : 'Il motore ha registrato un cambiamento persistente.'
+}
 
 export function Society({ society, world }: { society: SocietySnapshot | null; world: WorldSnapshot | null }) {
   if (!society) return <EmptyState icon={<Landmark size={22} />} title="Società non ancora materializzata" text="Il motore deve attraversare alcune iterazioni del mondo prima che compaiano economia, istituzioni e strutture emergenti." />
@@ -37,6 +97,97 @@ export function Society({ society, world }: { society: SocietySnapshot | null; w
         <p>Nessuna città, economia o legge è stata inserita manualmente: qui vedi le strutture che gli abitanti hanno prodotto attraverso bisogni, coordinamento e conflitti.</p>
       </div>
       <div className="society-hero-badge"><TrendingUp size={15} /><span>{metric ? formatSimTime(metric.simulationAt) : 'in formazione'}</span></div>
+    </div>
+
+    <section className="society-now">
+      <div className="society-now-main">
+        <div className="society-now-header">
+          <div>
+            <div className="eyebrow">STATO DEL MONDO</div>
+            <h2>Cosa sta succedendo adesso</h2>
+          </div>
+          <span className="society-state-pill"><Activity size={13} /> fase {societyStage(society)} / 4</span>
+        </div>
+        <p className="society-now-summary">{societyNarrative(society)}</p>
+        <div className="society-progress">
+          {[
+            { n: 1, label: 'Pressione', done: society.openEnded?.proposals?.length > 0 || society.openEnded?.definitions?.length > 0, text: 'Bisogni e idee iniziano a produrre proposte.' },
+            { n: 2, label: 'Strutture', done: society.openEnded?.definitions?.some(item => ['STRUCTURE', 'INSTITUTION', 'SYSTEM'].includes(String(item.kind).toUpperCase())) ?? false, text: 'Una proposta diventa una capacità persistente.' },
+            { n: 3, label: 'Economia', done: society.markets.length > 0 || (society.businesses?.length ?? 0) > 0 || society.trades.length > 0, text: 'Compaiono mercato, produzione, lavoro e scambi.' },
+            { n: 4, label: 'Governance', done: society.policies.length > 0 || society.conflicts.length > 0, text: 'Interessi differenti iniziano a produrre regole o conflitti.' },
+          ].map((stage, index) => (
+            <div className={`society-progress-step ${stage.done ? 'done' : societyStage(society) === stage.n - 1 ? 'current' : 'locked'}`} key={stage.n}>
+              <div className="society-progress-marker">{stage.done ? <CircleCheck size={14} /> : <span>{stage.n}</span>}</div>
+              <div className="society-progress-copy"><strong>{stage.label}</strong><span>{stage.text}</span></div>
+              {index < 3 && <ArrowRight className="society-progress-arrow" size={13} />}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="society-next">
+        <div className="eyebrow">PROSSIMO SEGNALE</div>
+        {society.markets.length === 0 && (society.businesses?.length ?? 0) === 0 ? (
+          <>
+            <Factory size={22} />
+            <strong>Produzione o commercio</strong>
+            <p>Il mondo non ha ancora raggiunto un ciclo economico osservabile. Cerca una struttura che inizi a vendere, produrre o assumere.</p>
+          </>
+        ) : society.trades.length === 0 ? (
+          <>
+            <ShoppingBag size={22} />
+            <strong>Primo scambio</strong>
+            <p>Esistono già capacità economiche, ma non sono ancora comparsi scambi recenti.</p>
+          </>
+        ) : society.jobs.length === 0 ? (
+          <>
+            <Users size={22} />
+            <strong>Primo lavoro</strong>
+            <p>Gli scambi sono iniziati: il passaggio successivo da osservare è la formazione di rapporti di lavoro e salari.</p>
+          </>
+        ) : (
+          <>
+            <TrendingUp size={22} />
+            <strong>Effetti a cascata</strong>
+            <p>Ora puoi seguire come prezzi, salari, ricavi e ricchezza iniziano a modificarsi a vicenda.</p>
+          </>
+        )}
+      </div>
+    </section>
+
+    <div className="society-columns society-change-grid">
+      <Panel title="Cambiamenti recenti" eyebrow="CRONOLOGIA DEL MONDO">
+        <div className="society-event-list">
+          {(world?.recentEvents || []).filter(isSocietyEvent).sort((a, b) => new Date(b.simulationAt).getTime() - new Date(a.simulationAt).getTime()).slice(0, 10).map(event => (
+            <article className="society-event" key={event.id}>
+              <div className="society-event-time">{formatSimTime(event.simulationAt)}</div>
+              <div className="society-event-dot" />
+              <div className="society-event-body">
+                <div className="society-event-top"><strong>{event.title}</strong><span>{societyEventLabel(event)}</span></div>
+                <p>{societyEventDetail(event, world)}</p>
+              </div>
+            </article>
+          ))}
+          {!(world?.recentEvents || []).some(isSocietyEvent) && (
+            <EmptyState icon={<CircleDashed size={20} />} title="Nessun cambiamento sociale recente" text="Le azioni ordinarie continuano, ma non è ancora stato registrato un cambiamento sociale abbastanza rilevante da apparire qui." />
+          )}
+        </div>
+      </Panel>
+
+      <Panel title="Cosa sta cambiando davvero" eyebrow="LETTURA RAPIDA">
+        <div className="society-read-grid">
+          <div><span>Nuove idee</span><strong>{society.openEnded?.proposals?.length ?? 0}</strong><p>proposte registrate</p></div>
+          <div><span>Capacità persistenti</span><strong>{society.openEnded?.definitions?.length ?? 0}</strong><p>definizioni attive</p></div>
+          <div><span>Mercati</span><strong>{society.markets.length}</strong><p>luoghi con prezzo</p></div>
+          <div><span>Imprese</span><strong>{society.businesses?.filter(item => item.status === 'ACTIVE').length ?? 0}</strong><p>attive ora</p></div>
+          <div><span>Lavoro</span><strong>{society.jobs.length}</strong><p>rapporti attivi</p></div>
+          <div><span>Scambi</span><strong>{society.trades.length}</strong><p>registrati nel periodo</p></div>
+        </div>
+        <div className="society-observation">
+          <span>Come interpretarlo</span>
+          <p>{societyNarrative(society)}</p>
+        </div>
+      </Panel>
     </div>
 
     <div className="metric-grid society-metrics">
