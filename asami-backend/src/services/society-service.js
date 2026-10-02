@@ -354,14 +354,20 @@ async function recordWealth(simulationId,simulationTime){
   return {population:pop,totalWealth:total,averageWealth:avg,gini:inequality};
 }
 
-async function executeEconomicAction({conn,simulationId,entityId,actionType,simulationTime}){
+async function executeEconomicAction({conn,simulationId,entityId,actionType,simulationTime,durationMinutes=120}){
   const action=normalize(actionType);
   if(action==="BUY_FOOD"){
     const [loc]=await conn.query(`SELECT BIN_TO_UUID(location_id) locationId FROM entity_locations_current WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) LIMIT 1`,[simulationId,entityId]);
     const locationId=loc[0]?.locationId;if(!locationId)return {ok:false,failureReason:"NO_LOCATION"};
-    const [seller]=await conn.query(`SELECT BIN_TO_UUID(entity_id) entityId FROM emergent_structures WHERE simulation_id=UUID_TO_BIN(?) AND scope_location_id=UUID_TO_BIN(?) AND structure_type="MARKET" LIMIT 1`,[simulationId,locationId]);
-    if(!seller.length)return {ok:false,failureReason:"NO_MARKET"};
-    const sellerId=seller[0].entityId;
+    const [sellerRows]=await conn.query(
+      `SELECT BIN_TO_UUID(entity_id) entityId,structure_type type,attributes
+         FROM emergent_structures
+        WHERE simulation_id=UUID_TO_BIN(?) AND scope_location_id=UUID_TO_BIN(?)`,
+      [simulationId,locationId]
+    );
+    const seller=sellerRows.find(isMarketStructure);
+    if(!seller)return {ok:false,failureReason:"NO_MARKET"};
+    const sellerId=seller.entityId;
     const [price]=await conn.query(`SELECT price FROM emergent_market_state WHERE simulation_id=UUID_TO_BIN(?) AND location_id=UUID_TO_BIN(?) AND good_code="FOOD" LIMIT 1`,[simulationId,locationId]);
     const unitPrice=Number(price[0]?.price||1);
     const [stock]=await conn.query(`SELECT id,quantity FROM emergent_inventory WHERE simulation_id=UUID_TO_BIN(?) AND owner_entity_id=UUID_TO_BIN(?) AND good_code="FOOD" FOR UPDATE`,[simulationId,sellerId]);
@@ -394,7 +400,8 @@ async function executeEconomicAction({conn,simulationId,entityId,actionType,simu
     const [job]=await conn.query(`SELECT id,wage_per_hour wage,employer_entity_id employerId FROM emergent_jobs WHERE simulation_id=UUID_TO_BIN(?) AND employee_entity_id=UUID_TO_BIN(?) AND status="ACTIVE" LIMIT 1 FOR UPDATE`,[simulationId,entityId]);
     if(!job.length)return {ok:false,failureReason:"NO_JOB"};
     const wage=Number(job[0].wage||0.75);
-    const gross=Number((wage*2).toFixed(4));
+    const workedHours=Math.max(0.25,Math.min(12,Number(durationMinutes||120)/60));
+    const gross=Number((wage*workedHours).toFixed(4));
     const [policyRows]=await conn.query(`SELECT parameters FROM emergent_policies WHERE simulation_id=UUID_TO_BIN(?) AND status="ENACTED" ORDER BY updated_simulation_at DESC LIMIT 1`,[simulationId]);
     const policy=parseJson(policyRows[0]?.parameters,{});
     const mandatoryTax=normalize(policy.fundingModel)==="COMMON_POOL" ? clamp(Number(policy.contributionRate||0),0,.35) : 0;
@@ -418,7 +425,7 @@ async function executeEconomicAction({conn,simulationId,entityId,actionType,simu
     await conn.query(`UPDATE emergent_economy_accounts SET balance=balance-?,last_updated_simulation_at=?,version=version+1 WHERE id=?`,[gross,simulationTime,employer[0].id]);
     await conn.query(`UPDATE emergent_economy_accounts SET balance=balance+?,lifetime_income=lifetime_income+?,last_updated_simulation_at=?,version=version+1 WHERE id=?`,[amount,amount,simulationTime,employee[0].id]);
     if(governmentAccount){await conn.query(`UPDATE emergent_economy_accounts SET balance=balance+?,lifetime_income=lifetime_income+?,last_updated_simulation_at=?,version=version+1 WHERE id=?`,[tax,tax,simulationTime,governmentAccount.id]);}
-    return {ok:true,economicType:"WAGE",grossWage:gross,netWage:amount,tax,employerEntityId:job[0].employerId};
+    return {ok:true,economicType:"WAGE",grossWage:gross,netWage:amount,tax,workedHours,employerEntityId:job[0].employerId};
   }
   return null;
 }
