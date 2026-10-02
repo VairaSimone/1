@@ -1,6 +1,7 @@
 const { pool } = require("../db/pool");
 const { uuid } = require("../lib/ids");
 const { createEvent } = require("./event-service");
+const { ensureCapabilitiesForEmergentStructures } = require("./world-capability-service");
 const logger = require("../lib/logger");
 
 const PERSON = "00000000-0000-4000-8000-000000000001";
@@ -444,12 +445,13 @@ async function progressEmergence(simulationId,simulationTime) {
       if(result)materialized.push(result);
     }
   }
+  const capabilities=await ensureCapabilitiesForEmergentStructures(simulationId,simulationTime);
   const systems=await evolveMacroSystems(simulationId,simulationTime);
   const resourceConflicts=await createConflicts(simulationId,simulationTime);
   const policies=systems.governanceId?await createPolicyAlternatives(simulationId,simulationTime):[];
   const policyConflicts=await createConflicts(simulationId,simulationTime);
   logger.info({simulationId,simulationTime,proposedProjects:proposed.length,materializedStructures:materialized.length,resourceConflicts,policyCount:policies.length,policyConflicts},"emergent world maintenance completed");
-  return {proposedProjects:proposed,materializedStructures:materialized,systems,policies,conflicts:resourceConflicts+policyConflicts};
+  return {proposedProjects:proposed,materializedStructures:materialized,capabilities,systems,policies,conflicts:resourceConflicts+policyConflicts};
 }
 
 async function getEmergentSnapshot(simulationId) {
