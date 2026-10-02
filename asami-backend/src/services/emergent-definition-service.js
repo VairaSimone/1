@@ -36,7 +36,7 @@ function normalizeEffect(effect) {
     return { type, needCode:code(item.needCode), delta:Number(item.delta) };
   }
   if(type==="RESOURCE_DELTA"){
-    return { type, resource:code(item.resource), delta:Number(item.delta) };
+    return { type, resource:String(item.resource||"").trim().toLowerCase(), delta:Number(item.delta) };
   }
   if(type==="INVENTORY_DELTA"){
     return { type, goodCode:code(item.goodCode), delta:Number(item.delta) };
@@ -74,7 +74,8 @@ function normalizeDefinition(definition={}) {
   if(source.resourceCosts && typeof source.resourceCosts==="object"){
     for(const [k,v] of Object.entries(source.resourceCosts).slice(0,8)){
       const n=Number(v);
-      if(CODE_RE.test(code(k)) && Number.isFinite(n) && n>=0 && n<=50)resourceCosts[code(k)]=Number(n.toFixed(3));
+      const resource=String(k||"").trim().toLowerCase();
+      if(CODE_RE.test(code(k)) && Number.isFinite(n) && n>=0 && n<=50)resourceCosts[resource]=Number(n.toFixed(3));
     }
   }
   return {
