@@ -326,22 +326,26 @@ async function loadCapabilitiesForEntities(simulationId, entityIds = []) {
     "SELECT BIN_TO_UUID(elc.entity_id) entityId,wc.code " +
     "FROM entity_locations_current elc " +
     "JOIN world_capabilities wc ON wc.location_id=elc.location_id AND wc.simulation_id=elc.simulation_id " +
-    "JOIN emergent_structures es ON es.simulation_id=wc.simulation_id AND es.scope_location_id=wc.location_id " +
+    "LEFT JOIN emergent_structures es ON es.simulation_id=wc.simulation_id AND es.scope_location_id=wc.location_id " +
+    "LEFT JOIN emergent_systems sys ON sys.simulation_id=wc.simulation_id AND sys.scope_location_id=wc.location_id AND sys.stage<>'ENDED' " +
     "JOIN emergent_inventory ei ON ei.simulation_id=wc.simulation_id AND ei.owner_entity_id=elc.entity_id " +
     "  AND ei.good_code=SUBSTRING(wc.code,6) AND ei.quantity>0 " +
     "WHERE elc.simulation_id=UUID_TO_BIN(?) AND elc.entity_id IN (" + placeholders + ") " +
-    "AND wc.active=1 AND wc.code LIKE 'SELL_%'",
+    "AND wc.active=1 AND wc.code LIKE 'SELL_%' AND (es.entity_id IS NOT NULL OR sys.id IS NOT NULL)",
     [simulationId, ...ids]
   );
   const [buyable] = await pool.query(
     "SELECT BIN_TO_UUID(elc.entity_id) entityId,wc.code " +
     "FROM entity_locations_current elc " +
     "JOIN world_capabilities wc ON wc.location_id=elc.location_id AND wc.simulation_id=elc.simulation_id " +
-    "JOIN emergent_structures es ON es.simulation_id=wc.simulation_id AND es.scope_location_id=wc.location_id " +
-    "JOIN emergent_inventory ei ON ei.simulation_id=wc.simulation_id AND ei.owner_entity_id=es.entity_id " +
+    "LEFT JOIN emergent_structures es ON es.simulation_id=wc.simulation_id AND es.scope_location_id=wc.location_id " +
+    "LEFT JOIN emergent_systems sys ON sys.simulation_id=wc.simulation_id AND sys.scope_location_id=wc.location_id AND sys.stage<>'ENDED' " +
+    "JOIN emergent_inventory ei ON ei.simulation_id=wc.simulation_id AND " +
+    "  (ei.owner_entity_id=COALESCE(es.entity_id,ei.owner_entity_id) OR " +
+    "   sys.id IS NOT NULL AND ei.owner_entity_id=UUID_TO_BIN(JSON_UNQUOTE(JSON_EXTRACT(sys.attributes,'$.systemEntityId')))) " +
     "  AND ei.good_code=SUBSTRING(wc.code,5) AND ei.quantity>0 " +
     "WHERE elc.simulation_id=UUID_TO_BIN(?) AND elc.entity_id IN (" + placeholders + ") " +
-    "AND wc.active=1 AND wc.code LIKE 'BUY_%'",
+    "AND wc.active=1 AND wc.code LIKE 'BUY_%' AND (es.entity_id IS NOT NULL OR sys.id IS NOT NULL)",
     [simulationId, ...ids]
   );
   const allowedSell = new Set(sellable.map(row => `${row.entityId}|${normalize(row.code)}`));
