@@ -113,6 +113,8 @@ function normalizeDefinition(definition={}) {
     name:sanitizeText(source.name,160,code(source.code).replaceAll("_"," ").toLowerCase()),
     category:sanitizeText(source.category,64,"EMERGENT").toUpperCase(),
     purpose:sanitizeText(source.purpose,600,"A new social possibility proposed by inhabitants."),
+    market:Boolean(source.market),
+    production:Boolean(source.production),
     activities,
     products,
     resourceCosts,
