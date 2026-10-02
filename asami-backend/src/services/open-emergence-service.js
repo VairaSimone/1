@@ -241,7 +241,7 @@ function deterministicFallbackDefinition(signal, proposer, simulationTime, { eco
     origin: "DETERMINISTIC_FALLBACK"
   });
 }
-async function askGemini(gemini, { simulationTime, scope, signal, proposer, actors }) {
+async function askGemini(gemini, { simulationTime, scope, signal, proposer, actors, economicOpportunity = false, similarProposalCount = 0, recentLocalDefinitions = [] }) {
   if (!gemini || typeof gemini.generateJson !== "function") return null;
   const context = {
     simulationTime,
@@ -269,14 +269,20 @@ async function askGemini(gemini, { simulationTime, scope, signal, proposer, acto
       displayName: actor.displayName,
       needs: Object.fromEntries(Object.entries(actor.needs || {}).sort((a, b) => b[1] - a[1]).slice(0, 5)),
       traits: Object.fromEntries(Object.entries(actor.traits || {}).sort((a, b) => b[1] - a[1]).slice(0, 4))
-    }))
+    })),
+    economicOpportunity,
+    recurringSimilarProposals: Number(similarProposalCount || 0),
+    recentLocalDefinitions
   };
 
   const prompt = [
     "You are the generative design layer inside an autonomous society simulation.",
     "One inhabitant is proposing a genuinely new social possibility in response to a shared local pressure.",
     "Invent a novel STRUCTURE, INSTITUTION, ACTIVITY, or SYSTEM. Do not assume a fixed project taxonomy.",
+    "Treat existing local inventions as part of the society's history: do not recreate the same semantic solution. Extend, specialize, transform, or replace an existing solution when appropriate.",
+    "If recurringSimilarProposals is greater than zero, prefer a genuinely different consequence or a concrete evolution of the existing local invention rather than another renamed copy.",
     "The definition is data, not code. It may only use safe effects: NEED_DELTA, RESOURCE_DELTA, INVENTORY_DELTA, PRODUCTION.",
+    "When economicOpportunity is true, the proposal must create a durable material/economic capability (market, commerce, production, or work) caused by recurring local pressure; never invent money or free resources.",
     "Never emit SQL, code, commands, external URLs, invented entity IDs, arbitrary formulas, or effects outside the safe vocabulary.",
     "Activities are compositional: code, name, category, need weights, gate, duration and safe effect combinations may be novel.",
     "Make the proposal concrete and locally plausible from the people and resources shown.",
