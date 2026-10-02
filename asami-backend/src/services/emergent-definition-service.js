@@ -356,7 +356,15 @@ async function applyProductionEffect({conn,simulationId,entityId,simulationTime,
     "WHERE es.simulation_id=UUID_TO_BIN(?) AND es.scope_location_id=UUID_TO_BIN(?) LIMIT 1 FOR UPDATE",
     [simulationId,locationId]
   );
-  const producerEntityId=structureRows[0]?.producerEntityId;
+  let producerEntityId=structureRows[0]?.producerEntityId||null;
+  if(!producerEntityId){
+    const [systemRows]=await conn.query(
+      "SELECT BIN_TO_UUID(JSON_UNQUOTE(JSON_EXTRACT(attributes,'$.systemEntityId'))) producerEntityId " +
+      "FROM emergent_systems WHERE simulation_id=UUID_TO_BIN(?) AND scope_location_id=UUID_TO_BIN(?) LIMIT 1 FOR UPDATE",
+      [simulationId,locationId]
+    );
+    producerEntityId=systemRows[0]?.producerEntityId||null;
+  }
   if(!producerEntityId)return {ok:false,failureReason:"NO_PRODUCTION_STRUCTURE",effect};
 
   const [jobRows]=await conn.query(
