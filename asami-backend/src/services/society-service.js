@@ -93,20 +93,29 @@ async function ensureJobs(simulationId,simulationTime){
 
   for(const structure of structures){
     const definition=definitionFromStructure(structure);
-    const workActivities=Array.isArray(definition.activities)
+    const [businessRows]=await pool.query(
+      `SELECT production_capacity productionCapacity,status
+         FROM emergent_businesses
+        WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) LIMIT 1`,
+      [simulationId,structure.employerId]
+    );
+    if(businessRows.length && String(businessRows[0].status)!=="ACTIVE")continue;
+    const capacity=Math.max(.25,Math.min(10,Number(businessRows[0]?.productionCapacity||1)));
+    const maxWorkers=Math.max(1,Math.min(12,Math.ceil(capacity*3)));
+    const definitionWorkActivities=Array.isArray(definition.activities)
       ?definition.activities.filter(activity=>{
           const category=normalize(activity?.category);
           return category==="WORK"||category==="PRODUCTION"||category==="CRAFT";
         })
       : [];
-    const shouldHire=isProducerStructure(structure)||workActivities.length>0;
+    const shouldHire=isProducerStructure(structure)||definitionWorkActivities.length>0;
     if(!shouldHire)continue;
 
-    const role=workActivities[0]?.name
-      ? String(workActivities[0].name).slice(0,80)
+    const role=definitionWorkActivities[0]?.name
+      ? String(definitionWorkActivities[0].name).slice(0,80)
       : normalize(structure.type)==="WORKSHOP"?"CRAFTSPERSON":"WORKER";
     const wage=Number(
-      workActivities[0]?.wagePerHour ??
+      definitionWorkActivities[0]?.wagePerHour ??
       (normalize(definition.category)==="HIGH_SKILL" ? 1.1 : 0.75)
     );
     const safeWage=Number.isFinite(wage)?Math.max(0.25,Math.min(5,wage)):0.75;
@@ -115,8 +124,8 @@ async function ensureJobs(simulationId,simulationTime){
       `SELECT BIN_TO_UUID(entity_id) entityId
          FROM emergent_project_members
         WHERE simulation_id=UUID_TO_BIN(?) AND project_id=UUID_TO_BIN(?) AND entity_id<>UUID_TO_BIN(?)
-        ORDER BY joined_simulation_at LIMIT 8`,
-      [simulationId,structure.projectId,structure.employerId]
+        ORDER BY joined_simulation_at LIMIT ?`,
+      [simulationId,structure.projectId,structure.employerId,maxWorkers]
     );
 
     for(const member of members){
