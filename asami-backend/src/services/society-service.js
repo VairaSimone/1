@@ -272,7 +272,7 @@ async function evolvePrices(simulationId,simulationTime){
     [simulationId]
   );
   const [systemMarkets]=await pool.query(
-    'SELECT BIN_TO_UUID(JSON_UNQUOTE(JSON_EXTRACT(es.attributes,"$.systemEntityId"))) entityId,BIN_TO_UUID(es.scope_location_id) locationId,es.system_type type,es.attributes FROM emergent_systems es WHERE es.simulation_id=UUID_TO_BIN(?) AND es.stage<>"ENDED"',
+    'SELECT JSON_UNQUOTE(JSON_EXTRACT(es.attributes,"$.systemEntityId")) entityId,BIN_TO_UUID(es.scope_location_id) locationId,es.system_type type,es.attributes FROM emergent_systems es WHERE es.simulation_id=UUID_TO_BIN(?) AND es.stage<>"ENDED"',
     [simulationId]
   );
   const marketRows=[...structureMarkets,...systemMarkets].filter(isMarketStructure);
@@ -347,7 +347,7 @@ async function restockMarkets(simulationId,simulationTime){
     [simulationId]
   );
   const [systemRows]=await pool.query(
-    'SELECT BIN_TO_UUID(JSON_UNQUOTE(JSON_EXTRACT(es.attributes,"$.systemEntityId"))) entityId,BIN_TO_UUID(es.scope_location_id) locationId,es.system_type type,es.attributes FROM emergent_systems es WHERE es.simulation_id=UUID_TO_BIN(?) AND es.stage<>"ENDED"',
+    'SELECT JSON_UNQUOTE(JSON_EXTRACT(es.attributes,"$.systemEntityId")) entityId,BIN_TO_UUID(es.scope_location_id) locationId,es.system_type type,es.attributes FROM emergent_systems es WHERE es.simulation_id=UUID_TO_BIN(?) AND es.stage<>"ENDED"',
     [simulationId]
   );
   const rows=[...structureRows,...systemRows].filter(row=>row.entityId);
