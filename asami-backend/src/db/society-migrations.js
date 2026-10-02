@@ -101,7 +101,7 @@ async function ensureSocietyMigrations() {
     failure_count INT NOT NULL DEFAULT 0, last_evaluated_simulation_at DATETIME(3) NULL,
     created_simulation_at DATETIME(3) NOT NULL, updated_simulation_at DATETIME(3) NOT NULL, version INT NOT NULL DEFAULT 1,
     UNIQUE KEY uq_eb_entity (simulation_id,entity_id), KEY idx_eb_status (simulation_id,status)
-  `);
+  )`);
 
   await pool.query(`CREATE TABLE IF NOT EXISTS emergent_production_history (
     id BINARY(16) PRIMARY KEY, simulation_id BINARY(16) NOT NULL, producer_entity_id BINARY(16) NOT NULL,
