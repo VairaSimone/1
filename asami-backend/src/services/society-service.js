@@ -228,8 +228,18 @@ async function getSocietySnapshot(simulationId){
     pool.query(`SELECT BIN_TO_UUID(id) id,BIN_TO_UUID(proposer_entity_id) proposerEntityId,BIN_TO_UUID(governance_system_id) governanceSystemId,issue_code issueCode,title,statement,parameters,support_score supportScore,opposition_score oppositionScore,status,created_simulation_at createdAt FROM emergent_policies WHERE simulation_id=UUID_TO_BIN(?) ORDER BY created_simulation_at DESC LIMIT 50`,[simulationId]),
     pool.query(`SELECT BIN_TO_UUID(id) id,BIN_TO_UUID(scope_location_id) scopeLocationId,conflict_type conflictType,left_type leftType,BIN_TO_UUID(left_id) leftId,right_type rightType,BIN_TO_UUID(right_id) rightId,intensity,status,metadata,created_simulation_at createdAt,resolved_simulation_at resolvedAt FROM emergent_conflicts WHERE simulation_id=UUID_TO_BIN(?) ORDER BY created_simulation_at DESC LIMIT 50`,[simulationId])
   ]);
+  const [[openProposals],[openDefinitions]]=await Promise.all([
+    pool.query(`SELECT BIN_TO_UUID(id) id,BIN_TO_UUID(proposer_entity_id) proposerEntityId,BIN_TO_UUID(scope_location_id) scopeLocationId,
+      kind,code,title,definition,validation,support_score supportScore,required_support requiredSupport,status,
+      created_simulation_at createdAt,decided_simulation_at decidedAt
+      FROM emergent_world_proposals WHERE simulation_id=UUID_TO_BIN(?) ORDER BY created_simulation_at DESC LIMIT 40`,[simulationId]),
+    pool.query(`SELECT BIN_TO_UUID(id) id,kind,code,name,category,BIN_TO_UUID(scope_location_id) scopeLocationId,
+      BIN_TO_UUID(origin_entity_id) originEntityId,definition,status,created_simulation_at createdAt
+      FROM emergent_definition_catalog WHERE simulation_id=UUID_TO_BIN(?) ORDER BY created_simulation_at DESC LIMIT 60`,[simulationId])
+  ]);
   const decode=rows=>rows.map(row=>{for(const k of ["attributes","parameters","metadata"])if(row[k]!==undefined)row[k]=parseJson(row[k],row[k]);return row;});
-  return {systems:decode(systems),goods,markets,accounts,jobs,trades,metrics,policies:decode(policies),conflicts:decode(conflicts)};
+  const decodeOpen=rows=>rows.map(row=>{for(const k of ["definition","validation"])if(row[k]!==undefined)row[k]=parseJson(row[k],row[k]);return row;});
+  return {systems:decode(systems),goods,markets,accounts,jobs,trades,metrics,policies:decode(policies),conflicts:decode(conflicts),openEnded:{proposals:decodeOpen(openProposals),definitions:decodeOpen(openDefinitions)}};
 }
 
 module.exports={evolveSociety,evolvePolitics,executeEconomicAction,getSocietySnapshot,gini,ensureCatalog};
