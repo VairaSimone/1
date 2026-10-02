@@ -145,6 +145,55 @@ async function ensureJobs(simulationId,simulationTime){
       );
     }
   }
+  const [systems]=await pool.query(
+    \`SELECT BIN_TO_UUID(es.id) systemId,es.attributes
+       FROM emergent_systems es
+      WHERE es.simulation_id=UUID_TO_BIN(?) AND es.stage<>'ENDED'\`,
+    [simulationId]
+  );
+  for(const system of systems){
+    const attributes=parseJson(system.attributes,{});
+    const systemEntityId=attributes.systemEntityId;
+    const definition=attributes.definition||{};
+    const work=Array.isArray(definition.activities)
+      ?definition.activities.find(activity=>{
+          const c=normalize(activity?.category);
+          return c==='WORK'||c==='PRODUCTION'||c==='CRAFT';
+        })
+      : null;
+    if(!systemEntityId||!work)continue;
+    const [businessRows]=await pool.query(
+      \`SELECT production_capacity productionCapacity,status
+         FROM emergent_businesses
+        WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) LIMIT 1\`,
+      [simulationId,systemEntityId]
+    );
+    if(businessRows.length&&String(businessRows[0].status)!=='ACTIVE')continue;
+    const capacity=Math.max(.25,Math.min(10,Number(businessRows[0]?.productionCapacity||1)));
+    const maxWorkers=Math.max(1,Math.min(12,Math.ceil(capacity*3)));
+    let wage=Number(work.wagePerHour??.75);
+    wage=Math.max(wage,Math.max(0,Math.min(5,Number(economicPolicy.minimumWage||0))));
+    const safeWage=Number.isFinite(wage)?Math.max(.25,Math.min(5,wage)):.75;
+    const [members]=await pool.query(
+      \`SELECT BIN_TO_UUID(entity_id) entityId FROM emergent_system_members
+        WHERE simulation_id=UUID_TO_BIN(?) AND system_id=UUID_TO_BIN(?) ORDER BY joined_simulation_at LIMIT ?\`,
+      [simulationId,system.systemId,maxWorkers]
+    );
+    for(const member of members){
+      const [existing]=await pool.query(
+        \`SELECT id FROM emergent_jobs WHERE simulation_id=UUID_TO_BIN(?) AND employee_entity_id=UUID_TO_BIN(?) AND status='ACTIVE' LIMIT 1\`,
+        [simulationId,member.entityId]
+      );
+      if(existing.length)continue;
+      await pool.query(
+        \`INSERT INTO emergent_jobs
+          (id,simulation_id,employer_entity_id,employee_entity_id,role,wage_per_hour,status,hired_simulation_at,version)
+         VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,'ACTIVE',?,1)\`,
+        [uuid(),simulationId,systemEntityId,member.entityId,String(work.name||'WORKER').slice(0,80),safeWage,simulationTime]
+      );
+    }
+  }
+
 }
 
 async function matchLaborMarket(simulationId,simulationTime){
