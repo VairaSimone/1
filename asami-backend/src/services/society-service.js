@@ -25,7 +25,19 @@ async function ensureAccounts(simulationId,simulationTime){
   const [entities]=await pool.query(`SELECT DISTINCT BIN_TO_UUID(e.id) id,et.code entityType
     FROM entities e JOIN entity_types et ON et.id=e.entity_type_id
     WHERE e.simulation_id=UUID_TO_BIN(?) AND e.status="ACTIVE"
-      AND (et.code IN ("PERSON","ORGANIZATION") OR EXISTS (SELECT 1 FROM emergent_structures es WHERE es.simulation_id=e.simulation_id AND es.entity_id=e.id))`,[simulationId]);
+      AND (
+        et.code IN ("PERSON","ORGANIZATION")
+        OR EXISTS (
+          SELECT 1 FROM emergent_structures es
+          WHERE es.simulation_id=e.simulation_id AND es.entity_id=e.id
+        )
+        OR EXISTS (
+          SELECT 1 FROM emergent_systems es
+          WHERE es.simulation_id=e.simulation_id
+            AND JSON_UNQUOTE(JSON_EXTRACT(es.attributes,"$.systemEntityId"))=BIN_TO_UUID(e.id)
+            AND es.stage<>"ENDED"
+        )
+      )`,[simulationId]);
   for(const entity of entities){
     const [rows]=await pool.query(`SELECT balance FROM emergent_economy_accounts WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) LIMIT 1`,[simulationId,entity.id]);
     if(!rows.length){
