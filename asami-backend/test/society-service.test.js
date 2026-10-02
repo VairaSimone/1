@@ -65,3 +65,26 @@ test("business capacity and profit metrics are represented numerically",()=>{
   assert.equal(capacity,1.2);
   assert.equal(profit,5);
 });
+
+
+test("institution definitions can act as economic venues",()=>{
+  assert.equal(isMarketStructure({
+    systemType:"COMMUNITY_MARKET",
+    attributes:JSON.stringify({definition:{market:true}})
+  }),true);
+});
+
+test("production and market goods remain open-ended",()=>{
+  const definition=normalizeDefinition({
+    kind:"SYSTEM",
+    code:"TRADE_NETWORK",
+    name:"Trade Network",
+    purpose:"Coordinate local exchange.",
+    market:true,
+    production:true,
+    products:[{code:"BREAD",name:"Bread",category:"FOOD",unit:"loaf",basePrice:1.8}]
+  });
+  assert.equal(definition.market,true);
+  assert.equal(definition.production,true);
+  assert.equal(definition.products[0].code,"BREAD");
+});
