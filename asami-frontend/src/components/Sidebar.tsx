@@ -1,4 +1,4 @@
-import { Activity, Brain, BrainCircuit, Clock3, Database, Globe2, HeartHandshake, History, LayoutDashboard, MessageCircle, Plus, Sparkles, Users } from 'lucide-react'
+import { Activity, Brain, BrainCircuit, Clock3, Database, Globe2, Gavel, HeartHandshake, History, LayoutDashboard, MessageCircle, Plus, Sparkles, Users } from 'lucide-react'
 import type { Simulation } from '../types'
 import { formatSimTime } from '../lib/format'
 import { Brand } from './Brand'
@@ -23,6 +23,7 @@ export function Sidebar({ simulations, simulation, view, setView, onSimulationCh
     ['mind', Brain, 'Mente di Asami'],
     ['relationships', HeartHandshake, 'Relazioni'],
     ['development', Sparkles, 'Sviluppo'],
+    ['society', Gavel, 'Società'],
     ['chat', MessageCircle, 'Parla con Asami'],
   ] as const
 
