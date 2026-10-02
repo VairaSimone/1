@@ -179,14 +179,36 @@ function deterministicFallbackDefinition(signal, proposer, simulationTime) {
   const activityCode = kind === "ACTIVITY" ? baseCode : baseCode + "_ACT";
   const needLabel = signal.needCode.toLowerCase().replaceAll("_", " ");
   const needDelta = signal.direction === "LOW" ? 0.12 : -0.12;
+  const foodCrisis=signal.needCode==="HUNGER" && signal.direction==="HIGH";
   return normalizeDefinition({
-    kind,
-    code: baseCode,
-    name: (proposer.displayName || "Locali") + " - " + needLabel + " initiative",
-    category: "EMERGENT",
-    purpose: "A new autonomous response to a shared " + needLabel + " pressure.",
+    kind: foodCrisis ? "STRUCTURE" : kind,
+    code: foodCrisis ? baseCode+"_SUPPLY" : baseCode,
+    name: foodCrisis ? (proposer.displayName||"Locali")+" - local food supply" : (proposer.displayName||"Locali")+" - "+needLabel+" initiative",
+    category: foodCrisis ? "COMMERCE" : "EMERGENT",
+    market: foodCrisis,
+    production: foodCrisis,
+    purpose: foodCrisis
+      ? "A locally organized response to shared food scarcity."
+      : "A new autonomous response to a shared " + needLabel + " pressure.",
+    products: [],
     targetNeeds: [{ code: signal.needCode, weight: 2 }],
-    activities: [{
+    activities: foodCrisis ? [{
+      code: baseCode+"_GROW_FOOD",
+      name: "Produce local food",
+      category: "PRODUCTION",
+      durationMinutes: 120,
+      needWeights: { HUNGER: 2, ACHIEVEMENT: 0.5 },
+      gate: { needCode: "HUNGER", min: 0.30 },
+      effects: [{ type: "PRODUCTION", goodCode: "FOOD", quantity: 2, resourceInputs: { water: 1 }, inventoryInputs: {} }]
+    }, {
+      code: baseCode+"_SELL_FOOD",
+      name: "Sell local food",
+      category: "ECONOMY",
+      durationMinutes: 20,
+      needWeights: { ACHIEVEMENT: 0.3 },
+      gate: null,
+      effects: [{ type: "INVENTORY_DELTA", goodCode: "FOOD", delta: -1 }]
+    }] : [{
       code: activityCode,
       name: "Practice " + needLabel + " locally",
       category: "EMERGENT",
