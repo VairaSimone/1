@@ -10,6 +10,7 @@ const { sendMessage } = require("../services/chat-service");
 const { getConversationState } = require("../services/conversation-state-service");
 const { getUsage } = require("../services/gemini-budget-service");
 const { getWorldSnapshot } = require("../services/world-observer-service");
+const { getEmergentSnapshot } = require("../services/emergent-world-service");
 const { simulationCreate, speed, message, uuid, queryLimit } = require("./validation");
 const { runIdempotent } = require("../services/idempotency-service");
 const { env } = require("../config/env");
@@ -107,7 +108,7 @@ function buildRouter({hub,gemini}){
     if(!snapshot)return res.status(404).json({error:"Simulation not found"});
     res.json(snapshot);
   });
-  router.get("/simulations/:simulationId/analysis",async(req,res)=>{
+  router.get("/simulations/:simulationId/emergence",async(req,res)=>{\n    const simulationId=uuid.parse(req.params.simulationId);\n    const sim=await simRepo.getSimulation(simulationId);\n    if(!sim)return res.status(404).json({error:"Simulation not found"});\n    res.json(await getEmergentSnapshot(simulationId));\n  });\n  router.get("/simulations/:simulationId/analysis",async(req,res)=>{
     const simulationId=uuid.parse(req.params.simulationId);
     const entityId=req.query.entityId?uuid.parse(req.query.entityId):undefined;
     res.json(await analyzeSimulation(simulationId,{from:req.query.from,to:req.query.to,entityId}));
