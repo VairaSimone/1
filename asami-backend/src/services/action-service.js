@@ -9,7 +9,7 @@ const { validateCriticalDecision } = require("./decision-service");
 const { assertTransition } = require("./state-machine");
 const { calculateOutcomeDependentNeedDelta, persistNeedTransition, OUTCOME_DEPENDENT_NEED_EFFECTS } = require("./state-service");
 const logger = require("../lib/logger");
-const { executeEconomicAction } = require("./society-service");
+const { executeEconomicAction, consumePurchasedFood } = require("./society-service");
 const { executeDynamicActivity } = require("./emergent-definition-service");
 const { loadCapabilitiesForEntities } = require("./world-capability-service");
 
