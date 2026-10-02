@@ -108,7 +108,7 @@ async function ensureSocietyMigrations() {
     structure_entity_id BINARY(16) NOT NULL, good_code VARCHAR(64) NOT NULL, quantity DECIMAL(16,4) NOT NULL,
     inputs JSON NULL, simulation_at DATETIME(3) NOT NULL, KEY idx_eph_sim_time (simulation_id,simulation_at),
     KEY idx_eph_good (simulation_id,good_code), KEY idx_eph_producer (simulation_id,producer_entity_id)
-  `);
+  )`);
 
   await pool.query(`CREATE TABLE IF NOT EXISTS emergent_business_metrics (
     id BINARY(16) PRIMARY KEY, simulation_id BINARY(16) NOT NULL,
@@ -118,7 +118,7 @@ async function ensureSocietyMigrations() {
     wage_cost DECIMAL(16,4) NOT NULL DEFAULT 0, profit DECIMAL(16,4) NOT NULL DEFAULT 0,
     production_value DECIMAL(16,4) NOT NULL DEFAULT 0, investment DECIMAL(16,4) NOT NULL DEFAULT 0,
     simulation_at DATETIME(3) NOT NULL, KEY idx_ebm_sim_time (simulation_id,simulation_at)
-  `);
+  )`);
 
   await pool.query(`CREATE TABLE IF NOT EXISTS emergent_governance_members (
     system_id BINARY(16) NOT NULL, simulation_id BINARY(16) NOT NULL, entity_id BINARY(16) NOT NULL, role VARCHAR(32) NOT NULL DEFAULT "MEMBER",
