@@ -852,6 +852,29 @@ async function evolveBusinesses(simulationId,simulationTime){
   return {businessCount:businesses.length,activeBusinessCount:active,failedBusinessCount:failed,employed,unemployed,revenue:totalRevenue,inputCost:totalInputCost,wageCost:totalWageCost,profit:totalProfit,productionValue:totalProductionValue,investment:totalInvestment};
 }
 
+async function consumePurchasedFood({simulationId,entityId,simulationTime,db=pool}){
+  const [rows]=await db.query(
+    `SELECT id,quantity FROM emergent_inventory
+      WHERE simulation_id=UUID_TO_BIN(?) AND owner_entity_id=UUID_TO_BIN(?) AND good_code='FOOD'
+      LIMIT 1 FOR UPDATE`,
+    [simulationId,entityId]
+  );
+  if(!rows.length || Number(rows[0].quantity) < 1) return null;
+  await db.query(
+    `UPDATE emergent_inventory
+      SET quantity=quantity-1,updated_simulation_at=?,version=version+1
+      WHERE id=? AND quantity>=1`,
+    [simulationTime,rows[0].id]
+  );
+  return {
+    ok:true,
+    resource:"food",
+    consumed:1,
+    remaining:Math.max(0,Number(rows[0].quantity)-1),
+    source:"PURCHASED_INVENTORY"
+  };
+}
+
 async function executeEconomicAction({conn,simulationId,entityId,actionType,simulationTime,durationMinutes=120}){
   const action=normalize(actionType);
   const buyMatch=action.match(/^BUY_(?:GOOD_)?([A-Z][A-Z0-9_]*)$/);
@@ -1201,4 +1224,4 @@ async function getSocietySnapshot(simulationId){
   return {systems:decode(systems),goods,markets,accounts,jobs,trades,metrics,policies:decode(policies),conflicts:decode(conflicts),businessMetrics,businesses,openEnded:{proposals:decodeOpen(openProposals),definitions:decodeOpen(openDefinitions)}};
 }
 
-module.exports={evolveSociety,evolvePolitics,executeEconomicAction,getSocietySnapshot,gini,ensureCatalog,restockMarkets,isMarketStructure,isProducerStructure,ensureBusinesses,evolveBusinesses,matchLaborMarket,latestEconomicPolicy,ensureEconomicPolicyProposal};
+module.exports={evolveSociety,evolvePolitics,executeEconomicAction,consumePurchasedFood,getSocietySnapshot,gini,ensureCatalog,restockMarkets,isMarketStructure,isProducerStructure,ensureBusinesses,evolveBusinesses,matchLaborMarket,latestEconomicPolicy,ensureEconomicPolicyProposal};
