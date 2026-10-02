@@ -25,6 +25,8 @@ const ProposalSchema = z.object({
   name: z.string().min(3).max(160),
   category: z.string().min(1).max(64),
   purpose: z.string().min(3).max(600),
+  market: z.boolean().optional(),
+  production: z.boolean().optional(),
   activities: z.array(z.object({
     code: z.string().min(3).max(80),
     name: z.string().min(3).max(120),
