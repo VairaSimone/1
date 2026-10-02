@@ -92,6 +92,34 @@ async function ensureSocietyMigrations() {
     joined_simulation_at DATETIME(3) NOT NULL, PRIMARY KEY (system_id,entity_id), KEY idx_esm_entity (simulation_id,entity_id)
   )`);
 
+  await pool.query(`CREATE TABLE IF NOT EXISTS emergent_businesses (
+    id BINARY(16) PRIMARY KEY, simulation_id BINARY(16) NOT NULL, entity_id BINARY(16) NOT NULL, owner_entity_id BINARY(16) NULL,
+    status VARCHAR(24) NOT NULL DEFAULT 'ACTIVE', production_capacity DECIMAL(10,4) NOT NULL DEFAULT 1,
+    recent_revenue DECIMAL(16,4) NOT NULL DEFAULT 0, recent_input_cost DECIMAL(16,4) NOT NULL DEFAULT 0,
+    recent_wage_cost DECIMAL(16,4) NOT NULL DEFAULT 0, recent_profit DECIMAL(16,4) NOT NULL DEFAULT 0,
+    cumulative_profit DECIMAL(18,4) NOT NULL DEFAULT 0, cumulative_investment DECIMAL(18,4) NOT NULL DEFAULT 0,
+    failure_count INT NOT NULL DEFAULT 0, last_evaluated_simulation_at DATETIME(3) NULL,
+    created_simulation_at DATETIME(3) NOT NULL, updated_simulation_at DATETIME(3) NOT NULL, version INT NOT NULL DEFAULT 1,
+    UNIQUE KEY uq_eb_entity (simulation_id,entity_id), KEY idx_eb_status (simulation_id,status)
+  `);
+
+  await pool.query(`CREATE TABLE IF NOT EXISTS emergent_production_history (
+    id BINARY(16) PRIMARY KEY, simulation_id BINARY(16) NOT NULL, producer_entity_id BINARY(16) NOT NULL,
+    structure_entity_id BINARY(16) NOT NULL, good_code VARCHAR(64) NOT NULL, quantity DECIMAL(16,4) NOT NULL,
+    inputs JSON NULL, simulation_at DATETIME(3) NOT NULL, KEY idx_eph_sim_time (simulation_id,simulation_at),
+    KEY idx_eph_good (simulation_id,good_code), KEY idx_eph_producer (simulation_id,producer_entity_id)
+  `);
+
+  await pool.query(`CREATE TABLE IF NOT EXISTS emergent_business_metrics (
+    id BINARY(16) PRIMARY KEY, simulation_id BINARY(16) NOT NULL,
+    business_count INT NOT NULL DEFAULT 0, active_business_count INT NOT NULL DEFAULT 0, failed_business_count INT NOT NULL DEFAULT 0,
+    unemployed_count INT NOT NULL DEFAULT 0, employed_count INT NOT NULL DEFAULT 0,
+    revenue DECIMAL(16,4) NOT NULL DEFAULT 0, input_cost DECIMAL(16,4) NOT NULL DEFAULT 0,
+    wage_cost DECIMAL(16,4) NOT NULL DEFAULT 0, profit DECIMAL(16,4) NOT NULL DEFAULT 0,
+    production_value DECIMAL(16,4) NOT NULL DEFAULT 0, investment DECIMAL(16,4) NOT NULL DEFAULT 0,
+    simulation_at DATETIME(3) NOT NULL, KEY idx_ebm_sim_time (simulation_id,simulation_at)
+  `);
+
   await pool.query(`CREATE TABLE IF NOT EXISTS emergent_governance_members (
     system_id BINARY(16) NOT NULL, simulation_id BINARY(16) NOT NULL, entity_id BINARY(16) NOT NULL, role VARCHAR(32) NOT NULL DEFAULT "MEMBER",
     support_score DECIMAL(8,5) NOT NULL DEFAULT 0, joined_simulation_at DATETIME(3) NOT NULL, PRIMARY KEY (system_id,entity_id)
