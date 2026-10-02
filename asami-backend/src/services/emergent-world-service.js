@@ -39,7 +39,7 @@ function candidateProjectRule(actors) {
 }
 
 function buildProjectName(rule, proposerName, scopeName) {
-  const first=String(proposerName||"Locali").trim().split(/\\s+/)[0]||"Locali";
+  const first=String(proposerName||"Locali").trim().split(/\s+/)[0]||"Locali";
   if (rule.projectType==="LOCAL_MARKET") return "Mercato "+first+(scopeName?" di "+scopeName:"");
   if (rule.projectType==="COMMUNITY_HUB") return "Casa "+first+(scopeName?" "+scopeName:"");
   if (rule.projectType==="WORKSHOP_COOPERATIVE") return "Officina "+first;
