@@ -391,7 +391,9 @@ async function deleteUnselectedDecisionOptions(conn, simulationId, simulationTim
     "JOIN decisions d ON d.id=dopt.decision_id " +
     "WHERE d.simulation_id=UUID_TO_BIN(?) " +
     "AND d.status IN ('EXECUTED','FAILED','CANCELLED') " +
-    "AND d.selected_option_snapshot IS NOT NULL " +
+    "AND d.selected_option_id IS NOT NULL " +
+      "AND dopt.id <> d.selected_option_id " +
+      "AND d.selected_option_snapshot IS NOT NULL " +
     "AND d.simulation_time < ? " +
     "LIMIT " + limit;
   const countSql =
@@ -399,6 +401,8 @@ async function deleteUnselectedDecisionOptions(conn, simulationId, simulationTim
       "JOIN decisions d ON d.id=dopt.decision_id " +
       "WHERE d.simulation_id=UUID_TO_BIN(?) " +
       "AND d.status IN ('EXECUTED','FAILED','CANCELLED') " +
+      "AND d.selected_option_id IS NOT NULL " +
+      "AND dopt.id <> d.selected_option_id " +
       "AND d.selected_option_snapshot IS NOT NULL " +
       "AND d.simulation_time < ?";
   if (POLICY.dryRun) {
