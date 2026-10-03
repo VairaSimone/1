@@ -781,7 +781,6 @@ test('autonomous social conversation creation is serialized per simulation and e
   assert.match(section,/pairKey=.*sort\(\)\.join/);
   assert.match(section,/SELECT id FROM entities[\s\S]*FOR UPDATE/);
 });
-});
 
 test('visited-location history is scoped to the active simulation',()=>{
   const source=read('services/autonomy-service.js');
