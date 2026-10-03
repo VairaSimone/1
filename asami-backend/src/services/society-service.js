@@ -537,7 +537,17 @@ async function recordWealth(simulationId,simulationTime){
     WHERE ea.simulation_id=UUID_TO_BIN(?) AND et.code="PERSON" ORDER BY ea.balance DESC`,[simulationId]);
   const pop=rows.length;if(!pop)return null;
   const values=rows.map(r=>Number(r.balance||0)),total=values.reduce((s,v)=>s+v,0),avg=total/pop,inequality=gini(values);
-  for(let i=0;i<rows.length;i++)await pool.query(`INSERT INTO emergent_wealth_history(id,simulation_id,entity_id,balance,rank_position,population_count,simulation_at) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,?)`,[uuid(),simulationId,rows[i].entityId,Number(rows[i].balance||0),i+1,pop,simulationTime]);
+  if(rows.length){
+    const placeholders=rows.map(()=>"(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,?)").join(",");
+    const values=[];
+    for(let i=0;i<rows.length;i++){
+      values.push(uuid(),simulationId,rows[i].entityId,Number(rows[i].balance||0),i+1,pop,simulationTime);
+    }
+    await pool.query(
+      `INSERT INTO emergent_wealth_history(id,simulation_id,entity_id,balance,rank_position,population_count,simulation_at) VALUES ${placeholders}`,
+      values
+    );
+  }
   const [price]=await pool.query(`SELECT AVG(price) value FROM emergent_market_state WHERE simulation_id=UUID_TO_BIN(?) AND good_code="FOOD"`,[simulationId]);
   const [trade]=await pool.query(`SELECT COALESCE(SUM(total),0) value FROM emergent_trades WHERE simulation_id=UUID_TO_BIN(?) AND simulation_at>=DATE_SUB(?,INTERVAL 24 HOUR)`,[simulationId,simulationTime]);
   await pool.query(`INSERT INTO emergent_economic_metrics(id,simulation_id,population_count,total_wealth,average_wealth,gini,average_food_price,total_trade_value,simulation_at) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,?,?,?,?)`,[uuid(),simulationId,pop,total,avg,inequality,Number(price[0]?.value||1),Number(trade[0]?.value||0),simulationTime]);
