@@ -31,7 +31,40 @@ function shortestRoute(locations,originId,targetId){if(!originId||!targetId)retu
 function travelMinutes(d){if(!Number.isFinite(Number(d)))return null;return Number(d)/1000/WALKING_SPEED_KMH*60;}
 function findNearestResourceLocation(locations,originId,resource,excluded=[]){let best=null;const set=new Set(excluded||[]);for(const location of locations){if(set.has(location.locationId))continue;if(Number(location.resources?.[resource]??0)<1)continue;const route=shortestRoute(locations,originId,location.locationId);if(!route)continue;const minutes=travelMinutes(route.distanceMeters);if(minutes===null)continue;if(!best||minutes<best.travelMinutes)best={locationId:location.locationId,locationType:location.locationType,distanceMeters:route.distanceMeters,travelMinutes:minutes};}return best;}
 function resourceTargetAction(r){return r==="water"||r==="food"?"WALKING":null;}
-function applyResourceRoutingBias(candidates,resourceContext,needs){const next=candidates.map(c=>({...c})),indexByAction=new Map(next.map((c,i)=>[normalizeAction(c.action),i]));for(const[action,requirement]of Object.entries(RESOURCE_REQUIREMENTS)){const status=resourceContext.actions?.[action];if(!status||status.localAvailable>=requirement.amount)continue;const nearest=status.nearestLocation,walkingIndex=indexByAction.get(resourceTargetAction(requirement.resource));if(!nearest||walkingIndex===undefined)continue;const pressureCode=action==="DRINKING"?"THIRST":"HUNGER",pressure=Number(needs.find(n=>n.code===pressureCode)?.value||0),urgency=Math.min(1.4,RESOURCE_TRAVEL_BONUS+pressure*.6),travelPenalty=Math.min(.45,Number(nearest.travelMinutes||0)/60*.45);next[walkingIndex].score=Number(next[walkingIndex].score||0)+urgency-travelPenalty;next[walkingIndex].targetLocationId=nearest.locationId;next[walkingIndex].resourceIntent={resource:requirement.resource,reason:"RESOURCE_UNAVAILABLE_LOCALLY",expectedTravelMinutes:nearest.travelMinutes,destinationLocationId:nearest.locationId};}return next.sort((a,b)=>Number(b.score||0)-Number(a.score||0));}
+async function findNearestFoodMarket(simulationId,originId,worldLocations=[]){
+  if(!simulationId||!originId||!Array.isArray(worldLocations)||!worldLocations.length)return null;
+  const [rows]=await pool.query(
+    `SELECT DISTINCT BIN_TO_UUID(ms.location_id) locationId,ms.price,
+            COALESCE(ms.supply,0) supply
+       FROM emergent_market_state ms
+      WHERE ms.simulation_id=UUID_TO_BIN(?)
+        AND ms.good_code='FOOD'
+        AND ms.supply>0
+        AND ms.price>0`,
+    [simulationId]
+  );
+  const balanceRows=await pool.query(
+    `SELECT balance FROM emergent_economy_accounts
+      WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) LIMIT 1`,
+    [simulationId,originId]
+  );
+  const balance=Number(balanceRows[0][0]?.balance||0);
+  if(balance<=0)return null;
+  let best=null;
+  for(const row of rows){
+    if(Number(row.price||0)>balance)continue;
+    const route=shortestRoute(worldLocations,originId,row.locationId);
+    if(!route)continue;
+    const travelMinutes=travelMinutesForRoute(route);
+    if(!Number.isFinite(travelMinutes))continue;
+    if(!best||travelMinutes<best.travelMinutes){
+      best={locationId:row.locationId,price:Number(row.price),travelMinutes};
+    }
+  }
+  return best;
+}
+function travelMinutesForRoute(route){return route&&Number.isFinite(Number(route.distanceMeters))?travelMinutes(route.distanceMeters):null;}
+function applyResourceRoutingBias(candidates,resourceContext,needs){const next=candidates.map(c=>({...c})),indexByAction=new Map(next.map((c,i)=>[normalizeAction(c.action),i]));for(const[action,requirement]of Object.entries(RESOURCE_REQUIREMENTS)){const status=resourceContext.actions?.[action];if(!status||status.localAvailable>=requirement.amount)continue;let nearest=status.nearestLocation,routeReason="RESOURCE_UNAVAILABLE_LOCALLY";if(requirement.resource==="food"&&!nearest&&resourceContext.marketFoodLocation){nearest=resourceContext.marketFoodLocation;routeReason="FOOD_UNAVAILABLE_LOCALLY_MARKET_AVAILABLE";}const walkingIndex=indexByAction.get(resourceTargetAction(requirement.resource));if(!nearest||walkingIndex===undefined)continue;const pressureCode=action==="DRINKING"?"THIRST":"HUNGER",pressure=Number(needs.find(n=>n.code===pressureCode)?.value||0),urgency=Math.min(1.4,RESOURCE_TRAVEL_BONUS+pressure*.6),travelPenalty=Math.min(.45,Number(nearest.travelMinutes||0)/60*.45);next[walkingIndex].score=Number(next[walkingIndex].score||0)+urgency-travelPenalty;next[walkingIndex].targetLocationId=nearest.locationId;next[walkingIndex].resourceIntent={resource:requirement.resource,reason:routeReason,expectedTravelMinutes:nearest.travelMinutes,destinationLocationId:nearest.locationId};}return next.sort((a,b)=>Number(b.score||0)-Number(a.score||0));}
 function applyPlanBias(candidates,plans){if(!Array.isArray(candidates)||!Array.isArray(plans))return candidates;const actions=new Set();for(const plan of plans){const step=(plan.steps||[]).find(s=>s.status==="ACTIVE"||s.status==="PENDING"),action=normalizeAction(step?.actionType||step?.result?.actionType);if(action)actions.add(action);}if(!actions.size)return candidates;return candidates.map(c=>actions.has(normalizeAction(c.action))?{...c,score:Number(c.score||0)+.65}:c).sort((a,b)=>Number(b.score||0)-Number(a.score||0));}
 function actionFrequencyPenalty(action,recentActions){const recent=recentActions.map(normalizeAction),target=normalizeAction(action),count=recent.filter(x=>x===target).length;let penalty=Math.min(.72,count*.22);if(recent[0]===target)penalty+=.72;if(recent[1]===target)penalty+=.36;if(recent[2]===target)penalty+=.24;if(recent.length>=3&&recent[0]===target&&recent[2]===target)penalty+=.55;if(recent.length>=4&&recent[0]===target&&recent[3]===target)penalty+=.35;return Math.min(1.85,penalty);}
 function applyRecentActionPenalty(candidates,recentActions=[]){if(!Array.isArray(candidates)||!recentActions.length)return candidates;return candidates.map(c=>({...c,score:Math.max(0,Number(c.score||0)-actionFrequencyPenalty(c.action,recentActions))})).sort((a,b)=>Number(b.score||0)-Number(a.score||0));}
@@ -291,8 +324,11 @@ async function buildDecisionContexts(simulationId,entityIds=[],simulationTime=nu
     for(const plan of profile.plans||[])for(const target of plan.strategy?.avoidLocationIds||[])if(target&&!excludedLocationIds.includes(target))excludedLocationIds.push(target);
     const resourceExclusions=criticalResourceNeedState(needsList)?[]:excludedLocationIds,currentWorldLocation=worldLocations.find(item=>item.locationId===currentLocation?.locationId),blockedResources={},resourceKnowledgeRows=resourceKnowledgeByEntity.get(id)||[],nowMs=new Date(effectiveSimulationTime).getTime();
     for(const row of resourceKnowledgeRows){const learnedAt=new Date(row.learnedAt).getTime();if(!Number.isFinite(learnedAt)||!Number.isFinite(nowMs)||nowMs-learnedAt>RESOURCE_SEARCH_TTL_MINUTES*60000)continue;const resource=row.content?.resource;const locationId=row.locationId;if(resource&&String(locationId||'')===String(currentLocation?.locationId||''))blockedResources[String(resource).toLowerCase()]=true;}
-    const resourceContext={currentLocationId:currentLocation?.locationId||null,currentResources:currentWorldLocation?.resources||{},localResources:currentWorldLocation?.resources||{},blockedResources,nearestResources:{},emergencyResources:[],resourceEmergency:null,actions:{}};
+    const resourceContext={currentLocationId:currentLocation?.locationId||null,currentResources:currentWorldLocation?.resources||{},localResources:currentWorldLocation?.resources||{},blockedResources,nearestResources:{},emergencyResources:[],resourceEmergency:null,marketFoodLocation:null,actions:{}};
     for(const resource of ['water','food'])resourceContext.nearestResources[resource]=findNearestResourceLocation(worldLocations,currentLocation?.locationId,resource,resourceExclusions);
+    if(Number(currentWorldLocation?.resources?.food??0)<1){
+      resourceContext.marketFoodLocation=await findNearestFoodMarket(simulationId,id,worldLocations);
+    }
     const resourceEmergencyCandidates=[];for(const item of worldLocations)for(const[resource,emergency] of Object.entries(item.resourceEmergencies||{})){const activeUntil=new Date(emergency?.activeUntil||0).getTime(),triggeredAt=new Date(emergency?.triggeredAt||0).getTime(),now=new Date(effectiveSimulationTime).getTime();if(emergency?.active===true&&Number.isFinite(activeUntil)&&Number.isFinite(triggeredAt)&&Number.isFinite(now)&&now>=triggeredAt&&now<=activeUntil)resourceEmergencyCandidates.push({resource:String(resource).toLowerCase(),locationId:item.locationId,reason:emergency.reason||null,triggeredAt:emergency.triggeredAt||null,activeUntil:emergency.activeUntil||null,reserve:Number(emergency.reserve)||null});}
     resourceContext.emergencyResources=resourceEmergencyCandidates;for(const resource of ['water','food']){const required=resource==='water'?1:1,localAvailable=Number(currentWorldLocation?.resources?.[resource]??0),emergency=resourceEmergencyCandidates.find(item=>item.resource===resource);resourceContext.actions[resource==='water'?'DRINKING':'EATING']={resource,required,localAvailable,locallyAvailable:localAvailable>=required,recentlyBlocked:Boolean(blockedResources[resource]),nearestLocation:resourceContext.nearestResources[resource]||null,emergency:emergency||null};}
     resourceContext.resourceEmergency=resourceEmergencyCandidates.find(item=>item.resource==='water')||resourceEmergencyCandidates.find(item=>item.resource==='food')||null;
