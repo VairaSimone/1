@@ -1,4 +1,4 @@
-const { pool } = require('../db/pool');
+const { pool, withTransaction } = require('../db/pool');
 const { uuid } = require('../lib/ids');
 
 const initializedIdentity = new Set();
@@ -193,9 +193,35 @@ async function persistConflicts(simulationId,entityId,simulationTime,conflicts){
   return {active:fingerprints.size,resolved,reopened};
 }
 
-async function saveCognitiveState(simulationId,entityId,simulationTime,attention,interpretation,conflicts){const[rows]=await pool.query(`SELECT BIN_TO_UUID(id) AS id,simulation_time AS simulationTime FROM cognitive_states WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) ORDER BY simulation_time DESC LIMIT 1`,[simulationId,entityId]);if(rows.length&&new Date(simulationTime)-new Date(rows[0].simulationTime)<15*60000){await pool.query(`UPDATE cognitive_states SET simulation_time=?,attention=?,interpretation=?,conflicts=? WHERE id=UUID_TO_BIN(?)`,[simulationTime,JSON.stringify(attention),JSON.stringify(interpretation),JSON.stringify(conflicts),rows[0].id]);return rows[0].id;}await pool.query(`INSERT INTO cognitive_states(id,simulation_id,entity_id,simulation_time,attention,interpretation,conflicts,created_at) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?, ?,CURRENT_TIMESTAMP(3))`,[uuid(),simulationId,entityId,simulationTime,JSON.stringify(attention),JSON.stringify(interpretation),JSON.stringify(conflicts)]);}
-
-async function enrichContext({simulationId,entityId,simulationTime,context}){await ensureIdentity(simulationId,entityId,simulationTime);const identity=await getIdentity(simulationId,entityId),base={...context,cognitiveV2:{...(context.cognitiveV2||{}),identity}},attention=await buildAttentionContext({simulationId,entityId,context:base}),conflicts=buildConflicts({context:base,attention,identity}),interpretation=buildInterpretation(attention,{...base,cognitiveV2:{...base.cognitiveV2,conflicts}}),enriched={...base,cognitiveV2:{identity,attention,interpretation,conflicts}};await persistConflicts(simulationId,entityId,simulationTime,conflicts);await saveCognitiveState(simulationId,entityId,simulationTime,attention,interpretation,conflicts);return enriched;}
+async function saveCognitiveState(simulationId,entityId,simulationTime,attention,interpretation,conflicts){
+  const lockKey="asami:cognitive-state:"+require("crypto").createHash("sha1").update([simulationId,entityId].join("|")).digest("hex");
+  return withTransaction(async conn => {
+    const [lockRows]=await conn.query("SELECT GET_LOCK(?,5) AS acquired",[lockKey]);
+    const locked=Number(lockRows[0]?.acquired||0)===1;
+    if(!locked)throw Object.assign(new Error("Could not acquire cognitive state lock"),{code:"COGNITIVE_STATE_LOCK_TIMEOUT"});
+    try {
+      const [rows]=await conn.query(`SELECT BIN_TO_UUID(id) AS id,simulation_time AS simulationTime
+        FROM cognitive_states
+        WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?)
+        ORDER BY simulation_time DESC LIMIT 1`,[simulationId,entityId]);
+      if(rows.length&&new Date(simulationTime)-new Date(rows[0].simulationTime)<15*60000){
+        await conn.query(`UPDATE cognitive_states
+          SET simulation_time=?,attention=?,interpretation=?,conflicts=?
+          WHERE id=UUID_TO_BIN(?)`,
+          [simulationTime,JSON.stringify(attention),JSON.stringify(interpretation),JSON.stringify(conflicts),rows[0].id]);
+        return rows[0].id;
+      }
+      const id=uuid();
+      await conn.query(`INSERT INTO cognitive_states
+        (id,simulation_id,entity_id,simulation_time,attention,interpretation,conflicts,created_at)
+        VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?, ?,CURRENT_TIMESTAMP(3))`,
+        [id,simulationId,entityId,simulationTime,JSON.stringify(attention),JSON.stringify(interpretation),JSON.stringify(conflicts)]);
+      return id;
+    } finally {
+      try { await conn.query("SELECT RELEASE_LOCK(?)",[lockKey]); } catch {}
+    }
+  });
+}
 async function getLatestCognitiveState(simulationId,entityId){const[rows]=await pool.query(`SELECT attention,interpretation,conflicts,simulation_time AS simulationTime FROM cognitive_states WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) ORDER BY simulation_time DESC LIMIT 1`,[simulationId,entityId]);const row=rows[0];return row?{attention:parseJson(row.attention,[]),interpretation:parseJson(row.interpretation,[]),conflicts:parseJson(row.conflicts,[]),simulationTime:row.simulationTime}:{attention:[],interpretation:[],conflicts:[],simulationTime:null};}
 async function getMind(simulationId,entityId){const[[simulationRows],[entityRows]]=await Promise.all([pool.query(`SELECT current_simulation_at AS currentSimulationAt FROM simulations WHERE id=UUID_TO_BIN(?) LIMIT 1`,[simulationId]),pool.query(`SELECT id FROM entities WHERE simulation_id=UUID_TO_BIN(?) AND id=UUID_TO_BIN(?) LIMIT 1`,[simulationId,entityId])]);if(!simulationRows.length)throw Object.assign(new Error("Simulation not found"),{code:"NOT_FOUND"});if(!entityRows.length)throw Object.assign(new Error("Entity not found"),{code:"NOT_FOUND"});await ensureIdentity(simulationId,entityId,simulationRows[0].currentSimulationAt);const[identity,state,expectations,counterfactuals,promises,social]=await Promise.all([getIdentity(simulationId,entityId),getLatestCognitiveState(simulationId,entityId),pool.query(`SELECT BIN_TO_UUID(id) AS id,BIN_TO_UUID(decision_id) AS decisionId,action_type AS actionType,expected_utility AS expectedUtility,expected_success_probability AS expectedSuccessProbability,prediction_error AS predictionError,regret_score AS regretScore,status,created_simulation_at AS createdAt,resolved_simulation_at AS resolvedAt FROM cognitive_expectations WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) ORDER BY created_simulation_at DESC LIMIT 10`,[simulationId,entityId]),pool.query(`SELECT BIN_TO_UUID(id) AS id,BIN_TO_UUID(decision_id) AS decisionId,alternative_action AS alternativeAction,predicted_outcome AS predictedOutcome,predicted_utility AS predictedUtility,regret_score AS regretScore,created_simulation_at AS createdAt FROM counterfactuals WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) ORDER BY created_simulation_at DESC LIMIT 10`,[simulationId,entityId]),getOpenPromises(simulationId,entityId),getSocialMind(simulationId,entityId)]);return{...identity,state,expectations:expectations[0],counterfactuals:counterfactuals[0],promises,social};}
 async function learnFromOutcome({simulationId,entityId,simulationTime,actionType,outcome,decisionId,expectation,targetEntityId=null}){const normalized=normalize(outcome);if(normalized==='SUCCESS')await upsertIdentityValue({simulationId,entityId,simulationTime,code:actionType==='TALKING'?'SOCIAL_CONNECTION':actionType==='EXPLORING'||actionType==='LEARNING'?'CURIOSITY':'ACHIEVEMENT',confidenceDelta:0.015,importanceDelta:0.006,salience:0.65});else await upsertIdentityValue({simulationId,entityId,simulationTime,code:'SAFETY',confidenceDelta:0.01,importanceDelta:normalized==='FAILURE'?0.012:0.004,salience:0.8});if(expectation&&Math.abs(Number(expectation.predictionError||0))>=0.45)await updateSelfBelief({simulationId,entityId,simulationTime,beliefKey:'UNCERTAINTY_AWARENESS',statement:normalized==='SUCCESS'?'My expectations can be wrong, but I can update them when reality contradicts me.':'I need to account for uncertainty and unexpected outcomes before acting.',confidence:0.68,importance:0.72,sourceType:'PREDICTION_ERROR'});if(targetEntityId&&actionType==='TALKING')await updateSelfBelief({simulationId,entityId,simulationTime,beliefKey:'SOCIAL_LEARNING',statement:'Interactions with other people teach me how I fit into relationships.',confidence:0.72,importance:0.67,sourceType:'SOCIAL_EXPERIENCE'});}
