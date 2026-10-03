@@ -809,3 +809,21 @@ test('worker installs cognitive schemas before planning migrations',()=>{
   const planning=source.indexOf('const planningMigration = await ensurePlanningStatusMigrations();');
   assert.ok(cognitive>=0&&planning>cognitive);
 });
+
+test('physical resource consumption does not partially consume before emergency recovery',()=>{
+  const source=read('../src/services/physical-world-service.js');
+  const start=source.indexOf('async function consumeResource');
+  const end=source.indexOf('\nasync function replenishResource',start);
+  const section=source.slice(start,end);
+  assert.match(section,/const enough=available>=quantity/);
+  assert.match(section,/const consumed=enough\?quantity:0/);
+  assert.doesNotMatch(section,/Math\.min\(available,quantity\)/);
+});
+
+test('market inventory bootstrap ignores concurrent duplicate insertion',()=>{
+  const source=read('../src/services/society-service.js');
+  const start=source.indexOf('async function ensureMarketInventory');
+  const end=source.indexOf('\nasync function ensureJobs',start);
+  const section=source.slice(start,end);
+  assert.match(section,/INSERT IGNORE INTO emergent_inventory/);
+});
