@@ -12,6 +12,10 @@ test('cognitive v2 exposes stable identity defaults and normalization', () => {
   assert.ok(bootstrap.WORLD2_ACTIONS.includes('HELPING'));
 });
 
+test('cognitive v2 exports enrichContext required by the decision bootstrap', () => {
+  assert.equal(typeof cognitive.enrichContext, 'function');
+});
+
 test('interpretation turns attention into explicit cognitive signals', () => {
   const interpretation = cognitive.buildInterpretation([
     { type: 'PHYSIOLOGICAL', code: 'THIRST', intensity: 0.91, reason: 'internal pressure' },
