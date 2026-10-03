@@ -1333,9 +1333,19 @@ async function executeEconomicAction({conn,simulationId,entityId,actionType,simu
     );
     if(!job.length)return {ok:false,failureReason:"PRODUCTION_REQUIRES_ACTIVE_JOB"};
 
+    const [business]=await conn.query(
+      "SELECT production_capacity productionCapacity,status FROM emergent_businesses
+        WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) LIMIT 1 FOR UPDATE",
+      [simulationId,producer]
+    );
+    if(!business.length)return {ok:false,failureReason:"BUSINESS_NOT_FOUND"};
+    if(String(business[0].status)!=="ACTIVE")return {ok:false,failureReason:"BUSINESS_NOT_ACTIVE"};
+
+    // Validate the producer before consuming the physical input. A failed
+    // production attempt must never burn water.
     const [locationRows]=await conn.query(
-      `SELECT attributes,version FROM entities
-        WHERE id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?) LIMIT 1 FOR UPDATE`,
+      "SELECT attributes,version FROM entities
+        WHERE id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?) LIMIT 1 FOR UPDATE",
       [locationId,simulationId]
     );
     if(!locationRows.length)return {ok:false,failureReason:"LOCATION_NOT_FOUND"};
@@ -1345,17 +1355,10 @@ async function executeEconomicAction({conn,simulationId,entityId,actionType,simu
     if(water<1)return {ok:false,failureReason:"PRODUCTION_RESOURCE_UNAVAILABLE",resource:"water",available:water,required:1};
     resources.water=Number((water-1).toFixed(4));
     await conn.query(
-      `UPDATE entities SET attributes=?,version=version+1
-        WHERE id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?) AND version=?`,
+      "UPDATE entities SET attributes=?,version=version+1
+        WHERE id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?) AND version=?",
       [JSON.stringify({...attributes,resources}),locationId,simulationId,Number(locationRows[0].version||1)]
     );
-
-    const [business]=await conn.query(
-      `SELECT production_capacity productionCapacity,status FROM emergent_businesses
-        WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) LIMIT 1 FOR UPDATE`,
-      [simulationId,producer]
-    );
-    if(business.length&&String(business[0].status)!=="ACTIVE")return {ok:false,failureReason:"BUSINESS_NOT_ACTIVE"};
     const capacity=Math.max(.25,Math.min(10,Number(business[0]?.productionCapacity||1)));
     const quantity=Number((2*capacity).toFixed(4));
 
