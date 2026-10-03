@@ -23,10 +23,6 @@ const cognitiveV3=require("./services/cognitive-v3-bootstrap");
 async function main(){
   await ensureDatabaseWithRetry();
   await pingWithRetry({ attempts: env.DB_STARTUP_RETRY_ATTEMPTS });
-  const planningMigration = await ensurePlanningStatusMigrations();
-  if (planningMigration.changed.length) {
-    logger.info({ changed: planningMigration.changed }, "planning status schema migrations applied");
-  }
   const staleTicks=await require("./repositories/simulation-repo").reconcileStaleRunningTicks();
   if(staleTicks) logger.warn({staleTicks},"stale simulation ticks reconciled at startup");
   await bootstrapCoreDefinitions();
@@ -36,6 +32,12 @@ async function main(){
   const gemini=new GeminiService(); await gemini.init();
   await cognitiveV2.install({gemini});
   await cognitiveV3.install();
+
+  // Planning migrations depend on cognitive tables, so install cognitive schemas first.
+  const planningMigration = await ensurePlanningStatusMigrations();
+  if (planningMigration.changed.length) {
+    logger.info({ changed: planningMigration.changed }, "planning status schema migrations applied");
+  }
   const { SimulationEngine }=require("./simulation/engine");
   const engine=new SimulationEngine({gemini,hub:new RealtimeHub()});
   await engine.start();
