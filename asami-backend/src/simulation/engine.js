@@ -888,16 +888,64 @@ class SimulationEngine {
         }
         if (this.stopping) return;
         setPhase("world.decay"); await decayMemories(sim.id, nextTime); this.tickCounter.set(sim.id, Number(this.tickCounter.get(sim.id) || 0) + 1);
-        const count = Number(this.tickCounter.get(sim.id) || 0); if (count % env.GEMINI_PROACTIVE_EVERY_TICKS === 0) { try { const asami = await getAsamiCandidate(sim.id); if (asami) await initiateConversation({ simulationId: sim.id, asamiEntityId: asami.id, simulationTime: nextTime.toISOString(), gemini: this.gemini, hub: this.hub }); } catch (err) { logger.warnThrottled(
-  `engine:proactive-conversation:${sim.id}`,
-  300000,
-  { simulationId: sim.id, phase: "proactive_conversation", err },
-  "proactive conversation attempt failed"
-); } } if (count % env.SNAPSHOT_EVERY_TICKS === 0) await simRepo.createSnapshot(sim.id, nextTime);
+        const count = Number(this.tickCounter.get(sim.id) || 0);
+        if (count % env.GEMINI_PROACTIVE_EVERY_TICKS === 0) {
+          try {
+            const asami = await getAsamiCandidate(sim.id);
+            if (asami) await initiateConversation({
+              simulationId: sim.id,
+              asamiEntityId: asami.id,
+              simulationTime: nextTime.toISOString(),
+              gemini: this.gemini,
+              hub: this.hub
+            });
+          } catch (err) {
+            logger.warnThrottled(
+              `engine:proactive-conversation:${sim.id}`,
+              300000,
+              { simulationId: sim.id, phase: "proactive_conversation", err },
+              "proactive conversation attempt failed"
+            );
+          }
+        }
+
+        // A tick whose world state has completed must not be marked FAILED by
+        // optional housekeeping (snapshots, observability or retention).
         await simRepo.completeTick(tickId, { status: "COMPLETED", entityCount: actors.length });
-        observability.logSnapshot(sim.id,nextTime.toISOString());
+
+        if (count % env.SNAPSHOT_EVERY_TICKS === 0) {
+          try {
+            await simRepo.createSnapshot(sim.id, nextTime);
+          } catch (err) {
+            logger.warnThrottled(
+              `engine:snapshot:${sim.id}`,
+              300000,
+              { simulationId: sim.id, simulationTime: nextTime.toISOString(), err },
+              "simulation snapshot failed"
+            );
+          }
+        }
+
+        try {
+          observability.logSnapshot(sim.id,nextTime.toISOString());
+        } catch (err) {
+          logger.warnThrottled(
+            `engine:observability-snapshot:${sim.id}`,
+            300000,
+            { simulationId: sim.id, simulationTime: nextTime.toISOString(), err },
+            "simulation observability snapshot failed"
+          );
+        }
+
         if (maybeRunSafeRetention) {
-          void maybeRunSafeRetention(sim.id, nextTime.toISOString());
+          void maybeRunSafeRetention(sim.id, nextTime.toISOString()).catch(err => {
+            logger.warnThrottled(
+              `engine:retention:${sim.id}`,
+              300000,
+              { simulationId: sim.id, simulationTime: nextTime.toISOString(), err },
+              "background safe retention cycle failed"
+            );
+          });
         } else {
           logger.error({
             simulationId: sim.id,
