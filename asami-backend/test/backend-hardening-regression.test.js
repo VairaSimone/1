@@ -802,3 +802,10 @@ test('production validates business state before consuming physical inputs',()=>
   const waterIndex=section.indexOf('const water=Number(resources.water||0)');
   assert.ok(businessIndex>=0&&inactiveIndex>businessIndex&&waterIndex>inactiveIndex);
 });
+
+test('worker installs cognitive schemas before planning migrations',()=>{
+  const source=read('../src/worker.js');
+  const cognitive=source.indexOf('await cognitiveV2.install({gemini});');
+  const planning=source.indexOf('const planningMigration = await ensurePlanningStatusMigrations();');
+  assert.ok(cognitive>=0&&planning>cognitive);
+});
