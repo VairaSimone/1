@@ -27,6 +27,7 @@ const ProposalSchema = z.object({
   purpose: z.string().min(3).max(600),
   market: z.boolean().optional(),
   production: z.boolean().optional(),
+  systemType: z.string().max(64).optional(),
   activities: z.array(z.object({
     code: z.string().min(3).max(80),
     name: z.string().min(3).max(120),
@@ -171,75 +172,38 @@ function selectProposer(actors, signal) {
   })[0] || null;
 }
 
-function deterministicFallbackDefinition(signal, proposer, simulationTime, { economicOpportunity = false } = {}) {
-  const seed = hash(signal.needCode + "|" + proposer.entityId + "|" + simulationTime);
+function deterministicFallbackDefinition(signal, proposer, simulationTime, { economicOpportunity = false, variantIndex = 0 } = {}) {
+  const seed = hash(signal.needCode + '|' + proposer.entityId + '|' + simulationTime);
   const kinds = Array.from(KINDS);
   const kind = kinds[parseInt(seed.slice(0, 2), 16) % kinds.length];
-  const baseCode = "EMERGENT_" + kind + "_" + signal.needCode + "_" + seed.slice(0, 6);
-  const activityCode = kind === "ACTIVITY" ? baseCode : baseCode + "_ACT";
-  const needLabel = signal.needCode.toLowerCase().replaceAll("_", " ");
-  const needDelta = signal.direction === "LOW" ? 0.12 : -0.12;
-  const foodCrisis = signal.needCode === "HUNGER" && signal.direction === "HIGH";
-  const economicResponse = economicOpportunity && signal.needCode !== "THIRST";
-  if (economicResponse) {
-    const production = signal.needCode === "ACHIEVEMENT";
-    return normalizeDefinition({
-      kind: "STRUCTURE",
-      code: baseCode + "_EXCHANGE",
-      name: (proposer.displayName || "Locali") + " - local exchange",
-      category: "COMMERCE",
-      market: true,
-      production,
-      purpose: "A locally organized exchange created after recurring pressure revealed a need for durable material coordination.",
-      products: [],
-      targetNeeds: [{ code: signal.needCode, weight: 2 }],
-      activities: [{
-        code: production ? baseCode + "_MAKE_TOOLS" : baseCode + "_EXCHANGE",
-        name: production ? "Produce useful tools" : "Exchange useful goods locally",
-        category: production ? "PRODUCTION" : "COMMERCE",
-        durationMinutes: production ? 120 : 30,
-        needWeights: { [signal.needCode]: 1.5, ACHIEVEMENT: 0.5 },
-        gate: { needCode: signal.needCode, min: 0.30 },
-        effects: production
-          ? [{ type: "PRODUCTION", goodCode: "TOOLS", quantity: 2, resourceInputs: { water: 1 }, inventoryInputs: {} }]
-          : [{ type: "NEED_DELTA", needCode: signal.needCode, delta: needDelta }]
-      }],
-      formation: "BOTTOM_UP",
-      membership: "VOLUNTARY",
-      origin: "DETERMINISTIC_ECONOMIC_BRIDGE"
-    });
+  const baseCode = 'EMERGENT_' + kind + '_' + signal.needCode + '_' + seed.slice(0, 6);
+  const activityCode = kind === 'ACTIVITY' ? baseCode : baseCode + '_ACT';
+  const needLabel = signal.needCode.toLowerCase().replaceAll('_', ' ');
+  const needDelta = signal.direction === 'LOW' ? 0.12 : -0.12;
+  const foodCrisis = signal.needCode === 'HUNGER' && signal.direction === 'HIGH';
+  const variant = Math.max(0, Number(variantIndex) || 0) % 4;
+
+  if (economicOpportunity && signal.needCode !== 'THIRST') {
+    const production = signal.needCode === 'ACHIEVEMENT' || variant === 3;
+    const activity = production
+      ? { code: baseCode + '_WORKSHOP', name: variant === 3 ? 'Coordinate a shared tool workshop' : 'Produce useful tools', category: 'PRODUCTION', durationMinutes: variant === 3 ? 90 : 120, needWeights: { [signal.needCode]: 1.5, ACHIEVEMENT: 0.5 }, gate: { needCode: signal.needCode, min: 0.30 }, effects: [{ type: 'PRODUCTION', goodCode: 'TOOLS', quantity: variant === 3 ? 1.5 : 2, resourceInputs: { water: 1 }, inventoryInputs: {} }] }
+      : { code: baseCode + '_EXCHANGE', name: variant === 2 ? 'Coordinate local exchange' : 'Exchange useful goods locally', category: 'COMMERCE', durationMinutes: variant === 2 ? 25 : 30, needWeights: { [signal.needCode]: 1.4 }, gate: { needCode: signal.needCode, min: 0.30 }, effects: [{ type: 'NEED_DELTA', needCode: signal.needCode, delta: needDelta }] };
+    return normalizeDefinition({ kind: 'STRUCTURE', code: baseCode + (production ? '_WORKSHOP' : '_EXCHANGE'), name: (proposer.displayName || 'Locali') + (production ? ' - shared workshop' : ' - local exchange'), category: 'COMMERCE', market: true, production, purpose: 'A locally organized economic response created after recurring pressure revealed a need for durable material coordination.', products: [], targetNeeds: [{ code: signal.needCode, weight: 2 }], activities: [activity], formation: 'BOTTOM_UP', membership: 'VOLUNTARY', origin: 'DETERMINISTIC_ECONOMIC_BRIDGE' });
   }
-  return normalizeDefinition({
-    kind: foodCrisis ? "STRUCTURE" : kind,
-    code: foodCrisis ? baseCode + "_SUPPLY" : baseCode,
-    name: foodCrisis ? (proposer.displayName || "Locali") + " - local food supply" : (proposer.displayName || "Locali") + " - " + needLabel + " initiative",
-    category: foodCrisis ? "COMMERCE" : "EMERGENT",
-    market: foodCrisis,
-    production: foodCrisis,
-    purpose: foodCrisis ? "A locally organized response to shared food scarcity." : "A new autonomous response to a shared " + needLabel + " pressure.",
-    products: [],
-    targetNeeds: [{ code: signal.needCode, weight: 2 }],
-    activities: foodCrisis ? [{
-      code: baseCode + "_GROW_FOOD",
-      name: "Produce local food",
-      category: "PRODUCTION",
-      durationMinutes: 120,
-      needWeights: { HUNGER: 2, ACHIEVEMENT: 0.5 },
-      gate: { needCode: "HUNGER", min: 0.30 },
-      effects: [{ type: "PRODUCTION", goodCode: "FOOD", quantity: 2, resourceInputs: { water: 1 }, inventoryInputs: {} }]
-    }] : [{
-      code: activityCode,
-      name: "Practice " + needLabel + " locally",
-      category: "EMERGENT",
-      durationMinutes: 45,
-      needWeights: { [signal.needCode]: 2 },
-      gate: { needCode: signal.needCode, min: 0.30 },
-      effects: [{ type: "NEED_DELTA", needCode: signal.needCode, delta: needDelta }]
-    }],
-    formation: "BOTTOM_UP",
-    membership: "VOLUNTARY",
-    origin: "DETERMINISTIC_FALLBACK"
-  });
+
+  if (foodCrisis) {
+    const variants = [
+      { code: '_SUPPLY', name: 'local food supply', category: 'COMMERCE', market: true, production: true, purpose: 'A locally organized response to shared food scarcity.', activity: { code: '_GROW_FOOD', name: 'Produce local food', category: 'PRODUCTION', durationMinutes: 120, effects: [{ type: 'PRODUCTION', goodCode: 'FOOD', quantity: 2, resourceInputs: { water: 1 }, inventoryInputs: {} }] } },
+      { code: '_PRESERVE', name: 'food preservation', category: 'PRODUCTION', market: false, production: true, purpose: 'A shared preservation practice emerged as a durable response to recurring food scarcity.', activity: { code: '_PRESERVE_FOOD', name: 'Preserve local food', category: 'PRODUCTION', durationMinutes: 90, effects: [{ type: 'PRODUCTION', goodCode: 'FOOD', quantity: 1.5, resourceInputs: { water: 1 }, inventoryInputs: {} }] } },
+      { code: '_COMMON', name: 'food commons', category: 'COMMERCE', market: true, production: false, purpose: 'A shared exchange point emerged to coordinate access to scarce food.', activity: { code: '_SHARE_FOOD', name: 'Coordinate shared food access', category: 'COMMERCE', durationMinutes: 35, effects: [{ type: 'NEED_DELTA', needCode: 'HUNGER', delta: -0.10 }] } },
+      { code: '_KITCHEN', name: 'communal kitchen', category: 'COMMERCE', market: true, production: true, purpose: 'A communal production point emerged to turn local resources into immediately usable food.', activity: { code: '_COOK_FOOD', name: 'Run communal food kitchen', category: 'PRODUCTION', durationMinutes: 75, effects: [{ type: 'PRODUCTION', goodCode: 'FOOD', quantity: 1, resourceInputs: { water: 1 }, inventoryInputs: {} }, { type: 'NEED_DELTA', needCode: 'HUNGER', delta: -0.05 }] } }
+    ][variant];
+    return normalizeDefinition({ kind: 'STRUCTURE', code: baseCode + variants.code, name: (proposer.displayName || 'Locali') + ' - ' + variants.name, category: variants.category, market: variants.market, production: variants.production, purpose: variants.purpose, products: [], targetNeeds: [{ code: 'HUNGER', weight: 2 }], activities: [{ ...variants.activity, needWeights: { HUNGER: 1.8, ACHIEVEMENT: 0.4 }, gate: { needCode: 'HUNGER', min: 0.30 } }], formation: 'BOTTOM_UP', membership: 'VOLUNTARY', origin: 'DETERMINISTIC_FALLBACK' });
+  }
+
+  const categories = ['EMERGENT', 'SOCIAL', 'LEARNING', 'COORDINATION'];
+  const names = ['Practice', 'Organize', 'Teach', 'Coordinate'];
+  return normalizeDefinition({ kind, code: baseCode, name: (proposer.displayName || 'Locali') + ' - ' + needLabel + ' initiative', category: categories[variant], market: false, production: false, purpose: 'A new autonomous response to a shared ' + needLabel + ' pressure.', products: [], targetNeeds: [{ code: signal.needCode, weight: 2 }], activities: [{ code: activityCode, name: names[variant] + ' ' + needLabel + ' locally', category: categories[variant], durationMinutes: variant === 0 ? 45 : variant === 1 ? 60 : variant === 2 ? 75 : 90, needWeights: { [signal.needCode]: 2 }, gate: { needCode: signal.needCode, min: 0.30 }, effects: [{ type: 'NEED_DELTA', needCode: signal.needCode, delta: needDelta }] }], formation: 'BOTTOM_UP', membership: 'VOLUNTARY', origin: 'DETERMINISTIC_FALLBACK' });
 }
 async function askGemini(gemini, { simulationTime, scope, signal, proposer, actors, economicOpportunity = false, similarProposalCount = 0, recurringPressureProposals = 0, recentLocalDefinitions = [] }) {
   if (!gemini || typeof gemini.generateJson !== "function") return null;
@@ -280,7 +244,9 @@ async function askGemini(gemini, { simulationTime, scope, signal, proposer, acto
     "You are the generative design layer inside an autonomous society simulation.",
     "One inhabitant is proposing a genuinely new social possibility in response to a shared local pressure.",
     "Invent a novel STRUCTURE, INSTITUTION, ACTIVITY, or SYSTEM. Do not assume a fixed project taxonomy.",
+    "A SYSTEM may declare systemType='GOVERNANCE' when durable coordination, representation, competing interests, or conflict require it.",
     "Treat existing local inventions as part of the society's history: do not recreate the same semantic solution. Extend, specialize, transform, or replace an existing solution when appropriate.",
+    "Do not repeat a semantic solution already present elsewhere merely by renaming it; change the process, effects, category, organization, or outputs.",
     "If recurringSimilarProposals or recurringPressureProposals is greater than zero, prefer a genuinely different consequence or a concrete evolution of the existing local invention rather than another renamed copy.",
     "The definition is data, not code. It may only use safe effects: NEED_DELTA, RESOURCE_DELTA, INVENTORY_DELTA, PRODUCTION.",
     "When economicOpportunity is true, the proposal must create a durable material/economic capability (market, commerce, production, or work) caused by recurring local pressure; never invent money or free resources.",
@@ -295,10 +261,10 @@ async function askGemini(gemini, { simulationTime, scope, signal, proposer, acto
     return await gemini.generateJson(prompt, ProposalSchema, {
       kind: "autonomy",
       thinkingLevel: "low",
-      maxModels: 1,
-      outputTokenCeilingOverride: 1200,
-      timeoutMsOverride: 10000,
-      deadlineAt: Date.now() + 10000
+      maxModels: 2,
+      outputTokenCeilingOverride: 2048,
+      timeoutMsOverride: 15000,
+      deadlineAt: Date.now() + 15000
     });
   } catch (error) {
     logger.warn({
@@ -321,20 +287,22 @@ async function hasRecentProposal(simulationId, scopeLocationId, simulationTime) 
   return rows.length > 0;
 }
 
-function semanticDefinitionSignature(definition = {}) {
-  const activities = Array.isArray(definition.activities) ? definition.activities : [];
-  const effects = activities.flatMap(activity => Array.isArray(activity.effects) ? activity.effects : []);
-  return JSON.stringify({
-    targetNeeds: (definition.targetNeeds || []).map(item => code(item?.code)).filter(Boolean).sort(),
-    market: Boolean(definition.market),
-    production: Boolean(definition.production),
-    category: normalize(definition.category),
-    activityCategories: activities.map(activity => normalize(activity?.category)).filter(Boolean).sort(),
-    effectTypes: effects.map(effect => normalize(effect?.type)).filter(Boolean).sort(),
-    products: (definition.products || []).map(product => code(product?.code)).filter(Boolean).sort()
-  });
+function stableSemanticValue(value) {
+  if (Array.isArray(value)) return value.map(stableSemanticValue);
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(Object.keys(value).sort().map(key => [key, stableSemanticValue(value[key])]));
 }
 
+function semanticDefinitionSignature(definition = {}) {
+  const activities = Array.isArray(definition.activities) ? definition.activities : [];
+  return JSON.stringify(stableSemanticValue({
+    targetNeeds: (definition.targetNeeds || []).map(item => ({ code: code(item?.code), weight: Number(item?.weight || 0) })).sort((a,b)=>JSON.stringify(a).localeCompare(JSON.stringify(b))),
+    market: Boolean(definition.market), production: Boolean(definition.production), category: normalize(definition.category),
+    formation: normalize(definition.formation), membership: normalize(definition.membership), systemType: normalize(definition.systemType),
+    activities: activities.map(activity => ({ category: normalize(activity?.category), durationMinutes: Number(activity?.durationMinutes || 0), needWeights: activity?.needWeights || {}, gate: activity?.gate ? { needCode: code(activity.gate.needCode), min: Number(activity.gate.min || 0) } : null, effects: (activity?.effects || []).map(effect => ({ type: normalize(effect?.type), needCode: code(effect?.needCode), resource: String(effect?.resource || '').toLowerCase(), goodCode: code(effect?.goodCode), delta: Number(effect?.delta || 0), quantity: Number(effect?.quantity || 0), resourceInputs: effect?.resourceInputs || {}, inventoryInputs: effect?.inventoryInputs || {} })).sort((a,b)=>JSON.stringify(a).localeCompare(JSON.stringify(b))) })).sort((a,b)=>JSON.stringify(a).localeCompare(JSON.stringify(b))),
+    products: (definition.products || []).map(product => ({ category: normalize(product?.category), unit: String(product?.unit || ''), basePrice: Number(product?.basePrice || 0) })).sort((a,b)=>JSON.stringify(a).localeCompare(JSON.stringify(b)))
+  }));
+}
 function isMaterialEconomicDefinition(definition = {}) {
   const category = normalize(definition.category);
   const activities = Array.isArray(definition.activities) ? definition.activities : [];
@@ -364,6 +332,11 @@ async function countRecentSimilarProposals(simulationId, scopeLocationId, defini
   const signature = semanticDefinitionSignature(definition);
   return rows.reduce((count, row) => count + (semanticDefinitionSignature(parseJson(row.definition, {})) === signature ? 1 : 0), 0);
 }
+async function countRecentGlobalSimilarProposals(simulationId, definition, simulationTime) {
+  const [rows] = await pool.query("SELECT definition FROM emergent_world_proposals WHERE simulation_id=UUID_TO_BIN(?) AND status='ACCEPTED' AND created_simulation_at>=DATE_SUB(?,INTERVAL 30 DAY) ORDER BY created_simulation_at DESC LIMIT 120",[simulationId,simulationTime]);
+  const signature=semanticDefinitionSignature(definition);
+  return rows.reduce((count,row)=>count+(semanticDefinitionSignature(parseJson(row.definition,{}))===signature?1:0),0);
+}
 
 function supportScore(definition, actors) {
   const targetNeeds = (definition.targetNeeds || []).filter(
@@ -379,7 +352,7 @@ function supportScore(definition, actors) {
     .filter(effect => effect.type === "NEED_DELTA");
 
   const scores = actors.map(actor => {
-    let utility = 0.46;
+    let utility = 0.40;
     let needFit = 0;
 
     for (const target of targetNeeds) {
@@ -412,6 +385,9 @@ function supportScore(definition, actors) {
     if (normalize(definition.membership) === "VOLUNTARY") {
       utility += 0.05 * (independence - 0.5);
     }
+    if (normalize(definition.kind) === "SYSTEM") utility -= 0.08 * (1 - empathy);
+    else if (normalize(definition.kind) === "INSTITUTION") utility -= 0.06 * (1 - conscientiousness);
+    else if (normalize(definition.kind) === "STRUCTURE") utility -= 0.04 * (1 - independence);
     if (normalize(definition.membership).includes("SHARED")) {
       utility += 0.06 * (empathy - 0.5) + 0.04 * (conscientiousness - 0.5);
     }
@@ -421,15 +397,19 @@ function supportScore(definition, actors) {
 
   return {
     score: average(scores),
-    supporters: scores.filter(score => score >= 0.52).length,
-    required: Math.max(3, Math.ceil(actors.length * 0.35)),
+    supporters: scores.filter(score => score >= 0.60).length,
+    opposition: scores.filter(score => score < 0.40).length,
+    required: Math.max(3, Math.ceil(actors.length * 0.50)),
     perActor: scores
   };
 }
 
 async function persistProposal({ simulationId, simulationTime, proposer, scope, definition, validation, support }) {
   const id = uuid();
-  const status = validation.valid && support.supporters >= support.required && support.score >= 0.52
+  const status = validation.valid &&
+      support.supporters >= support.required &&
+      support.score >= 0.58 &&
+      support.supporters > support.opposition
     ? "ACCEPTED"
     : "REJECTED";
 
@@ -455,7 +435,7 @@ async function persistProposal({ simulationId, simulationTime, proposer, scope, 
       support.required,
       status,
       simulationTime,
-      status === "REJECTED" ? simulationTime : null
+      simulationTime
     ]
   );
   return { id, status };
@@ -593,6 +573,7 @@ async function createStructure(simulationId, simulationTime, proposal, scope, ac
       JSON.stringify(definition.activities.map(activity => activity.code)),
       JSON.stringify({
         origin: "AGENT_PROPOSAL",
+        definition,
         definitionId: structureDefinitionId,
         proposalId: proposal.id,
         definitionCode: definition.code
