@@ -745,10 +745,29 @@ async function ensureBusinesses(simulationId,simulationTime){
     const producer=isProducerStructure(structure),market=isMarketStructure(structure);
     if(!producer&&!market)continue;
     const [existing]=await pool.query(
-      `SELECT id FROM emergent_businesses WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) LIMIT 1`,
+      `SELECT id,status FROM emergent_businesses WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) LIMIT 1`,
       [simulationId,structure.entityId]
     );
-    if(existing.length)continue;
+    if(existing.length){
+      if(String(existing[0].status)==="FAILED"){
+        const [recentSales]=await pool.query(
+          `SELECT COUNT(*) count FROM emergent_trades
+            WHERE simulation_id=UUID_TO_BIN(?) AND seller_entity_id=UUID_TO_BIN(?)
+              AND simulation_at>=DATE_SUB(?,INTERVAL 24 HOUR)`,
+          [simulationId,structure.entityId,simulationTime]
+        );
+        if(Number(recentSales[0]?.count||0)>0){
+          await pool.query(
+            `UPDATE emergent_businesses
+                SET status='ACTIVE',failure_count=0,last_evaluated_simulation_at=?,
+                    updated_simulation_at=?,version=version+1
+              WHERE id=UUID_TO_BIN(?) AND status='FAILED'`,
+            [simulationTime,simulationTime,existing[0].id]
+          );
+        }
+      }
+      continue;
+    }
     const [project]=await pool.query(
       `SELECT BIN_TO_UUID(proposer_entity_id) ownerEntityId
          FROM emergent_projects WHERE simulation_id=UUID_TO_BIN(?) AND id=UUID_TO_BIN(?) LIMIT 1`,
