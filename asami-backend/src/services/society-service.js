@@ -839,11 +839,11 @@ async function ensureBusinesses(simulationId,simulationTime){
       [simulationId,normalize(definition.code)]
     );
     const ownerEntityId=origin[0]?.ownerEntityId||systemEntityId;
-    await pool.query(
-      'INSERT INTO emergent_businesses (id,simulation_id,entity_id,owner_entity_id,status,production_capacity,created_simulation_at,updated_simulation_at,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),\'ACTIVE\',1,?,?,1)',
+    const [businessInsert]=await pool.query(
+      'INSERT IGNORE INTO emergent_businesses (id,simulation_id,entity_id,owner_entity_id,status,production_capacity,created_simulation_at,updated_simulation_at,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),\'ACTIVE\',1,?,?,1)',
       [uuid(),simulationId,systemEntityId,ownerEntityId,simulationTime,simulationTime]
     );
-    if(String(ownerEntityId)!==String(systemEntityId)){
+    if(businessInsert.affectedRows===1&&String(ownerEntityId)!==String(systemEntityId)){
       const [ownerAccount]=await pool.query(
         'SELECT id,balance FROM emergent_economy_accounts WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) LIMIT 1 FOR UPDATE',
         [simulationId,ownerEntityId]
