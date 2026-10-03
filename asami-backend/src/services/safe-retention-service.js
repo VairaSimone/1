@@ -705,7 +705,7 @@ async function compactOldDailySample(conn, {
   resultKey = "deleted"
 }) {
   const safeTables = new Set(["cognitive_states", "emergent_wealth_history", "simulation_snapshots"]);
-  const safeTimeColumns = new Set(["simulation_time"]);
+  const safeTimeColumns = new Set(["simulation_time","simulation_at"]);
   if (!safeTables.has(table) || !safeTimeColumns.has(timeColumn)) {
     throw new Error("Unsupported daily-sample retention target");
   }
@@ -766,8 +766,8 @@ async function compactOldEmergentWealthHistory(conn, simulationId, simulationTim
     table: "emergent_wealth_history",
     simulationId,
     cutoff,
-    partitionColumns: ["entity_id", "DATE(simulation_time)"],
-    timeColumn: "simulation_time",
+    partitionColumns: ["entity_id", "DATE(simulation_at)"],
+    timeColumn: "simulation_at",
     resultKey: "deleted"
   });
 }
