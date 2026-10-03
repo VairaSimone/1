@@ -133,7 +133,7 @@ test('consolidated memory upserts are serialized with a database lock',()=>{
   const start=source.indexOf('async function upsertConsolidatedMemory');
   const end=source.indexOf('async function consolidateActionMemories',start);
   const section=source.slice(start,end);
-  assert.match(section,/SELECT id FROM entities[\s\S]*FOR UPDATE/);
+  assert.match(section,/GET_LOCK\(\?,5\)/);
   assert.match(section,/RELEASE_LOCK/);
   assert.match(section,/pool\.getConnection\(\)/);
 });
@@ -778,9 +778,9 @@ test('autonomous social conversation creation is serialized per simulation and e
   const end=source.indexOf('\nasync function createSocialMessage',start);
   const section=source.slice(start,end);
   assert.match(section,/withTransaction\(async conn/);
-  assert.match(section,/GET_LOCK\(\?,5\)/);
-  assert.match(section,/sort\(\)\.join\(["']\\\|["']\)/);
-  assert.match(section,/RELEASE_LOCK/);
+  assert.match(section,/pairKey=.*sort\(\)\.join/);
+  assert.match(section,/SELECT id FROM entities[\s\S]*FOR UPDATE/);
+});
 });
 
 test('visited-location history is scoped to the active simulation',()=>{
