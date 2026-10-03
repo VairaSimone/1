@@ -237,7 +237,7 @@ async function deleteActorCognitiveArtifacts(conn,simulationId,simulationTime){
   for(const target of targets){
     if(!retentionBudgetAvailable(simulationId))break;
     const [result]=await conn.query(
-      "DELETE t FROM "+target.table+" t JOIN (SELECT id FROM (SELECT x.id,ROW_NUMBER() OVER(PARTITION BY x.entity_id ORDER BY x."+target.timeColumn+" DESC) AS rn FROM "+target.table+" x WHERE x.simulation_id=UUID_TO_BIN(?) AND "+target.where.replaceAll("counterfactuals","x")+" AND x."+target.timeColumn+">?) ranked WHERE ranked.rn>? LIMIT "+POLICY.batchSize+") doomed ON doomed.id=t.id",
+      "DELETE t FROM "+target.table+" t JOIN (SELECT id FROM (SELECT x.id,ROW_NUMBER() OVER(PARTITION BY x.entity_id ORDER BY x."+target.timeColumn+" DESC) AS rn FROM "+target.table+" x WHERE x.simulation_id=UUID_TO_BIN(?) AND "+target.where.replaceAll("counterfactuals","x")+" AND x."+target.timeColumn+"<?) ranked WHERE ranked.rn>? LIMIT "+POLICY.batchSize+") doomed ON doomed.id=t.id",
       [simulationId,cutoff,target.max]
     );
     const affected=Number(result.affectedRows||0);
