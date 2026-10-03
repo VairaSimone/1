@@ -429,8 +429,9 @@ async function applyProductionEffect({conn,simulationId,entityId,simulationTime,
   const [policyRows]=await conn.query(
     `SELECT parameters FROM emergent_policies
       WHERE simulation_id=UUID_TO_BIN(?) AND status='ENACTED'
+        AND (expires_simulation_at IS NULL OR expires_simulation_at>?)
       ORDER BY updated_simulation_at DESC LIMIT 1`,
-    [simulationId]
+    [simulationId,simulationTime]
   );
   const policy=parseJson(policyRows[0]?.parameters,{});
   const subsidyRate=normalize(policy.fundingModel)==='COMMON_POOL'
