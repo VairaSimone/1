@@ -988,7 +988,7 @@ async function runSafeRetention(simulationId, simulationTime) {
     if (summary.retentionBacklogTotal > 0) {
       logger.warnThrottled(
         `retention:backlog:${simulationId}`,
-        300000,
+        1800000,
         {
           simulationId,
           simulationTime,
