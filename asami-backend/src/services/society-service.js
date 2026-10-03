@@ -4,7 +4,7 @@ const { createEvent } = require("./event-service");
 const logger = require("../lib/logger");
 const { validateDefinition, registerDefinition } = require("./emergent-definition-service");
 
-const LOCATION = "00000000-0000-4000-8000-000000000003";
+const SYSTEM_ENTITY_TYPE = "00000000-0000-4000-8000-000000000005";
 
 function parseJson(value,fallback={}){if(value===null||value===undefined)return fallback;if(typeof value==="object")return value;try{return JSON.parse(value)}catch{return fallback}}
 function normalize(value){return String(value||"").trim().toUpperCase()}
