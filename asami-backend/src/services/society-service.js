@@ -95,23 +95,18 @@ async function ensureMarketInventory(simulationId,simulationTime){
         VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),'FOOD',12,?,1)`,
       [uuid(),simulationId,market.entityId,simulationTime]
     );
+  }
   const [systems]=await pool.query(
-    'SELECT BIN_TO_UUID(JSON_UNQUOTE(JSON_EXTRACT(attributes,"$.systemEntityId"))) entityId,attributes FROM emergent_systems WHERE simulation_id=UUID_TO_BIN(?) AND stage<>"ENDED"',
+    'SELECT JSON_UNQUOTE(JSON_EXTRACT(attributes,"$.systemEntityId")) entityId,attributes FROM emergent_systems WHERE simulation_id=UUID_TO_BIN(?) AND stage<>"ENDED"',
     [simulationId]
   );
   for(const system of systems){
-    const systemMarket={type:parseJson(system.attributes,{}).definition?.market===true?"MARKET":parseJson(system.attributes,{}).definition?.category,attributes:system.attributes,entityId:system.entityId};
+    const definition=parseJson(system.attributes,{}).definition||{};
+    const systemMarket={type:definition.market===true?'MARKET':definition.category,attributes:system.attributes,entityId:system.entityId};
     if(!system.entityId||!isMarketStructure(systemMarket))continue;
-    const [rows]=await pool.query(
-      'SELECT quantity FROM emergent_inventory WHERE simulation_id=UUID_TO_BIN(?) AND owner_entity_id=UUID_TO_BIN(?) AND good_code="FOOD" LIMIT 1',
-      [simulationId,system.entityId]
-    );
+    const [rows]=await pool.query('SELECT quantity FROM emergent_inventory WHERE simulation_id=UUID_TO_BIN(?) AND owner_entity_id=UUID_TO_BIN(?) AND good_code="FOOD" LIMIT 1',[simulationId,system.entityId]);
     if(rows.length)continue;
-    await pool.query(
-      'INSERT INTO emergent_inventory (id,simulation_id,owner_entity_id,good_code,quantity,updated_simulation_at,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),"FOOD",12,?,1)',
-      [uuid(),simulationId,system.entityId,simulationTime]
-    );
-  }
+    await pool.query('INSERT INTO emergent_inventory (id,simulation_id,owner_entity_id,good_code,quantity,updated_simulation_at,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),"FOOD",12,?,1)',[uuid(),simulationId,system.entityId,simulationTime]);
   }
 }
 async function ensureJobs(simulationId,simulationTime){
@@ -1064,7 +1059,7 @@ async function executeEconomicAction({conn,simulationId,entityId,actionType,simu
       [simulationId,locationId]
     );
     const [sellerSystemRows]=await conn.query(
-      'SELECT BIN_TO_UUID(JSON_UNQUOTE(JSON_EXTRACT(attributes,"$.systemEntityId"))) entityId,system_type type,attributes FROM emergent_systems WHERE simulation_id=UUID_TO_BIN(?) AND scope_location_id=UUID_TO_BIN(?) AND stage<>"ENDED"',
+      'SELECT JSON_UNQUOTE(JSON_EXTRACT(attributes,"$.systemEntityId")) entityId,system_type type,attributes FROM emergent_systems WHERE simulation_id=UUID_TO_BIN(?) AND scope_location_id=UUID_TO_BIN(?) AND stage<>"ENDED"',
       [simulationId,locationId]
     );
     const seller=[...sellerStructureRows,...sellerSystemRows].filter(row=>row.entityId).find(isMarketStructure);
@@ -1154,7 +1149,7 @@ async function executeEconomicAction({conn,simulationId,entityId,actionType,simu
       [simulationId,locationId]
     );
     const [marketSystemRows]=await conn.query(
-      'SELECT BIN_TO_UUID(JSON_UNQUOTE(JSON_EXTRACT(attributes,"$.systemEntityId"))) entityId,system_type type,attributes FROM emergent_systems WHERE simulation_id=UUID_TO_BIN(?) AND scope_location_id=UUID_TO_BIN(?) AND stage<>"ENDED"',
+      'SELECT JSON_UNQUOTE(JSON_EXTRACT(attributes,"$.systemEntityId")) entityId,system_type type,attributes FROM emergent_systems WHERE simulation_id=UUID_TO_BIN(?) AND scope_location_id=UUID_TO_BIN(?) AND stage<>"ENDED"',
       [simulationId,locationId]
     );
     const market=[...marketStructureRows,...marketSystemRows].filter(row=>row.entityId).find(isMarketStructure);
