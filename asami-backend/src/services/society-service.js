@@ -18,6 +18,7 @@ function uuidString(value){
 function clamp(value,min=0,max=1){const n=Number(value);return Number.isFinite(n)?Math.max(min,Math.min(max,n)):min}
 function gini(values){const a=values.map(Number).filter(Number.isFinite).map(x=>Math.max(0,x)).sort((x,y)=>x-y);const n=a.length;if(n<2)return 0;const sum=a.reduce((s,x)=>s+x,0);if(sum<=0)return 0;let weighted=0;for(let i=0;i<n;i++)weighted+=(i+1)*a[i];return clamp((2*weighted)/(n*sum)-(n+1)/n,0,1)}
 function hoursBetween(a,b){const x=new Date(a).getTime(),y=new Date(b).getTime();return Number.isFinite(x)&&Number.isFinite(y)?Math.max(0,(y-x)/3600000):1}
+function addSimulationHours(value,hours){const date=new Date(value);if(!Number.isFinite(date.getTime()))return value;return new Date(date.getTime()+Math.max(0,Number(hours)||0)*3600000).toISOString()}
 
 async function ensureCatalog(simulationId,simulationTime){
   const goods=[
@@ -117,7 +118,7 @@ async function ensureMarketInventory(simulationId,simulationTime){
   }
 }
 async function ensureJobs(simulationId,simulationTime){
-  const economicPolicy=await latestEconomicPolicy(simulationId);
+  const economicPolicy=await latestEconomicPolicy(simulationId,simulationTime);
   const [structures]=await pool.query(
     `SELECT BIN_TO_UUID(es.entity_id) employerId,BIN_TO_UUID(es.project_id) projectId,
             es.structure_type type,es.attributes
@@ -210,7 +211,7 @@ async function ensureJobs(simulationId,simulationTime){
   }}
 
 async function matchLaborMarket(simulationId,simulationTime){
-  const economicPolicy=await latestEconomicPolicy(simulationId);
+  const economicPolicy=await latestEconomicPolicy(simulationId,simulationTime);
   const [people]=await pool.query(
     `SELECT BIN_TO_UUID(e.id) entityId
        FROM entities e JOIN entity_types et ON et.id=e.entity_type_id
@@ -305,7 +306,7 @@ async function evolvePrices(simulationId,simulationTime){
     [simulationId]
   );
   const marketRows=[...structureMarkets,...systemMarkets].filter(isMarketStructure);
-  const economicPolicy=await latestEconomicPolicy(simulationId);
+  const economicPolicy=await latestEconomicPolicy(simulationId,simulationTime);
   const [goods]=await pool.query(
     `SELECT code,base_price basePrice FROM emergent_goods WHERE simulation_id=UUID_TO_BIN(?) ORDER BY code`,
     [simulationId]
@@ -462,7 +463,7 @@ async function restockMarkets(simulationId,simulationTime){
            SET balance=balance+?,lifetime_income=lifetime_income+?,last_updated_simulation_at=?,version=version+1 WHERE id=?`,
         [total,total,simulationTime,producerAccount[0].id]
       );
-      const policy=await latestEconomicPolicy(simulationId);
+      const policy=await latestEconomicPolicy(simulationId,simulationTime);
       const subsidyRate=Math.max(0,Math.min(.35,Number(policy.productionSubsidyRate||0)));
       if(subsidyRate>0){
         const [govSystemRows]=await pool.query(
@@ -684,7 +685,16 @@ async function evolvePolitics(simulationId,simulationTime){
     const [tally]=await pool.query(`SELECT COUNT(*) total,SUM(choice="YES") yes FROM emergent_policy_votes WHERE simulation_id=UUID_TO_BIN(?) AND policy_id=UUID_TO_BIN(?)`,[simulationId,policy.id]);
     const total=Number(tally[0]?.total||0),yes=Number(tally[0]?.yes||0),ratio=total?yes/total:0;
     if(total>=Math.min(7,people.length) && ratio>=.60){
-      await pool.query(`UPDATE emergent_policies SET status="ENACTED",support_score=?,opposition_score=?,updated_simulation_at=?,version=version+1 WHERE id=UUID_TO_BIN(?) AND status="PROPOSED"`,[ratio,1-ratio,simulationTime,policy.id]);
+      const policyParams=parseJson(policy.parameters,{})||{};
+      const durationHours=Math.max(1,Number(policyParams.durationHours||72));
+      const expiresSimulationAt=addSimulationHours(simulationTime,durationHours);
+      await pool.query(
+        `UPDATE emergent_policies
+            SET status="ENACTED",support_score=?,opposition_score=?,updated_simulation_at=?,
+                expires_simulation_at=?,version=version+1
+          WHERE id=UUID_TO_BIN(?) AND status="PROPOSED"`,
+        [ratio,1-ratio,simulationTime,expiresSimulationAt,policy.id]
+      );
       enacted.push(policy.id);
       await createEvent({simulationId,eventTypeCode:"SOCIAL",title:"A policy was enacted: "+policy.title,description:policy.statement,simulationAt:simulationTime,importance:.74,metadata:{emergent:true,kind:"POLICY_ENACTED",policyId:policy.id,governanceSystemId:governanceId}});
     }else if(total>=Math.min(7,people.length) && ratio<=.40){
@@ -855,12 +865,23 @@ async function ensureBusinesses(simulationId,simulationTime){
 }
 
 
-async function latestEconomicPolicy(simulationId){
+async function latestEconomicPolicy(simulationId,simulationTime=null){
+  const effectiveTime=simulationTime||new Date();
+  await pool.query(
+    `UPDATE emergent_policies
+        SET status='EXPIRED',version=version+1
+      WHERE simulation_id=UUID_TO_BIN(?)
+        AND status='ENACTED'
+        AND expires_simulation_at IS NOT NULL
+        AND expires_simulation_at<=?`,
+    [simulationId,effectiveTime]
+  );
   const [rows]=await pool.query(
     `SELECT parameters FROM emergent_policies
       WHERE simulation_id=UUID_TO_BIN(?) AND status='ENACTED'
+        AND (expires_simulation_at IS NULL OR expires_simulation_at>?)
       ORDER BY updated_simulation_at DESC LIMIT 1`,
-    [simulationId]
+    [simulationId,effectiveTime]
   );
   return parseJson(rows[0]?.parameters,{});
 }
@@ -896,23 +917,27 @@ async function ensureEconomicPolicyProposal(simulationId,simulationTime,business
     issueCode='ECONOMIC_EMPLOYMENT';
     title='Support employment and production';
     statement='Create a temporary production incentive financed through the common pool so businesses can sustain employment.';
-    parameters={fundingModel:'COMMON_POOL',contributionRate:.06,productionSubsidyRate:.12};
+    parameters={fundingModel:'COMMON_POOL',contributionRate:.06,productionSubsidyRate:.12,durationHours:72};
   }else if(foodPrice>=1.35){
     issueCode='ECONOMIC_PRICES';
     title='Limit essential food price pressure';
     statement='Introduce a temporary ceiling for essential food prices while supply adjusts.';
-    parameters={fundingModel:'VOLUNTARY',priceCeilingMultiplier:1.25};
+    parameters={fundingModel:'VOLUNTARY',priceCeilingMultiplier:1.25,durationHours:72};
   }else{
     issueCode='ECONOMIC_DISTRIBUTION';
     title='Increase contribution to the common pool';
     statement='Increase the common contribution to fund collective economic support.';
-    parameters={fundingModel:'COMMON_POOL',contributionRate:.08,wageSubsidyRate:.10};
+    parameters={fundingModel:'COMMON_POOL',contributionRate:.08,wageSubsidyRate:.10,durationHours:72};
   }
   const [existingIssue]=await pool.query(
     `SELECT id,status FROM emergent_policies
-      WHERE simulation_id=UUID_TO_BIN(?) AND issue_code=? AND status IN ('PROPOSED','ENACTED')
+      WHERE simulation_id=UUID_TO_BIN(?) AND issue_code=?
+        AND (
+          status='PROPOSED'
+          OR (status='ENACTED' AND (expires_simulation_at IS NULL OR expires_simulation_at>?))
+        )
       ORDER BY created_simulation_at DESC LIMIT 1`,
-    [simulationId,issueCode]
+    [simulationId,issueCode,simulationTime]
   );
   if(existingIssue.length)return null;
   const [proposer]=await pool.query(
@@ -1365,7 +1390,13 @@ async function executeEconomicAction({conn,simulationId,entityId,actionType,simu
     const wage=Number(job[0].wage||0.75);
     const workedHours=Math.max(0.25,Math.min(12,Number(durationMinutes||120)/60));
     const gross=Number((wage*workedHours).toFixed(4));
-    const [policyRows]=await conn.query(`SELECT parameters FROM emergent_policies WHERE simulation_id=UUID_TO_BIN(?) AND status="ENACTED" ORDER BY updated_simulation_at DESC LIMIT 1`,[simulationId]);
+    const [policyRows]=await conn.query(
+      `SELECT parameters FROM emergent_policies
+        WHERE simulation_id=UUID_TO_BIN(?) AND status="ENACTED"
+          AND (expires_simulation_at IS NULL OR expires_simulation_at>?)
+        ORDER BY updated_simulation_at DESC LIMIT 1`,
+      [simulationId,simulationTime]
+    );
     const policy=parseJson(policyRows[0]?.parameters,{});
     const mandatoryTax=normalize(policy.fundingModel)==="COMMON_POOL" ? clamp(Number(policy.contributionRate||0),0,.35) : 0;
     const tax=Number((gross*mandatoryTax).toFixed(4));
@@ -1434,7 +1465,7 @@ async function getSocietySnapshot(simulationId){
     pool.query(`SELECT BIN_TO_UUID(id) id,BIN_TO_UUID(employer_entity_id) employerEntityId,BIN_TO_UUID(employee_entity_id) employeeEntityId,role,wage_per_hour wagePerHour,status,hired_simulation_at hiredAt FROM emergent_jobs WHERE simulation_id=UUID_TO_BIN(?) ORDER BY hired_simulation_at DESC LIMIT 50`,[simulationId]),
     pool.query(`SELECT BIN_TO_UUID(id) id,BIN_TO_UUID(buyer_entity_id) buyerEntityId,BIN_TO_UUID(seller_entity_id) sellerEntityId,BIN_TO_UUID(location_id) locationId,good_code goodCode,quantity,unit_price unitPrice,total,simulation_at simulationAt FROM emergent_trades WHERE simulation_id=UUID_TO_BIN(?) ORDER BY simulation_at DESC LIMIT 50`,[simulationId]),
     pool.query(`SELECT population_count populationCount,total_wealth totalWealth,average_wealth averageWealth,gini,average_food_price averageFoodPrice,total_trade_value totalTradeValue,simulation_at simulationAt FROM emergent_economic_metrics WHERE simulation_id=UUID_TO_BIN(?) ORDER BY simulation_at DESC LIMIT 48`,[simulationId]),
-    pool.query(`SELECT BIN_TO_UUID(id) id,BIN_TO_UUID(proposer_entity_id) proposerEntityId,BIN_TO_UUID(governance_system_id) governanceSystemId,issue_code issueCode,title,statement,parameters,support_score supportScore,opposition_score oppositionScore,status,created_simulation_at createdAt FROM emergent_policies WHERE simulation_id=UUID_TO_BIN(?) ORDER BY created_simulation_at DESC LIMIT 50`,[simulationId]),
+    pool.query(`SELECT BIN_TO_UUID(id) id,BIN_TO_UUID(proposer_entity_id) proposerEntityId,BIN_TO_UUID(governance_system_id) governanceSystemId,issue_code issueCode,title,statement,parameters,support_score supportScore,opposition_score oppositionScore,status,created_simulation_at createdAt,expires_simulation_at expiresAt FROM emergent_policies WHERE simulation_id=UUID_TO_BIN(?) ORDER BY created_simulation_at DESC LIMIT 50`,[simulationId]),
     pool.query(`SELECT BIN_TO_UUID(id) id,BIN_TO_UUID(scope_location_id) scopeLocationId,conflict_type conflictType,left_type leftType,BIN_TO_UUID(left_id) leftId,right_type rightType,BIN_TO_UUID(right_id) rightId,intensity,status,metadata,created_simulation_at createdAt,resolved_simulation_at resolvedAt FROM emergent_conflicts WHERE simulation_id=UUID_TO_BIN(?) ORDER BY created_simulation_at DESC LIMIT 50`,[simulationId])
 ,    pool.query(`SELECT business_count businessCount,active_business_count activeBusinessCount,failed_business_count failedBusinessCount,unemployed_count unemployedCount,employed_count employedCount,revenue,input_cost inputCost,wage_cost wageCost,profit,production_value productionValue,investment,simulation_at simulationAt FROM emergent_business_metrics WHERE simulation_id=UUID_TO_BIN(?) ORDER BY simulation_at DESC LIMIT 48`,[simulationId]),
     pool.query(`SELECT BIN_TO_UUID(id) id,BIN_TO_UUID(entity_id) entityId,BIN_TO_UUID(owner_entity_id) ownerEntityId,status,production_capacity productionCapacity,recent_revenue recentRevenue,recent_input_cost recentInputCost,recent_wage_cost recentWageCost,recent_profit recentProfit,cumulative_profit cumulativeProfit,cumulative_investment cumulativeInvestment,failure_count failureCount,last_evaluated_simulation_at lastEvaluated,updated_simulation_at updatedAt FROM emergent_businesses WHERE simulation_id=UUID_TO_BIN(?) ORDER BY updated_simulation_at DESC LIMIT 80`,[simulationId]),
