@@ -744,6 +744,51 @@ async function recordWealth(simulationId,simulationTime){
 }
 
 
+async function createBusinessWithCapital({simulationId,entityId,ownerEntityId,simulationTime}) {
+  return withTransaction(async conn => {
+    const [businessInsert]=await conn.query(
+      `INSERT IGNORE INTO emergent_businesses
+        (id,simulation_id,entity_id,owner_entity_id,status,production_capacity,created_simulation_at,updated_simulation_at,version)
+        VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),'ACTIVE',1,?,?,1)`,
+      [uuid(),simulationId,entityId,ownerEntityId,simulationTime,simulationTime]
+    );
+    if(Number(businessInsert.affectedRows||0)!==1)return false;
+    if(String(ownerEntityId)===String(entityId))return true;
+
+    const [ownerAccount]=await conn.query(
+      `SELECT id,balance FROM emergent_economy_accounts
+       WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) LIMIT 1 FOR UPDATE`,
+      [simulationId,ownerEntityId]
+    );
+    const [businessAccount]=await conn.query(
+      `SELECT id,balance FROM emergent_economy_accounts
+       WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) LIMIT 1 FOR UPDATE`,
+      [simulationId,entityId]
+    );
+    if(!ownerAccount.length||!businessAccount.length)return true;
+
+    const capital=Number(Math.min(10,Math.max(0,Number(ownerAccount[0].balance||0)*.25)).toFixed(4));
+    if(capital<=0)return true;
+
+    const [debited]=await conn.query(
+      `UPDATE emergent_economy_accounts
+       SET balance=balance-?,lifetime_spending=lifetime_spending+?,last_updated_simulation_at=?,version=version+1
+       WHERE id=? AND balance>=?`,
+      [capital,capital,simulationTime,ownerAccount[0].id,capital]
+    );
+    if(Number(debited.affectedRows||0)!==1){
+      throw Object.assign(new Error("Business capital funding could not debit owner account"),{code:"BUSINESS_CAPITAL_DEBIT_FAILED"});
+    }
+    await conn.query(
+      `UPDATE emergent_economy_accounts
+       SET balance=balance+?,lifetime_income=lifetime_income+?,last_updated_simulation_at=?,version=version+1
+       WHERE id=?`,
+      [capital,capital,simulationTime,businessAccount[0].id]
+    );
+    return true;
+  });
+}
+
 async function ensureBusinesses(simulationId,simulationTime){
   const [structures]=await pool.query(
     `SELECT BIN_TO_UUID(es.entity_id) entityId,BIN_TO_UUID(es.project_id) projectId,es.structure_type type,es.attributes
@@ -784,38 +829,12 @@ async function ensureBusinesses(simulationId,simulationTime){
       [simulationId,structure.projectId]
     );
     const ownerEntityId=project[0]?.ownerEntityId||structure.entityId;
-    const [businessInsert]=await pool.query(
-      `INSERT IGNORE INTO emergent_businesses
-        (id,simulation_id,entity_id,owner_entity_id,status,production_capacity,created_simulation_at,updated_simulation_at,version)
-        VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),'ACTIVE',1,?,?,1)`,
-      [uuid(),simulationId,structure.entityId,ownerEntityId,simulationTime,simulationTime]
-    );
-    if(businessInsert.affectedRows===1&&String(ownerEntityId)!==String(structure.entityId)){
-      const [ownerAccount]=await pool.query(
-        `SELECT id,balance FROM emergent_economy_accounts
-          WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) LIMIT 1 FOR UPDATE`,
-        [simulationId,ownerEntityId]
-      );
-      const [businessAccount]=await pool.query(
-        `SELECT id,balance FROM emergent_economy_accounts
-          WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) LIMIT 1 FOR UPDATE`,
-        [simulationId,structure.entityId]
-      );
-      if(ownerAccount.length&&businessAccount.length&&Number(ownerAccount[0].balance)>0){
-        const capital=Number(Math.min(10,Math.max(0,Number(ownerAccount[0].balance)*.25)).toFixed(4));
-        if(capital>0){
-          await pool.query(
-            `UPDATE emergent_economy_accounts SET balance=balance-?,lifetime_spending=lifetime_spending+?,last_updated_simulation_at=?,version=version+1 WHERE id=?`,
-            [capital,capital,simulationTime,ownerAccount[0].id]
-          );
-          await pool.query(
-            `UPDATE emergent_economy_accounts SET balance=balance+?,lifetime_income=lifetime_income+?,last_updated_simulation_at=?,version=version+1 WHERE id=?`,
-            [capital,capital,simulationTime,businessAccount[0].id]
-          );
-        }
-      }
-    }
-    created++;
+    if(await createBusinessWithCapital({
+      simulationId,
+      entityId:structure.entityId,
+      ownerEntityId,
+      simulationTime
+    }))created++;
   }
   const [systems]=await pool.query(
     'SELECT BIN_TO_UUID(id) systemId,attributes FROM emergent_systems WHERE simulation_id=UUID_TO_BIN(?) AND stage<>"ENDED"',
@@ -839,28 +858,12 @@ async function ensureBusinesses(simulationId,simulationTime){
       [simulationId,normalize(definition.code)]
     );
     const ownerEntityId=origin[0]?.ownerEntityId||systemEntityId;
-    const [businessInsert]=await pool.query(
-      'INSERT IGNORE INTO emergent_businesses (id,simulation_id,entity_id,owner_entity_id,status,production_capacity,created_simulation_at,updated_simulation_at,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),\'ACTIVE\',1,?,?,1)',
-      [uuid(),simulationId,systemEntityId,ownerEntityId,simulationTime,simulationTime]
-    );
-    if(businessInsert.affectedRows===1&&String(ownerEntityId)!==String(systemEntityId)){
-      const [ownerAccount]=await pool.query(
-        'SELECT id,balance FROM emergent_economy_accounts WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) LIMIT 1 FOR UPDATE',
-        [simulationId,ownerEntityId]
-      );
-      const [businessAccount]=await pool.query(
-        'SELECT id,balance FROM emergent_economy_accounts WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) LIMIT 1 FOR UPDATE',
-        [simulationId,systemEntityId]
-      );
-      if(ownerAccount.length&&businessAccount.length){
-        const capital=Number(Math.min(10,Math.max(0,Number(ownerAccount[0].balance||0)*.25)).toFixed(4));
-        if(capital>0){
-          await pool.query('UPDATE emergent_economy_accounts SET balance=balance-?,lifetime_spending=lifetime_spending+?,last_updated_simulation_at=?,version=version+1 WHERE id=?',[capital,capital,simulationTime,ownerAccount[0].id]);
-          await pool.query('UPDATE emergent_economy_accounts SET balance=balance+?,lifetime_income=lifetime_income+?,last_updated_simulation_at=?,version=version+1 WHERE id=?',[capital,capital,simulationTime,businessAccount[0].id]);
-        }
-      }
-    }
-    created++;
+    if(await createBusinessWithCapital({
+      simulationId,
+      entityId:systemEntityId,
+      ownerEntityId,
+      simulationTime
+    }))created++;
   }  return created;
 }
 
