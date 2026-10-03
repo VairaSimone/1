@@ -90,6 +90,7 @@ async function ensureSocietyMigrations() {
     system_id BINARY(16) NOT NULL, simulation_id BINARY(16) NOT NULL, entity_id BINARY(16) NOT NULL,
     role VARCHAR(48) NOT NULL DEFAULT 'MEMBER', support_score DECIMAL(8,5) NOT NULL DEFAULT 0,
     joined_simulation_at DATETIME(3) NOT NULL, status VARCHAR(24) NOT NULL DEFAULT 'ACTIVE', left_simulation_at DATETIME(3) NULL,
+    version INT NOT NULL DEFAULT 1,
     PRIMARY KEY (system_id,entity_id), KEY idx_esm_entity (simulation_id,entity_id), KEY idx_esm_status (simulation_id,system_id,status)
   )`);
 
@@ -139,7 +140,11 @@ async function ensureSocietyMigrations() {
   if (!systemMemberStatus.length) await pool.query(`ALTER TABLE emergent_system_members ADD COLUMN status VARCHAR(24) NOT NULL DEFAULT 'ACTIVE'`);
   const [systemMemberLeft] = await pool.query(`SHOW COLUMNS FROM emergent_system_members LIKE 'left_simulation_at'`);
   if (!systemMemberLeft.length) await pool.query(`ALTER TABLE emergent_system_members ADD COLUMN left_simulation_at DATETIME(3) NULL`);
-  const [governanceMemberStatus] = await pool.query(`SHOW COLUMNS FROM emergent_governance_members LIKE 'status'`);
+
+  const [systemMemberVersion] = await pool.query(`SHOW COLUMNS FROM emergent_system_members LIKE 'version'`);
+  if (!systemMemberVersion.length) {
+    await pool.query(`ALTER TABLE emergent_system_members ADD COLUMN version INT NOT NULL DEFAULT 1`);
+  }  const [governanceMemberStatus] = await pool.query(`SHOW COLUMNS FROM emergent_governance_members LIKE 'status'`);
   if (!governanceMemberStatus.length) await pool.query(`ALTER TABLE emergent_governance_members ADD COLUMN status VARCHAR(24) NOT NULL DEFAULT 'ACTIVE'`);
   const [governanceMemberLeft] = await pool.query(`SHOW COLUMNS FROM emergent_governance_members LIKE 'left_simulation_at'`);
   if (!governanceMemberLeft.length) await pool.query(`ALTER TABLE emergent_governance_members ADD COLUMN left_simulation_at DATETIME(3) NULL`);
