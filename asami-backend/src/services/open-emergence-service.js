@@ -622,6 +622,14 @@ async function createStructure(simulationId, simulationTime, proposal, scope, ac
 
 async function createSystem(simulationId, simulationTime, proposal, scope, actors) {
   const definition = proposal.definition;
+  const systemType = normalize(definition.systemType) || definition.code;
+  if (systemType === "GOVERNANCE") {
+    const [existingGovernance] = await pool.query(
+      "SELECT BIN_TO_UUID(id) id,BIN_TO_UUID(JSON_UNQUOTE(JSON_EXTRACT(attributes,'$.systemEntityId'))) systemEntityId FROM emergent_systems WHERE simulation_id=UUID_TO_BIN(?) AND system_type='GOVERNANCE' AND stage<>'ENDED' LIMIT 1",
+      [simulationId]
+    );
+    if (existingGovernance.length) return { systemId:existingGovernance[0].id, systemEntityId:existingGovernance[0].systemEntityId, definitionId:null, alreadyExists:true };
+  }
   await registerEmergentProducts(simulationId, simulationTime, definition);
   const systemId = uuid();
   const systemEntityId = uuid();
@@ -641,7 +649,7 @@ async function createSystem(simulationId, simulationTime, proposal, scope, actor
     [
       systemId,
       simulationId,
-      definition.code,
+      systemType,
       definition.name,
       scope.locationId,
       JSON.stringify({
@@ -752,143 +760,65 @@ async function proposeForLocation(simulationId, simulationTime, scope, actors, g
   const signal = topNeedSignal(actors);
   if (!signal || signal.score < 0.55 || signal.highCount < 3) return null;
   if (await hasRecentProposal(simulationId, scope.locationId, simulationTime)) return null;
-
   const proposer = selectProposer(actors, signal);
   if (!proposer) return null;
-
   const [[simulationRows], [economicRows]] = await Promise.all([
-    pool.query("SELECT started_simulation_at startedAt FROM simulations WHERE id=UUID_TO_BIN(?) LIMIT 1", [simulationId]),
-    pool.query("SELECT (SELECT COUNT(*) FROM emergent_businesses WHERE simulation_id=UUID_TO_BIN(?) AND status='ACTIVE') businessCount, (SELECT COUNT(*) FROM emergent_market_state WHERE simulation_id=UUID_TO_BIN(?)) marketCount", [simulationId, simulationId])
+    pool.query("SELECT started_simulation_at startedAt FROM simulations WHERE id=UUID_TO_BIN(?) LIMIT 1",[simulationId]),
+    pool.query("SELECT (SELECT COUNT(*) FROM emergent_businesses WHERE simulation_id=UUID_TO_BIN(?) AND status='ACTIVE') businessCount,(SELECT COUNT(*) FROM emergent_market_state WHERE simulation_id=UUID_TO_BIN(?)) marketCount",[simulationId,simulationId])
   ]);
-  const startedAt = new Date(simulationRows[0]?.startedAt || simulationTime).getTime();
-  const now = new Date(simulationTime).getTime();
-  const simulationAgeHours = Number.isFinite(startedAt) && Number.isFinite(now)
-    ? Math.max(0, (now - startedAt) / 3600000)
-    : 0;
-  const economicState = economicRows[0] || {};
-
-  const similarityProbe = deterministicFallbackDefinition(signal, proposer, simulationTime);
-  const [similarProposalCount, recurringPressureProposals] = await Promise.all([
-    countRecentSimilarProposals(simulationId, scope.locationId, similarityProbe, simulationTime),
-    countRecentPressureProposals(simulationId, scope.locationId, signal.needCode, simulationTime)
+  const startedAt=new Date(simulationRows[0]?.startedAt||simulationTime).getTime(), now=new Date(simulationTime).getTime();
+  const simulationAgeHours=Number.isFinite(startedAt)&&Number.isFinite(now)?Math.max(0,(now-startedAt)/3600000):0;
+  const economicState=economicRows[0]||{};
+  const similarityProbe=deterministicFallbackDefinition(signal,proposer,simulationTime,{variantIndex:0});
+  const [similarProposalCount,recurringPressureProposals]=await Promise.all([
+    countRecentSimilarProposals(simulationId,scope.locationId,similarityProbe,simulationTime),
+    countRecentPressureProposals(simulationId,scope.locationId,signal.needCode,simulationTime)
   ]);
-  const economicOpportunity = simulationAgeHours >= 72
-    && Number(economicState.businessCount || 0) === 0
-    && Number(economicState.marketCount || 0) === 0
-    && (similarProposalCount >= 2 || recurringPressureProposals >= 3);
-
-  const [recentLocalDefinitions] = await pool.query(
-    "SELECT kind,code,name,category,definition FROM emergent_definition_catalog WHERE simulation_id=UUID_TO_BIN(?) AND scope_location_id=UUID_TO_BIN(?) AND status='ACTIVE' ORDER BY created_simulation_at DESC LIMIT 12",
-    [simulationId, scope.locationId]
-  );
-
-  // Repeated pressure is part of the context, not an automatic veto.
-  // Gemini gets the local history and may evolve the existing solution.
-  const generated = await askGemini(gemini, {
-    simulationTime,
-    scope,
-    signal,
-    proposer,
-    actors,
-    economicOpportunity,
-    similarProposalCount,
-    recurringPressureProposals,
-    recentLocalDefinitions: recentLocalDefinitions.map(row => ({
-      kind: row.kind,
-      code: row.code,
-      name: row.name,
-      category: row.category,
-      definition: parseJson(row.definition, {})
-    }))
-  });
-
-  let definition = generated
-    ? normalizeDefinition(generated)
-    : deterministicFallbackDefinition(signal, proposer, simulationTime, { economicOpportunity });
-
-  if (economicOpportunity && !isMaterialEconomicDefinition(definition)) {
-    definition = deterministicFallbackDefinition(signal, proposer, simulationTime, { economicOpportunity: true });
+  const economicOpportunity=simulationAgeHours>=72&&Number(economicState.businessCount||0)===0&&Number(economicState.marketCount||0)===0&&(similarProposalCount>=2||recurringPressureProposals>=3);
+  const [recentLocalDefinitions]=await pool.query("SELECT kind,code,name,category,definition FROM emergent_definition_catalog WHERE simulation_id=UUID_TO_BIN(?) AND scope_location_id=UUID_TO_BIN(?) AND status='ACTIVE' ORDER BY created_simulation_at DESC LIMIT 12",[simulationId,scope.locationId]);
+  const generated=await askGemini(gemini,{simulationTime,scope,signal,proposer,actors,economicOpportunity,similarProposalCount,recurringPressureProposals,recentLocalDefinitions:recentLocalDefinitions.map(row=>({kind:row.kind,code:row.code,name:row.name,category:row.category,definition:parseJson(row.definition,{})}))});
+  const generationStatus=gemini?.lastRequestStatus||null;
+  let generationSource=generated?'GEMINI':'DETERMINISTIC_FALLBACK';
+  let definition=generated?normalizeDefinition({...generated,origin:'GEMINI'}):deterministicFallbackDefinition(signal,proposer,simulationTime,{economicOpportunity,variantIndex:similarProposalCount});
+  if(economicOpportunity&&!isMaterialEconomicDefinition(definition)){
+    definition=deterministicFallbackDefinition(signal,proposer,simulationTime,{economicOpportunity:true,variantIndex:similarProposalCount});
+    generationSource='DETERMINISTIC_FALLBACK_AFTER_AI_NOT_ECONOMIC';
   }
-
-  if (!economicOpportunity && similarProposalCount >= 1) {
-    const generatedSignature = semanticDefinitionSignature(definition);
-    const duplicateRows = await pool.query(
-      "SELECT definition FROM emergent_world_proposals WHERE simulation_id=UUID_TO_BIN(?) AND scope_location_id=UUID_TO_BIN(?) AND status='ACCEPTED' AND created_simulation_at>=DATE_SUB(?,INTERVAL 7 DAY) ORDER BY created_simulation_at DESC LIMIT 30",
-      [simulationId, scope.locationId, simulationTime]
-    );
-    const duplicate = duplicateRows[0].some(row => semanticDefinitionSignature(parseJson(row.definition, {})) === generatedSignature);
-    if (duplicate) return null;
+  const initialGlobalSimilar=await countRecentGlobalSimilarProposals(simulationId,definition,simulationTime);
+  if(initialGlobalSimilar>0){
+    let selected=null;
+    for(let offset=0;offset<4;offset++){
+      const candidate=deterministicFallbackDefinition(signal,proposer,simulationTime,{economicOpportunity,variantIndex:initialGlobalSimilar+similarProposalCount+offset});
+      const candidateSimilar=await countRecentGlobalSimilarProposals(simulationId,candidate,simulationTime);
+      if(candidateSimilar===0){selected=candidate;break;}
+    }
+    if(!selected){
+      logger.debug({simulationId,simulationTime,scopeLocationId:scope.locationId},'open-ended proposal suppressed because all deterministic variants already exist');
+      return null;
+    }
+    definition=selected;
+    generationSource=generated?'DETERMINISTIC_FALLBACK_AFTER_SEMANTIC_DUPLICATE':'DETERMINISTIC_FALLBACK_VARIATION';
   }
-
-  let validation = await validateDefinition(simulationId, definition, {
-    scopeLocationId: scope.locationId,
-    localResources: scope.attributes?.resources || {},
-    proposerCount: actors.length
-  });
-
-  if (!validation.valid && generated) {
-    definition = deterministicFallbackDefinition(signal, proposer, simulationTime, { economicOpportunity });
-    validation = await validateDefinition(simulationId, definition, {
-      scopeLocationId: scope.locationId,
-      localResources: scope.attributes?.resources || {},
-      proposerCount: actors.length
-    });
+  let validation=await validateDefinition(simulationId,definition,{scopeLocationId:scope.locationId,localResources:scope.attributes?.resources||{},proposerCount:actors.length});
+  if(!validation.valid&&generated){
+    definition=deterministicFallbackDefinition(signal,proposer,simulationTime,{economicOpportunity,variantIndex:initialGlobalSimilar+similarProposalCount+1});
+    generationSource='DETERMINISTIC_FALLBACK_AFTER_AI_INVALID';
+    validation=await validateDefinition(simulationId,definition,{scopeLocationId:scope.locationId,localResources:scope.attributes?.resources||{},proposerCount:actors.length});
   }
-
-  if (!validation.valid) {
-    logger.debug({
-      simulationId,
-      simulationTime,
-      scopeLocationId: scope.locationId,
-      errors: validation.errors
-    }, "open-ended proposal rejected by deterministic validator");
+  if(!validation.valid){
+    logger.debug({simulationId,simulationTime,scopeLocationId:scope.locationId,errors:validation.errors},'open-ended proposal rejected by deterministic validator');
     return null;
   }
-
-  const support = supportScore(validation.definition, actors);
-  const persisted = await persistProposal({
-    simulationId,
-    simulationTime,
-    proposer,
-    scope,
-    definition: validation.definition,
-    validation,
-    support
-  });
-
-  const proposal = {
-    ...persisted,
-    definition: validation.definition,
-    proposerEntityId: proposer.entityId,
-    scopeLocationId: scope.locationId,
-    supportScore: support.score,
-    requiredSupport: support.required
-  };
-
-  if (proposal.status !== "ACCEPTED") {
-    await createEvent({
-      simulationId,
-      eventTypeCode: "SOCIAL",
-      title: validation.definition.name + " was proposed but did not form",
-      description: "The proposal was feasible but insufficiently supported by nearby inhabitants.",
-      simulationAt: simulationTime,
-      importance: 0.42,
-      metadata: {
-        emergent: true,
-        openEnded: true,
-        kind: "DEFINITION_REJECTED",
-        proposalId: persisted.id,
-        definitionKind: validation.definition.kind,
-        definitionCode: validation.definition.code,
-        supportScore: support.score,
-        requiredSupport: support.required
-      }
-    });
+  const support=supportScore(validation.definition,actors);
+  validation={...validation,generation:{source:generationSource,providerSource:generationStatus?.source||null,reason:generationStatus?.reason||(generated?'PROVIDER_SUCCESS':'NO_AI_RESULT'),model:generationStatus?.model||null,attempted:Boolean(generationStatus?.attempted),fallbackDepth:generationStatus?.fallbackDepth??null,retryAfterMs:Number(generationStatus?.retryAfterMs||0)}};
+  const persisted=await persistProposal({simulationId,simulationTime,proposer,scope,definition:validation.definition,validation,support});
+  const proposal={...persisted,definition:validation.definition,proposerEntityId:proposer.entityId,scopeLocationId:scope.locationId,supportScore:support.score,requiredSupport:support.required};
+  if(proposal.status!=='ACCEPTED'){
+    await createEvent({simulationId,eventTypeCode:'SOCIAL',title:validation.definition.name+' was proposed but did not form',description:'The proposal was feasible but insufficiently supported by nearby inhabitants.',simulationAt:simulationTime,importance:0.42,metadata:{emergent:true,openEnded:true,kind:'DEFINITION_REJECTED',proposalId:persisted.id,definitionKind:validation.definition.kind,definitionCode:validation.definition.code,supportScore:support.score,requiredSupport:support.required}});
     return proposal;
   }
-
-  const materialized = await materializeProposal(simulationId, simulationTime, proposal, scope, actors);
-  return { ...proposal, materialized };
+  const materialized=await materializeProposal(simulationId,simulationTime,proposal,scope,actors);
+  return {...proposal,materialized};
 }
 async function evolveEmergentSystems(simulationId, simulationTime) {
   const [systems] = await pool.query(
