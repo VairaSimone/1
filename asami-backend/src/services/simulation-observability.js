@@ -99,6 +99,9 @@ function recordGoalProgress(simulationId,entityId,simulationTime,{goalId,progres
   };
   const numericProgress=Math.max(0,Math.min(1,Number(progress)||0));
   const previousProgress=Number(previous.lastProgress||0);
+  const previousActivityAt=Number(previous.lastActivityAt||now);
+  const stagnantHoursBefore=Math.max(0,(now-Number(previous.lastProgressAt||now))/3600000);
+  const activityHoursSinceLastAction=Math.max(0,(now-previousActivityAt)/3600000);
   const progressed=numericProgress>previousProgress+0.0001;
   const active=!["COMPLETED","FAILED","CANCELLED","ABANDONED"].includes(String(status||"").toUpperCase());
   if(progressed){
@@ -109,7 +112,7 @@ function recordGoalProgress(simulationId,entityId,simulationTime,{goalId,progres
   actorStates.set(key,previous);
   if(!active)return null;
   const stagnantHours=Math.max(0,(now-Number(previous.lastProgressAt||now))/3600000);
-  const activityHours=Math.max(0,(now-Number(previous.lastActivityAt||now))/3600000);
+  const activityHours=Math.max(0,actionType?activityHoursSinceLastAction:stagnantHoursBefore);
   const threshold=Math.max(1,Number(env.GOAL_STAGNATION_ALERT_HOURS)||24);
   if(stagnantHours<threshold||!actionType)return null;
   const alertKey=key+":alert";
