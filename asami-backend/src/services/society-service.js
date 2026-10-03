@@ -494,14 +494,14 @@ async function restockMarkets(simulationId,simulationTime){
 async function upsertEmergentConflict(simulationId, simulationTime, candidate) {
   const ordered = [String(candidate.leftId), String(candidate.rightId)].sort();
   const leftId = ordered[0], rightId = ordered[1];
-  const [existing] = await pool.query(`SELECT id,intensity FROM emergent_conflicts WHERE simulation_id=UUID_TO_BIN(?) AND status='ACTIVE' AND conflict_type=? AND left_type=? AND left_id=UUID_TO_BIN(?) AND right_type=? AND right_id=UUID_TO_BIN(?) LIMIT 1`);
+  const [existing] = await pool.query(`SELECT id,intensity FROM emergent_conflicts WHERE simulation_id=UUID_TO_BIN(?) AND status='ACTIVE' AND conflict_type=? AND left_type=? AND left_id=UUID_TO_BIN(?) AND right_type=? AND right_id=UUID_TO_BIN(?) LIMIT 1`,[simulationId,candidate.conflictType,candidate.leftType,leftId,candidate.rightType,rightId]);
   if (existing.length) {
     const nextIntensity = Number(Math.max(Number(existing[0].intensity || 0), Number(candidate.intensity || 0)).toFixed(4));
-    await pool.query(`UPDATE emergent_conflicts SET intensity=?,metadata=?,version=version+1 WHERE id=UUID_TO_BIN(?) AND status='ACTIVE'`);
+    await pool.query(`UPDATE emergent_conflicts SET intensity=?,metadata=?,version=version+1 WHERE id=UUID_TO_BIN(?) AND status='ACTIVE'`,[nextIntensity,JSON.stringify(candidate.metadata||{}),existing[0].id]);
     return { id: existing[0].id, created: false, intensity: nextIntensity };
   }
   const id = uuid();
-  await pool.query(`INSERT INTO emergent_conflicts(id,simulation_id,scope_location_id,conflict_type,left_type,left_id,right_type,right_id,intensity,status,metadata,created_simulation_at,resolved_simulation_at,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,UUID_TO_BIN(?),?,UUID_TO_BIN(?),?,'ACTIVE',?,?,NULL,1)`);
+  await pool.query(`INSERT INTO emergent_conflicts(id,simulation_id,scope_location_id,conflict_type,left_type,left_id,right_type,right_id,intensity,status,metadata,created_simulation_at,resolved_simulation_at,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,UUID_TO_BIN(?),?,UUID_TO_BIN(?),?,'ACTIVE',?,?,NULL,1)`,[id,simulationId,candidate.scopeLocationId||null,candidate.conflictType,candidate.leftType,leftId,candidate.rightType,rightId,candidate.intensity,JSON.stringify(candidate.metadata||{}),simulationTime]);
   await createEvent({
     simulationId,
     eventTypeCode: 'SOCIAL',
@@ -581,11 +581,11 @@ async function evolveConflicts(simulationId, simulationTime) {
     if(touched.has(String(conflict.id)))continue;
     const next=Number(conflict.intensity||0)-0.03;
     if(next<=0.15){
-      await pool.query(`UPDATE emergent_conflicts SET status='RESOLVED',resolved_simulation_at=?,intensity=0,version=version+1 WHERE id=UUID_TO_BIN(?) AND status='ACTIVE'`);
+      await pool.query(`UPDATE emergent_conflicts SET status='RESOLVED',resolved_simulation_at=?,intensity=0,version=version+1 WHERE id=UUID_TO_BIN(?) AND status='ACTIVE'`,[simulationTime,conflict.id]);
       resolved++;
       await createEvent({simulationId,eventTypeCode:'SOCIAL',title:'A social conflict was resolved',description:'The conditions sustaining an emergent conflict faded over time.',simulationAt:simulationTime,importance:0.52,metadata:{emergent:true,kind:'CONFLICT_RESOLVED',conflictId:conflict.id}});
     }else{
-      await pool.query(`UPDATE emergent_conflicts SET intensity=?,version=version+1 WHERE id=UUID_TO_BIN(?) AND status='ACTIVE'`);
+      await pool.query(`UPDATE emergent_conflicts SET intensity=?,version=version+1 WHERE id=UUID_TO_BIN(?) AND status='ACTIVE'`,[Number(next.toFixed(4)),conflict.id]);
     }
   }
   const [summary]=await pool.query("SELECT COUNT(*) activeCount,COALESCE(MAX(intensity),0) maxIntensity FROM emergent_conflicts WHERE simulation_id=UUID_TO_BIN(?) AND status='ACTIVE'",[simulationId]);
