@@ -145,7 +145,7 @@ test('conversation creation is serialized per simulation and entity pair',()=>{
   const section=source.slice(start,end);
   assert.match(section,/GET_LOCK\(\?,5\)/);
   assert.match(section,/RELEASE_LOCK/);
-  assert.match(section,/const pair=.*sort\(\)/);
+  assert.match(section,/pairKey=.*sort\(\)\.join/);
 });
 
 
@@ -778,7 +778,7 @@ test('autonomous social conversation creation is serialized per simulation and e
   const end=source.indexOf('\nasync function createSocialMessage',start);
   const section=source.slice(start,end);
   assert.match(section,/withTransaction\(async conn/);
-  assert.match(section,/pairKey=.*sort\(\)\.join/);
+  assert.match(section,/const pair=.*sort\(\)/);
   assert.match(section,/SELECT id FROM entities[\s\S]*FOR UPDATE/);
 });
 
