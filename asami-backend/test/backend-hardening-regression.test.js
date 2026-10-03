@@ -133,7 +133,7 @@ test('consolidated memory upserts are serialized with a database lock',()=>{
   const start=source.indexOf('async function upsertConsolidatedMemory');
   const end=source.indexOf('async function consolidateActionMemories',start);
   const section=source.slice(start,end);
-  assert.match(section,/GET_LOCK\(\?,5\)/);
+  assert.match(section,/SELECT id FROM entities[\s\S]*FOR UPDATE/);
   assert.match(section,/RELEASE_LOCK/);
   assert.match(section,/pool\.getConnection\(\)/);
 });
