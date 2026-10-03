@@ -220,7 +220,7 @@ async function matchLaborMarket(simulationId,simulationTime){
   let changed=0;
   for(const person of people){
     const [currentRows]=await pool.query(
-      `SELECT id,wage_per_hour wage,employer_entity_id employerId
+      `SELECT BIN_TO_UUID(id) id,wage_per_hour wage,BIN_TO_UUID(employer_entity_id) employerId
          FROM emergent_jobs
         WHERE simulation_id=UUID_TO_BIN(?) AND employee_entity_id=UUID_TO_BIN(?) AND status='ACTIVE'
         LIMIT 1`,
@@ -889,6 +889,13 @@ async function ensureEconomicPolicyProposal(simulationId,simulationTime,business
     statement='Increase the common contribution to fund collective economic support.';
     parameters={fundingModel:'COMMON_POOL',contributionRate:.08,wageSubsidyRate:.10};
   }
+  const [existingIssue]=await pool.query(
+    `SELECT id,status FROM emergent_policies
+      WHERE simulation_id=UUID_TO_BIN(?) AND issue_code=? AND status IN ('PROPOSED','ENACTED')
+      ORDER BY created_simulation_at DESC LIMIT 1`,
+    [simulationId,issueCode]
+  );
+  if(existingIssue.length)return null;
   const [proposer]=await pool.query(
     `SELECT BIN_TO_UUID(entity_id) entityId FROM emergent_governance_members
       WHERE simulation_id=UUID_TO_BIN(?) AND system_id=UUID_TO_BIN(?)
