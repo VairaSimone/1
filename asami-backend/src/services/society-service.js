@@ -1334,7 +1334,7 @@ async function executeEconomicAction({conn,simulationId,entityId,actionType,simu
     return {ok:true,economicType:"PRODUCTION",good:"TOOLS",quantity,producerEntityId:producer,inputResource:"water",inputQuantity:1,capacity};
   }
   if(action==="WORK_JOB"){
-    const [job]=await conn.query(`SELECT id,wage_per_hour wage,employer_entity_id employerId FROM emergent_jobs WHERE simulation_id=UUID_TO_BIN(?) AND employee_entity_id=UUID_TO_BIN(?) AND status="ACTIVE" LIMIT 1 FOR UPDATE`,[simulationId,entityId]);
+    const [job]=await conn.query(`SELECT BIN_TO_UUID(id) id,wage_per_hour wage,BIN_TO_UUID(employer_entity_id) employerId FROM emergent_jobs WHERE simulation_id=UUID_TO_BIN(?) AND employee_entity_id=UUID_TO_BIN(?) AND status="ACTIVE" LIMIT 1 FOR UPDATE`,[simulationId,entityId]);
     if(!job.length)return {ok:false,failureReason:"NO_JOB"};
     const wage=Number(job[0].wage||0.75);
     const workedHours=Math.max(0.25,Math.min(12,Number(durationMinutes||120)/60));
