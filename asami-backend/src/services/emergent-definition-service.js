@@ -124,6 +124,7 @@ function normalizeDefinition(definition={}) {
       : [],
     formation:sanitizeText(source.formation,120,"BOTTOM_UP"),
     membership:sanitizeText(source.membership,120,"VOLUNTARY"),
+    systemType:sanitizeText(source.systemType,64,""),
     origin:sanitizeText(source.origin,64,"AGENT_PROPOSAL")
   };
 }
