@@ -2,6 +2,9 @@ const { pool, withTransaction } = require("../db/pool");
 const { uuid } = require("../lib/ids");
 const { createEvent } = require("./event-service");
 const logger = require("../lib/logger");
+const { validateDefinition, registerDefinition } = require("./emergent-definition-service");
+
+const LOCATION = "00000000-0000-4000-8000-000000000003";
 
 function parseJson(value,fallback={}){if(value===null||value===undefined)return fallback;if(typeof value==="object")return value;try{return JSON.parse(value)}catch{return fallback}}
 function normalize(value){return String(value||"").trim().toUpperCase()}
@@ -487,6 +490,144 @@ async function restockMarkets(simulationId,simulationTime){
   }
   return {transfers,totalValue:Number(transfers.reduce((sum,item)=>sum+item.total,0).toFixed(4))};
 }
+
+async function upsertEmergentConflict(simulationId, simulationTime, candidate) {
+  const ordered = [String(candidate.leftId), String(candidate.rightId)].sort();
+  const leftId = ordered[0], rightId = ordered[1];
+  const [existing] = await pool.query(`SELECT id,intensity FROM emergent_conflicts WHERE simulation_id=UUID_TO_BIN(?) AND status='ACTIVE' AND conflict_type=? AND left_type=? AND left_id=UUID_TO_BIN(?) AND right_type=? AND right_id=UUID_TO_BIN(?) LIMIT 1`);
+  if (existing.length) {
+    const nextIntensity = Number(Math.max(Number(existing[0].intensity || 0), Number(candidate.intensity || 0)).toFixed(4));
+    await pool.query(`UPDATE emergent_conflicts SET intensity=?,metadata=?,version=version+1 WHERE id=UUID_TO_BIN(?) AND status='ACTIVE'`);
+    return { id: existing[0].id, created: false, intensity: nextIntensity };
+  }
+  const id = uuid();
+  await pool.query(`INSERT INTO emergent_conflicts(id,simulation_id,scope_location_id,conflict_type,left_type,left_id,right_type,right_id,intensity,status,metadata,created_simulation_at,resolved_simulation_at,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,UUID_TO_BIN(?),?,UUID_TO_BIN(?),?,'ACTIVE',?,?,NULL,1)`);
+  await createEvent({
+    simulationId,
+    eventTypeCode: 'SOCIAL',
+    title: 'A social conflict emerged',
+    description: 'Persistent disagreement between active interests became visible in the local social system.',
+    simulationAt: simulationTime,
+    importance: 0.67,
+    metadata: { emergent: true, kind: 'CONFLICT_EMERGED', conflictId: id, conflictType: candidate.conflictType, scopeLocationId: candidate.scopeLocationId || null, leftId, rightId, intensity: candidate.intensity }
+  });
+  return { id, created: true, intensity: Number(candidate.intensity || 0) };
+}
+
+async function evolveConflicts(simulationId, simulationTime) {
+  const [people] = await pool.query(
+    "SELECT BIN_TO_UUID(e.id) entityId,BIN_TO_UUID(elc.location_id) locationId,COALESCE(ea.balance,20) balance,EXISTS(SELECT 1 FROM emergent_jobs ej WHERE ej.simulation_id=e.simulation_id AND ej.employee_entity_id=e.id AND ej.status='ACTIVE') employed FROM entities e JOIN entity_types et ON et.id=e.entity_type_id LEFT JOIN entity_locations_current elc ON elc.simulation_id=e.simulation_id AND elc.entity_id=e.id LEFT JOIN emergent_economy_accounts ea ON ea.simulation_id=e.simulation_id AND ea.entity_id=e.id WHERE e.simulation_id=UUID_TO_BIN(?) AND et.code='PERSON' AND e.status='ACTIVE'",
+    [simulationId]
+  );
+  const byLocation = new Map();
+  for (const person of people) {
+    if (!person.locationId) continue;
+    const key = String(person.locationId);
+    if (!byLocation.has(key)) byLocation.set(key, []);
+    byLocation.get(key).push(person);
+  }
+  const candidates = new Map();
+  for (const [locationId, localPeople] of byLocation) {
+    if (localPeople.length < 4) continue;
+    const richest = [...localPeople].sort((a,b)=>Number(b.balance||0)-Number(a.balance||0))[0];
+    const poorest = [...localPeople].sort((a,b)=>Number(a.balance||0)-Number(b.balance||0))[0];
+    const gap = Number(richest.balance||0)-Number(poorest.balance||0);
+    const employedCount = localPeople.filter(person=>Number(person.employed)===1 || person.employed===true).length;
+    const unemployment = 1 - employedCount/Math.max(1,localPeople.length);
+    if (gap >= 6 || (employedCount > 0 && unemployment >= 0.45)) {
+      candidates.set('ECONOMIC_INTEREST:'+locationId,{
+        scopeLocationId:locationId, conflictType:'ECONOMIC_INTEREST', leftType:'PERSON', leftId:richest.entityId, rightType:'PERSON', rightId:poorest.entityId,
+        intensity:clamp(0.34+gap/30+unemployment*0.25,0.34,0.95),
+        metadata:{gap:Number(gap.toFixed(4)),unemployment:Number(unemployment.toFixed(4)),localPopulation:localPeople.length}
+      });
+    }
+  }
+  const [recentProposals] = await pool.query(
+    "SELECT BIN_TO_UUID(scope_location_id) scopeLocationId,BIN_TO_UUID(proposer_entity_id) proposerEntityId,definition FROM emergent_world_proposals WHERE simulation_id=UUID_TO_BIN(?) AND status='ACCEPTED' AND scope_location_id IS NOT NULL AND created_simulation_at>=DATE_SUB(?,INTERVAL 7 DAY) ORDER BY created_simulation_at DESC LIMIT 120",
+    [simulationId,simulationTime]
+  );
+  const grouped = new Map();
+  for (const row of recentProposals) {
+    const definition = parseJson(row.definition,{});
+    const needCode = normalize(definition.targetNeeds?.[0]?.code || 'EMERGENT');
+    const signature = JSON.stringify({
+      category:normalize(definition.category), market:Boolean(definition.market), production:Boolean(definition.production),
+      activities:(definition.activities||[]).map(activity=>({category:normalize(activity?.category),duration:Number(activity?.durationMinutes||0),effects:(activity?.effects||[]).map(effect=>({type:normalize(effect?.type),needCode:normalize(effect?.needCode),goodCode:normalize(effect?.goodCode),resource:String(effect?.resource||'').toLowerCase(),delta:Number(effect?.delta||0),quantity:Number(effect?.quantity||0)}))}))
+    });
+    const key=String(row.scopeLocationId)+'|'+needCode;
+    if(!grouped.has(key))grouped.set(key,[]);
+    grouped.get(key).push({...row,signature});
+  }
+  for (const [key, rows] of grouped) {
+    const first=rows[0];
+    const second=rows.find(row=>row.proposerEntityId!==first?.proposerEntityId && row.signature!==first?.signature);
+    if(!first||!second)continue;
+    candidates.set('PROPOSAL_TENSION:'+key,{
+      scopeLocationId:first.scopeLocationId, conflictType:'PROPOSAL_TENSION', leftType:'PERSON', leftId:first.proposerEntityId, rightType:'PERSON', rightId:second.proposerEntityId,
+      intensity:0.48, metadata:{needCode:key.split('|')[1],competingDefinitions:[first.signature,second.signature]}
+    });
+  }
+  const touched=new Set();
+  let created=0;
+  for(const candidate of candidates.values()){
+    if(String(candidate.leftId)===String(candidate.rightId))continue;
+    const result=await upsertEmergentConflict(simulationId,simulationTime,candidate);
+    touched.add(String(result.id));
+    if(result.created)created++;
+  }
+  const [activeConflicts]=await pool.query("SELECT BIN_TO_UUID(id) id,intensity FROM emergent_conflicts WHERE simulation_id=UUID_TO_BIN(?) AND status='ACTIVE'",[simulationId]);
+  let resolved=0;
+  for(const conflict of activeConflicts){
+    if(touched.has(String(conflict.id)))continue;
+    const next=Number(conflict.intensity||0)-0.03;
+    if(next<=0.15){
+      await pool.query(`UPDATE emergent_conflicts SET status='RESOLVED',resolved_simulation_at=?,intensity=0,version=version+1 WHERE id=UUID_TO_BIN(?) AND status='ACTIVE'`);
+      resolved++;
+      await createEvent({simulationId,eventTypeCode:'SOCIAL',title:'A social conflict was resolved',description:'The conditions sustaining an emergent conflict faded over time.',simulationAt:simulationTime,importance:0.52,metadata:{emergent:true,kind:'CONFLICT_RESOLVED',conflictId:conflict.id}});
+    }else{
+      await pool.query(`UPDATE emergent_conflicts SET intensity=?,version=version+1 WHERE id=UUID_TO_BIN(?) AND status='ACTIVE'`);
+    }
+  }
+  const [summary]=await pool.query("SELECT COUNT(*) activeCount,COALESCE(MAX(intensity),0) maxIntensity FROM emergent_conflicts WHERE simulation_id=UUID_TO_BIN(?) AND status='ACTIVE'",[simulationId]);
+  const [strongestRows]=await pool.query("SELECT BIN_TO_UUID(id) id,BIN_TO_UUID(scope_location_id) scopeLocationId,conflict_type conflictType,intensity FROM emergent_conflicts WHERE simulation_id=UUID_TO_BIN(?) AND status='ACTIVE' ORDER BY intensity DESC LIMIT 1",[simulationId]);
+  return {created,resolved,activeCount:Number(summary[0]?.activeCount||0),maxIntensity:Number(summary[0]?.maxIntensity||0),strongest:strongestRows[0]||null};
+}
+
+async function ensureGovernanceSystem(simulationId,simulationTime,conflictSummary){
+  const [existing]=await pool.query("SELECT BIN_TO_UUID(id) id,BIN_TO_UUID(JSON_UNQUOTE(JSON_EXTRACT(attributes,'$.systemEntityId'))) systemEntityId FROM emergent_systems WHERE simulation_id=UUID_TO_BIN(?) AND system_type='GOVERNANCE' AND stage<>'ENDED' LIMIT 1",[simulationId]);
+  if(existing.length)return {created:false,governanceId:existing[0].id,systemEntityId:existing[0].systemEntityId};
+  if(!conflictSummary?.activeCount || Number(conflictSummary.maxIntensity||0)<0.45)return {created:false,governanceId:null,systemEntityId:null};
+  const [simulationRows]=await pool.query("SELECT started_simulation_at startedAt FROM simulations WHERE id=UUID_TO_BIN(?) LIMIT 1",[simulationId]);
+  const ageHours=(new Date(simulationTime).getTime()-new Date(simulationRows[0]?.startedAt||simulationTime).getTime())/3600000;
+  if(!Number.isFinite(ageHours)||ageHours<48)return {created:false,governanceId:null,systemEntityId:null};
+  const conflict=conflictSummary.strongest;
+  if(!conflict?.scopeLocationId)return {created:false,governanceId:null,systemEntityId:null};
+  const [needRows]=await pool.query("SELECT code FROM need_definitions WHERE active=1 AND code IN ('BELONGING','SOCIAL_NEED') ORDER BY FIELD(code,'BELONGING','SOCIAL_NEED') LIMIT 1");
+  const needCode=normalize(needRows[0]?.code||'SOCIAL_NEED');
+  const seed=String(conflict.id).replaceAll('-','').slice(0,10).toUpperCase();
+  const definition=normalizeDefinition({
+    kind:'SYSTEM', code:'EMERGENT_GOVERNANCE_'+seed, name:'Local council', category:'GOVERNANCE', systemType:'GOVERNANCE', market:false, production:false,
+    purpose:'A representative coordination system emerged after persistent local disagreement required shared rules.',
+    targetNeeds:[{code:needCode,weight:1.4}],
+    activities:[{code:'EMERGENT_GOVERNANCE_'+seed+'_DELIBERATE',name:'Deliberate shared rules',category:'GOVERNANCE',durationMinutes:60,needWeights:{[needCode]:1.2},gate:{needCode,min:0.30},effects:[{type:'NEED_DELTA',needCode,delta:needCode==='SOCIAL_NEED'?-0.08:0.08}]}],
+    formation:'BOTTOM_UP_CONFLICT_RESOLUTION',membership:'SHARED_RESPONSIBILITY',origin:'DETERMINISTIC_GOVERNANCE_BRIDGE'
+  });
+  const proposerEntityId=conflict.leftType==='PERSON'?conflict.leftId:conflict.rightId;
+  const [people]=await pool.query("SELECT COUNT(*) count FROM entities e JOIN entity_types et ON et.id=e.entity_type_id WHERE e.simulation_id=UUID_TO_BIN(?) AND et.code='PERSON' AND e.status='ACTIVE'",[simulationId]);
+  const validation=await validateDefinition(simulationId,definition,{scopeLocationId:conflict.scopeLocationId,localResources:{},proposerCount:Number(people[0]?.count||0)});
+  if(!validation.valid||!proposerEntityId){
+    logger.warn({simulationId,simulationTime,errors:validation.errors},'governance bridge definition was not feasible');
+    return {created:false,governanceId:null,systemEntityId:null,reason:'GOVERNANCE_DEFINITION_INVALID'};
+  }
+  const systemId=uuid(),systemEntityId=uuid(),proposalId=uuid();
+  await pool.query("INSERT INTO entities(id,simulation_id,entity_type_id,display_name,description,status,attributes,created_simulation_at,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?, 'ACTIVE', ?, ?,1)",[systemEntityId,simulationId,LOCATION,definition.name,definition.purpose,JSON.stringify({emergent:true,openEnded:true,definition,systemId}),simulationTime]);
+  await pool.query("INSERT INTO emergent_systems(id,simulation_id,system_type,name,scope_location_id,stage,attributes,created_simulation_at,updated_simulation_at,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,?,?,?,?,1)",[systemId,simulationId,'GOVERNANCE',definition.name,conflict.scopeLocationId,'EMERGING',JSON.stringify({emergent:true,openEnded:true,kind:'SYSTEM',definition,systemEntityId,originatingConflictId:conflict.id}),simulationTime,simulationTime]);
+  const definitionId=await registerDefinition(simulationId,{kind:'SYSTEM',definition,scopeLocationId:conflict.scopeLocationId,originEntityId:proposerEntityId,originProposalId:null,simulationTime});
+  for(const activity of definition.activities){await registerDefinition(simulationId,{kind:'ACTIVITY',definition:{...activity,kind:'ACTIVITY',code:activity.code,activities:[activity]},scopeLocationId:conflict.scopeLocationId,originEntityId:proposerEntityId,originProposalId:null,simulationTime});}
+  await pool.query("INSERT INTO emergent_world_proposals(id,simulation_id,proposer_entity_id,scope_location_id,kind,code,title,rationale,definition,validation,support_score,required_support,status,created_simulation_at,decided_simulation_at,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),'SYSTEM',?,?,NULL,?,?,?,?,?,'ACCEPTED',?,?,1)",[proposalId,simulationId,proposerEntityId,conflict.scopeLocationId,definition.code,definition.name,JSON.stringify({source:'CONFLICT_TO_GOVERNANCE',conflictId:conflict.id}),JSON.stringify(definition),JSON.stringify({...validation,generation:{source:'DETERMINISTIC_GOVERNANCE_BRIDGE'}}),0.68,3,simulationTime,simulationTime]);
+  await createEvent({simulationId,eventTypeCode:'SOCIAL',title:'Governance emerged',description:definition.purpose,simulationAt:simulationTime,importance:0.82,metadata:{emergent:true,openEnded:true,kind:'GOVERNANCE_EMERGED',governanceSystemId:systemId,systemEntityId,conflictId:conflict.id}});
+  return {created:true,governanceId:systemId,systemEntityId,conflictId:conflict.id,definitionId};
+}
 async function evolvePolitics(simulationId,simulationTime){
   const [systems]=await pool.query(`SELECT BIN_TO_UUID(id) id FROM emergent_systems WHERE simulation_id=UUID_TO_BIN(?) AND system_type="GOVERNANCE" AND stage<>"ENDED" LIMIT 1`,[simulationId]);
   if(!systems.length)return {governanceId:null,enacted:[]};
@@ -522,12 +663,18 @@ async function evolvePolitics(simulationId,simulationTime){
 }
 
 async function ensureGovernanceMembers(simulationId,simulationTime){
-  const [systems]=await pool.query(`SELECT BIN_TO_UUID(id) id FROM emergent_systems WHERE simulation_id=UUID_TO_BIN(?) AND system_type="GOVERNANCE" AND stage<>"ENDED" LIMIT 1`,[simulationId]);
+  const [systems]=await pool.query("SELECT BIN_TO_UUID(id) id,BIN_TO_UUID(scope_location_id) scopeLocationId FROM emergent_systems WHERE simulation_id=UUID_TO_BIN(?) AND system_type='GOVERNANCE' AND stage<>'ENDED' LIMIT 1",[simulationId]);
   if(!systems.length)return;
   const systemId=systems[0].id;
-  const [people]=await pool.query(`SELECT BIN_TO_UUID(e.id) entityId,MAX(CASE WHEN td.code="CONFIDENCE" THEN etc.value ELSE 0 END) confidence,MAX(CASE WHEN td.code="EMPATHY" THEN etc.value ELSE 0 END) empathy,MAX(CASE WHEN td.code="CONSCIENTIOUSNESS" THEN etc.value ELSE 0 END) conscientiousness FROM entities e JOIN entity_types et ON et.id=e.entity_type_id LEFT JOIN entity_traits_current etc ON etc.entity_id=e.id LEFT JOIN trait_definitions td ON td.id=etc.trait_id WHERE e.simulation_id=UUID_TO_BIN(?) AND et.id=UUID_TO_BIN("00000000-0000-4000-8000-000000000001") AND e.status="ACTIVE" GROUP BY e.id`,[simulationId]);
-  people.sort((a,b)=>((Number(b.confidence)+Number(b.empathy)+Number(b.conscientiousness))-(Number(a.confidence)+Number(a.empathy)+Number(a.conscientiousness))));
-  for(let i=0;i<Math.min(5,people.length);i++){const p=people[i];await pool.query(`INSERT IGNORE INTO emergent_governance_members(system_id,simulation_id,entity_id,role,support_score,joined_simulation_at) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?)`,[systemId,simulationId,p.entityId,i===0?"COORDINATOR":"MEMBER",clamp((Number(p.confidence)+Number(p.empathy)+Number(p.conscientiousness))/3),simulationTime]);}
+  const [people]=await pool.query("SELECT BIN_TO_UUID(e.id) entityId,MAX(CASE WHEN td.code='CONFIDENCE' THEN etc.value ELSE 0 END) confidence,MAX(CASE WHEN td.code='EMPATHY' THEN etc.value ELSE 0 END) empathy,MAX(CASE WHEN td.code='CONSCIENTIOUSNESS' THEN etc.value ELSE 0 END) conscientiousness FROM entities e JOIN entity_types et ON et.id=e.entity_type_id LEFT JOIN entity_traits_current etc ON etc.entity_id=e.id LEFT JOIN trait_definitions td ON td.id=etc.trait_id WHERE e.simulation_id=UUID_TO_BIN(?) AND et.id=UUID_TO_BIN('00000000-0000-4000-8000-000000000001') AND e.status='ACTIVE' GROUP BY e.id",[simulationId]);
+  const [conflictRows]=await pool.query("SELECT left_type leftType,BIN_TO_UUID(left_id) leftId,right_type rightType,BIN_TO_UUID(right_id) rightId FROM emergent_conflicts WHERE simulation_id=UUID_TO_BIN(?) AND scope_location_id=UUID_TO_BIN(?) AND status='ACTIVE' ORDER BY intensity DESC LIMIT 8",[simulationId,systems[0].scopeLocationId]);
+  const represented=new Set();
+  for(const row of conflictRows){if(row.leftType==='PERSON')represented.add(String(row.leftId));if(row.rightType==='PERSON')represented.add(String(row.rightId));}
+  people.sort((a,b)=>{const ap=represented.has(String(a.entityId))?1:0,bp=represented.has(String(b.entityId))?1:0;if(ap!==bp)return bp-ap;return (Number(b.confidence)+Number(b.empathy)+Number(b.conscientiousness))-(Number(a.confidence)+Number(a.empathy)+Number(a.conscientiousness));});
+  for(let i=0;i<Math.min(7,people.length);i++){
+    const p=people[i],support=clamp((Number(p.confidence)+Number(p.empathy)+Number(p.conscientiousness))/3);
+    await pool.query("INSERT INTO emergent_governance_members(system_id,simulation_id,entity_id,role,support_score,joined_simulation_at,status,left_simulation_at) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,'ACTIVE',NULL) ON DUPLICATE KEY UPDATE role=VALUES(role),support_score=VALUES(support_score),status='ACTIVE',left_simulation_at=NULL",[systemId,simulationId,p.entityId,i===0?'COORDINATOR':'MEMBER',support,simulationTime]);
+  }
 }
 
 async function recordWealth(simulationId,simulationTime){
@@ -1209,13 +1356,15 @@ async function evolveSociety(simulationId,simulationTime){
   const laborChanges=await matchLaborMarket(simulationId,simulationTime);
   const wholesale=await restockMarkets(simulationId,simulationTime);
   await evolvePrices(simulationId,simulationTime);
+  const business=await evolveBusinesses(simulationId,simulationTime);
+  const conflicts=await evolveConflicts(simulationId,simulationTime);
+  const governance=await ensureGovernanceSystem(simulationId,simulationTime,conflicts);
   await ensureGovernanceMembers(simulationId,simulationTime);
   const politics=await evolvePolitics(simulationId,simulationTime);
-  const business=await evolveBusinesses(simulationId,simulationTime);
   const economicPolicy=await ensureEconomicPolicyProposal(simulationId,simulationTime,business);
   const wealth=await recordWealth(simulationId,simulationTime);
-  logger.debugThrottled(`SOCIETY_EVOLUTION:${simulationId}`,120000,{simulationId,simulationTime,wealth,politics,wholesale,business,laborChanges,economicPolicy},"society evolution completed");
-  return {wealth,politics,wholesale,business,laborChanges,economicPolicy};
+  logger.debugThrottled(`SOCIETY_EVOLUTION:${simulationId}`,120000,{simulationId,simulationTime,wealth,politics,wholesale,business,laborChanges,economicPolicy,conflicts,governance},"society evolution completed");
+  return {wealth,politics,wholesale,business,laborChanges,economicPolicy,conflicts,governance};
 }
 
 async function getSocietySnapshot(simulationId){
@@ -1259,4 +1408,4 @@ async function getSocietySnapshot(simulationId){
   return {systems:decode(systems),goods,markets,accounts,jobs,trades,metrics,policies:decode(policies),conflicts:decode(conflicts),businessMetrics,businesses,events:decode(events),openEnded:{proposals:decodeOpen(openProposals),definitions:decodeOpen(openDefinitions)}};
 }
 
-module.exports={evolveSociety,evolvePolitics,executeEconomicAction,consumePurchasedFood,getSocietySnapshot,gini,ensureCatalog,restockMarkets,isMarketStructure,isProducerStructure,ensureBusinesses,evolveBusinesses,matchLaborMarket,latestEconomicPolicy,ensureEconomicPolicyProposal};
+module.exports={evolveSociety,evolvePolitics,evolveConflicts,ensureGovernanceSystem,executeEconomicAction,consumePurchasedFood,getSocietySnapshot,gini,ensureCatalog,restockMarkets,isMarketStructure,isProducerStructure,ensureBusinesses,evolveBusinesses,matchLaborMarket,latestEconomicPolicy,ensureEconomicPolicyProposal};
