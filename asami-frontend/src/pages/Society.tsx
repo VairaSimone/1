@@ -184,7 +184,7 @@ export function Society({ society, world }: { society: SocietySnapshot | null; w
           <div><span>Attività derivate</span><strong>{derivedActivities.length}</strong><p>nuove capacità utilizzabili</p></div>
           <div><span>Mercati</span><strong>{marketLocationCount}</strong><p>luoghi con prezzo</p></div>
           <div><span>Imprese</span><strong>{society.businesses?.filter(item => item.status === 'ACTIVE').length ?? 0}</strong><p>attive ora</p></div>
-          <div><span>Lavoro</span><strong>{society.jobs.length}</strong><p>rapporti attivi</p></div>
+          <div><span>Lavoro</span><strong>{jobs.length}</strong><p>rapporti attivi</p></div>
           <div><span>Scambi</span><strong>{society.trades.length}</strong><p>registrati nel periodo</p></div>
         </div>
         <div className="society-observation">
