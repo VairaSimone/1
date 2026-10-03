@@ -820,54 +820,89 @@ async function proposeForLocation(simulationId, simulationTime, scope, actors, g
   const materialized=await materializeProposal(simulationId,simulationTime,proposal,scope,actors);
   return {...proposal,materialized};
 }
-async function evolveEmergentSystems(simulationId, simulationTime) {
-  const [systems] = await pool.query(
-    "SELECT BIN_TO_UUID(id) id,system_type systemType,name,stage,attributes,created_simulation_at createdAt FROM emergent_systems WHERE simulation_id=UUID_TO_BIN(?) AND stage<> 'ENDED' ORDER BY created_simulation_at ASC",
-    [simulationId]
-  );
-  const now = new Date(simulationTime).getTime();
-  let changed = 0;
-  for (const system of systems) {
-    const attrs = parseJson(system.attributes, {});
-    const created = new Date(system.createdAt).getTime();
-    const ageHours = Number.isFinite(created) && Number.isFinite(now) ? Math.max(0, (now-created)/3600000) : 0;
-    const [memberRows] = await pool.query(
-      "SELECT COUNT(*) count FROM emergent_system_members WHERE simulation_id=UUID_TO_BIN(?) AND system_id=UUID_TO_BIN(?)",
-      [simulationId, system.id]
-    );
-    const members = Number(memberRows[0]?.count || 0);
-    let hasActiveBusiness = false;
-    if (attrs.systemEntityId) {
-      const [businessRows] = await pool.query(
-        "SELECT status FROM emergent_businesses WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) LIMIT 1",
-        [simulationId, attrs.systemEntityId]
-      );
-      hasActiveBusiness = businessRows[0]?.status === 'ACTIVE';
-    }
-    let next = String(system.stage || 'EMERGING').toUpperCase();
-    if (next === 'EMERGING' && ageHours >= 12 && members >= 3) next = 'ACTIVE';
-    else if (next === 'ACTIVE' && ageHours >= 72 && members >= 3) next = 'MATURE';
-    else if (next === 'MATURE' && ageHours >= 168 && members < 2) next = 'DECLINING';
-    else if (next === 'DECLINING' && members === 0 && !hasActiveBusiness) next = 'ENDED';
-    if (next === String(system.stage || '').toUpperCase()) continue;
-    await pool.query(
-      "UPDATE emergent_systems SET stage=?,updated_simulation_at=?,version=version+1 WHERE id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?) AND stage=?",
-      [next, simulationTime, system.id, simulationId, system.stage]
-    );
-    await createEvent({
-      simulationId,
-      eventTypeCode: 'SOCIAL',
-      title: system.name + ' is now ' + next.toLowerCase(),
-      description: 'An emergent social system changed lifecycle stage after accumulating time, membership and observed conditions.',
-      simulationAt: simulationTime,
-      importance: next === 'ENDED' ? 0.72 : 0.61,
-      metadata: { emergent:true, openEnded:true, kind:'SYSTEM_STAGE_CHANGED', systemId:system.id, systemType:system.systemType, from:system.stage, to:next, members, ageHours:Number(ageHours.toFixed(2)), hasActiveBusiness }
-    });
-    changed++;
+function systemMemberSupportScore(definition, actor, scopeLocationId) {
+  let score=0.42;
+  const targets=Array.isArray(definition.targetNeeds)?definition.targetNeeds:[];
+  const totalWeight=targets.reduce((sum,item)=>sum+Math.abs(Number(item?.weight||0)),0)||1;
+  for(const target of targets){
+    const need=code(target?.code),value=Number(actor.needs?.[need]||0),defaultValue=Number(actor.needMeta?.[need]?.defaultValue??0.5);
+    const pressure=defaultValue>0.5?1-value:value;
+    score+=0.24*clamp((pressure*Math.abs(Number(target?.weight||0)))/totalWeight);
   }
-  return { changed };
+  for(const activity of Array.isArray(definition.activities)?definition.activities:[]){
+    for(const effect of Array.isArray(activity?.effects)?activity.effects:[]){
+      if(normalize(effect?.type)!=='NEED_DELTA')continue;
+      const need=code(effect?.needCode),value=Number(actor.needs?.[need]||0),defaultValue=Number(actor.needMeta?.[need]?.defaultValue??0.5),delta=Number(effect?.delta||0);
+      const improves=defaultValue>0.5?delta>0:delta<0;
+      score+=(improves?0.12:-0.10)*Math.min(1,Math.abs(delta)/0.20)*(improves?(defaultValue>0.5?1-value:value):1);
+    }
+  }
+  const independence=Number(actor.traits?.INDEPENDENCE||0.5),empathy=Number(actor.traits?.EMPATHY||0.5),conscientiousness=Number(actor.traits?.CONSCIENTIOUSNESS||0.5);
+  if(normalize(definition.membership).includes('VOLUNTARY'))score+=0.06*(independence-0.5);
+  if(normalize(definition.membership).includes('SHARED'))score+=0.08*(empathy-0.5)+0.05*(conscientiousness-0.5);
+  score+=String(actor.locationId)===String(scopeLocationId)?0.05:-0.08;
+  if(normalize(definition.systemType)==='GOVERNANCE')score+=0.03*empathy;
+  return clamp(score);
 }
 
+async function refreshEmergentSystemMemberships(simulationId,simulationTime,systems){
+  const [actorRows]=await pool.query("SELECT BIN_TO_UUID(e.id) entityId,BIN_TO_UUID(elc.location_id) locationId FROM entities e JOIN entity_types et ON et.id=e.entity_type_id LEFT JOIN entity_locations_current elc ON elc.entity_id=e.id AND elc.simulation_id=e.simulation_id WHERE e.simulation_id=UUID_TO_BIN(?) AND et.code='PERSON' AND e.status='ACTIVE'",[simulationId]);
+  const actorIds=actorRows.map(row=>row.entityId);
+  if(!actorIds.length)return new Map();
+  const placeholders=actorIds.map(()=>"UUID_TO_BIN(?)").join(',');
+  const [needs]=await pool.query("SELECT BIN_TO_UUID(enc.entity_id) entityId,nd.code,enc.value,nd.default_value defaultValue FROM entity_needs_current enc JOIN need_definitions nd ON nd.id=enc.need_id WHERE enc.entity_id IN ("+placeholders+") AND nd.active=1",actorIds);
+  const [traits]=await pool.query("SELECT BIN_TO_UUID(etc.entity_id) entityId,td.code,etc.value FROM entity_traits_current etc JOIN trait_definitions td ON td.id=etc.trait_id WHERE etc.entity_id IN ("+placeholders+") AND td.active=1",actorIds);
+  const actorMap=new Map(actorRows.map(row=>[String(row.entityId),{...row,needs:{},needMeta:{},traits:{}}]));
+  for(const row of needs){const actor=actorMap.get(String(row.entityId));if(actor){actor.needs[code(row.code)]=Number(row.value);actor.needMeta[code(row.code)]={defaultValue:Number(row.defaultValue??0.5)};}}
+  for(const row of traits){const actor=actorMap.get(String(row.entityId));if(actor)actor.traits[code(row.code)]=Number(row.value);}
+  const now=new Date(simulationTime).getTime(),states=new Map();
+  for(const system of systems){
+    const definition=parseJson(system.attributes,{})?.definition||{},created=new Date(system.createdAt).getTime(),ageHours=Number.isFinite(now)&&Number.isFinite(created)?Math.max(0,(now-created)/3600000):0;
+    const [members]=await pool.query("SELECT BIN_TO_UUID(entity_id) entityId,role,status FROM emergent_system_members WHERE simulation_id=UUID_TO_BIN(?) AND system_id=UUID_TO_BIN(?)",[simulationId,system.id]);
+    const activeIds=new Set(),activeSupports=[];
+    for(const member of members){
+      const actor=actorMap.get(String(member.entityId)),support=actor?systemMemberSupportScore(definition,actor,system.scopeLocationId):0;
+      if(String(member.status||'ACTIVE')==='ACTIVE' && (!actor || (ageHours>=24 && support<0.30))){
+        await pool.query("UPDATE emergent_system_members SET status='INACTIVE',left_simulation_at=?,support_score=?,version=version+1 WHERE simulation_id=UUID_TO_BIN(?) AND system_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND status='ACTIVE'",[simulationTime,support,simulationId,system.id,member.entityId]);
+        await createEvent({simulationId,eventTypeCode:'SOCIAL',title:'A member left '+system.name,description:'Current motivation was no longer sufficient to remain in the social system.',simulationAt:simulationTime,importance:0.38,metadata:{emergent:true,kind:'SYSTEM_MEMBER_LEFT',systemId:system.id,entityId:member.entityId,support}});
+        continue;
+      }
+      if(String(member.status||'ACTIVE')!=='ACTIVE')continue;
+      activeIds.add(String(member.entityId));activeSupports.push(support);
+      await pool.query("UPDATE emergent_system_members SET support_score=?,version=version+1 WHERE simulation_id=UUID_TO_BIN(?) AND system_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND status='ACTIVE'",[support,simulationId,system.id,member.entityId]);
+    }
+    if(activeIds.size<12){
+      const candidates=[...actorMap.values()].filter(actor=>!activeIds.has(String(actor.entityId))&&String(actor.locationId)===String(system.scopeLocationId)).map(actor=>({actor,support:systemMemberSupportScore(definition,actor,system.scopeLocationId)})).filter(item=>item.support>=0.58).sort((a,b)=>b.support-a.support);
+      for(const item of candidates.slice(0,12-activeIds.size)){
+        await pool.query("INSERT INTO emergent_system_members(system_id,simulation_id,entity_id,role,support_score,joined_simulation_at,status,left_simulation_at) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),'MEMBER',?,?, 'ACTIVE',NULL) ON DUPLICATE KEY UPDATE role='MEMBER',support_score=VALUES(support_score),status='ACTIVE',left_simulation_at=NULL",[system.id,simulationId,item.actor.entityId,item.support,simulationTime]);
+        activeIds.add(String(item.actor.entityId));activeSupports.push(item.support);
+      }
+    }
+    states.set(system.id,{members:activeIds.size,averageSupport:activeSupports.length?activeSupports.reduce((a,b)=>a+b,0)/activeSupports.length:0,ageHours});
+  }
+  return states;
+}
+
+async function evolveEmergentSystems(simulationId, simulationTime) {
+  const [systems]=await pool.query("SELECT BIN_TO_UUID(id) id,system_type systemType,name,stage,attributes,BIN_TO_UUID(scope_location_id) scopeLocationId,created_simulation_at createdAt FROM emergent_systems WHERE simulation_id=UUID_TO_BIN(?) AND stage<>'ENDED' ORDER BY created_simulation_at ASC",[simulationId]);
+  const states=await refreshEmergentSystemMemberships(simulationId,simulationTime,systems),changed=[];
+  for(const system of systems){
+    const state=states.get(system.id)||{members:0,averageSupport:0,ageHours:0},attrs=parseJson(system.attributes,{});
+    let hasActiveBusiness=false;
+    if(attrs.systemEntityId){const [businessRows]=await pool.query("SELECT status FROM emergent_businesses WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) LIMIT 1",[simulationId,attrs.systemEntityId]);hasActiveBusiness=businessRows[0]?.status==='ACTIVE';}
+    let next=String(system.stage||'EMERGING').toUpperCase();
+    if(next==='EMERGING'&&state.ageHours>=12&&state.members>=3)next='ACTIVE';
+    else if(next==='ACTIVE'&&state.ageHours>=72&&state.members>=3)next='MATURE';
+    else if(next==='MATURE'&&state.ageHours>=168&&(state.members<2||state.averageSupport<0.35))next='DECLINING';
+    else if(next==='DECLINING'&&state.members>=3&&state.averageSupport>=0.55)next='MATURE';
+    else if(next==='DECLINING'&&state.members===0&&!hasActiveBusiness)next='ENDED';
+    if(next===String(system.stage||'').toUpperCase())continue;
+    await pool.query("UPDATE emergent_systems SET stage=?,updated_simulation_at=?,version=version+1 WHERE id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?) AND stage=?",[next,simulationTime,system.id,simulationId,system.stage]);
+    await createEvent({simulationId,eventTypeCode:'SOCIAL',title:system.name+' is now '+next.toLowerCase(),description:'An emergent social system changed lifecycle stage after time, membership and support were re-evaluated.',simulationAt:simulationTime,importance:next==='ENDED'?0.72:0.61,metadata:{emergent:true,openEnded:true,kind:'SYSTEM_STAGE_CHANGED',systemId:system.id,systemType:system.systemType,from:system.stage,to:next,members:state.members,averageSupport:Number(state.averageSupport.toFixed(4)),ageHours:Number(state.ageHours.toFixed(2)),hasActiveBusiness}});
+    changed.push({systemId:system.id,from:system.stage,to:next,members:state.members,averageSupport:Number(state.averageSupport.toFixed(4))});
+  }
+  return {changed:changed.length,transitions:changed};
+}
 async function evolveOpenEnded(simulationId, simulationTime, { gemini = null } = {}) {
   await ensureCatalog(simulationId, simulationTime);
   const systemLifecycle = await evolveEmergentSystems(simulationId, simulationTime);
