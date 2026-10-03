@@ -144,7 +144,8 @@ async function ensureSocietyMigrations() {
   const [systemMemberVersion] = await pool.query(`SHOW COLUMNS FROM emergent_system_members LIKE 'version'`);
   if (!systemMemberVersion.length) {
     await pool.query(`ALTER TABLE emergent_system_members ADD COLUMN version INT NOT NULL DEFAULT 1`);
-  }  const [governanceMemberStatus] = await pool.query(`SHOW COLUMNS FROM emergent_governance_members LIKE 'status'`);
+  }
+  const [governanceMemberStatus] = await pool.query(`SHOW COLUMNS FROM emergent_governance_members LIKE 'status'`);
   if (!governanceMemberStatus.length) await pool.query(`ALTER TABLE emergent_governance_members ADD COLUMN status VARCHAR(24) NOT NULL DEFAULT 'ACTIVE'`);
   const [governanceMemberLeft] = await pool.query(`SHOW COLUMNS FROM emergent_governance_members LIKE 'left_simulation_at'`);
   if (!governanceMemberLeft.length) await pool.query(`ALTER TABLE emergent_governance_members ADD COLUMN left_simulation_at DATETIME(3) NULL`);
