@@ -266,7 +266,13 @@ async function matchLaborMarket(simulationId,simulationTime){
     await pool.query(
       `INSERT INTO emergent_jobs
         (id,simulation_id,employer_entity_id,employee_entity_id,role,wage_per_hour,status,hired_simulation_at,version)
-       VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,'ACTIVE',?,1)`,
+       VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,'ACTIVE',?,1)
+       ON DUPLICATE KEY UPDATE
+         employer_entity_id=VALUES(employer_entity_id),
+         role=VALUES(role),
+         wage_per_hour=VALUES(wage_per_hour),
+         hired_simulation_at=VALUES(hired_simulation_at),
+         version=version+1`,
       [uuid(),simulationId,best.employerId,person.entityId,best.role,best.wage,simulationTime]
     );
     changed++;
