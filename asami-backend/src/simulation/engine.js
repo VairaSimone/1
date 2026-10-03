@@ -18,7 +18,8 @@ const { initiateConversation } = require("../services/chat-service");
 const { recordHabitEvidence } = require("../services/habit-service");
 const { refreshMentalStateFromSimulation } = require("../services/personality-service");
 const { recordSignificantExperience } = require("../services/experience-learning-service");
-const { maybeRunSafeRetention } = require("../services/safe-retention-service");
+const safeRetentionService = require("../services/safe-retention-service");
+const maybeRunSafeRetention = typeof safeRetentionService.maybeRunSafeRetention === "function" ? safeRetentionService.maybeRunSafeRetention : null;
 const { reconcileCompletedActions } = require("../services/action-reconciliation-service");
 const { runSimulationIntegrityCheck } = require("../services/integrity-check-service");
 const { calibrateDecisionOutcome } = require("../services/decision-service");
@@ -895,7 +896,15 @@ class SimulationEngine {
 ); } } if (count % env.SNAPSHOT_EVERY_TICKS === 0) await simRepo.createSnapshot(sim.id, nextTime);
         await simRepo.completeTick(tickId, { status: "COMPLETED", entityCount: actors.length });
         observability.logSnapshot(sim.id,nextTime.toISOString());
-        void maybeRunSafeRetention(sim.id, nextTime.toISOString());
+        if (maybeRunSafeRetention) {
+          void maybeRunSafeRetention(sim.id, nextTime.toISOString());
+        } else {
+          logger.error({
+            simulationId: sim.id,
+            simulationTime: nextTime.toISOString(),
+            event: "RETENTION_SERVICE_UNAVAILABLE"
+          }, "safe retention service unavailable; simulation continues without cleanup");
+        }
         this.hub.publish(sim.id, "simulation.tick", { simulationTime: nextTime.toISOString(), tickId });
       } catch (err) {
         if (isCriticalResourceRecoveryUnavailable(err)) {
