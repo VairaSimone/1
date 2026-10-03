@@ -243,7 +243,7 @@ async function matchLaborMarket(simulationId,simulationTime){
         const c=normalize(activity?.category);
         return c==='WORK'||c==='PRODUCTION'||c==='CRAFT';
       });
-      const wage=Number(work?.wagePerHour ?? (normalize(candidate.type)==='WORKSHOP'?.9:.75));
+      let wage=Number(work?.wagePerHour ?? (normalize(candidate.type)==='WORKSHOP'?.9:.75));
       if(!Number.isFinite(wage))continue;
       wage=Math.max(wage,Math.max(0,Math.min(5,Number(economicPolicy.minimumWage||0))));
       if(!best || wage>best.wage)best={...candidate,wage:Math.max(.25,Math.min(5,wage)),role:String(work?.name||'WORKER').slice(0,80)};
