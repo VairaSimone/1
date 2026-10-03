@@ -760,3 +760,45 @@ test('engine batches traits and keeps per-actor need catch-up state local',()=>{
   assert.match(engine,/const batchTraits=Array\.isArray\(loadedTraits\)&&loadedTraits\.length\?loadedTraits:await getTraits\(entityId\)/);
   assert.match(engine,/let latestNeedsForTick=null/);
 });
+
+test('completed ticks isolate snapshot, observability and retention housekeeping failures',()=>{
+  const source=read('simulation/engine.js');
+  const completion=source.indexOf('await simRepo.completeTick(tickId, { status: "COMPLETED"');
+  const snapshot=source.indexOf('await simRepo.createSnapshot(sim.id, nextTime)',completion);
+  const retention=source.indexOf('void maybeRunSafeRetention(sim.id, nextTime.toISOString())',completion);
+  assert.ok(completion>=0&&snapshot>completion&&retention>completion);
+  assert.match(source.slice(snapshot-250,snapshot+250),/try\s*\{/);
+  assert.match(source,/simulation observability snapshot failed/);
+  assert.match(source,/background safe retention cycle failed/);
+});
+
+test('autonomous social conversation creation is serialized per simulation and entity pair',()=>{
+  const source=read('services/social-relationship-service.js');
+  const start=source.indexOf('async function ensureSocialConversation');
+  const end=source.indexOf('\nasync function createSocialMessage',start);
+  const section=source.slice(start,end);
+  assert.match(section,/withTransaction\(async conn/);
+  assert.match(section,/GET_LOCK\(\?,5\)/);
+  assert.match(section,/sort\(\)\.join\(["']\\\|["']\)/);
+  assert.match(section,/RELEASE_LOCK/);
+});
+
+test('visited-location history is scoped to the active simulation',()=>{
+  const source=read('services/autonomy-service.js');
+  const start=source.indexOf('async function loadVisitedLocations');
+  const end=source.indexOf('\n',source.indexOf('return new Map',start));
+  const section=source.slice(start,end+1);
+  assert.match(section,/simulation_id=UUID_TO_BIN\(\?\)/);
+  assert.match(section,/\[simulationId,entityId\]/);
+});
+
+test('production validates business state before consuming physical inputs',()=>{
+  const source=read('services/society-service.js');
+  const start=source.indexOf('if(action==="PRODUCE_GOODS")');
+  const end=source.indexOf('\n  if(action==="WORK_JOB")',start);
+  const section=source.slice(start,end);
+  const businessIndex=section.indexOf('if(!business.length)return {ok:false,failureReason:"BUSINESS_NOT_FOUND"}');
+  const inactiveIndex=section.indexOf('if(String(business[0].status)!=="ACTIVE")');
+  const waterIndex=section.indexOf('const water=Number(resources.water||0)');
+  assert.ok(businessIndex>=0&&inactiveIndex>businessIndex&&waterIndex>inactiveIndex);
+});
