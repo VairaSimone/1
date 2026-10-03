@@ -97,8 +97,30 @@ async function updateSelfBelief({simulationId,entityId,simulationTime,beliefKey,
 
 async function updateDesireProgress(simulationId,entityId,simulationTime,{desireKey=null,delta=0,reason=null}={}) { if(!desireKey)return null;const[rows]=await pool.query(`SELECT BIN_TO_UUID(id) AS id,progress,version,title FROM long_term_desires WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND desire_key=? AND status='ACTIVE' LIMIT 1`,[simulationId,entityId,normalize(desireKey)]);if(!rows.length)return null;const row=rows[0],next=clamp01(Number(row.progress)+Number(delta)),[updated]=await pool.query(`UPDATE long_term_desires SET progress=?,updated_simulation_at=?,version=version+1 WHERE id=UUID_TO_BIN(?) AND version=?`,[next,simulationTime,row.id,row.version]);if(!updated.affectedRows)throw Object.assign(new Error("Optimistic lock conflict on desire"),{code:"OPTIMISTIC_LOCK"});return{id:row.id,title:row.title,progress:next,reason}; }
 
-async function recordLifeNarrative(simulationId,entityId,simulationTime,{title,summary,importance=0.55,eventId=null}={}) { const cleanTitle=safeText(title,180),cleanSummary=safeText(summary,1000);if(!cleanTitle||!cleanSummary)return null;const[rows]=await pool.query(`SELECT COALESCE(MAX(chapter_index),0) AS maxIndex FROM life_narratives WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?)`,[simulationId,entityId]);const id=uuid(),chapterIndex=Number(rows[0]?.maxIndex||0)+1;await pool.query(`INSERT INTO life_narratives(id,simulation_id,entity_id,chapter_index,title,summary,importance,event_id,created_simulation_at,updated_simulation_at,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,?,UUID_TO_BIN(?),?,?,1)`,[id,simulationId,entityId,chapterIndex,cleanTitle,cleanSummary,clamp01(importance),eventId,simulationTime,simulationTime]);return id; }
-
+async function recordLifeNarrative(simulationId,entityId,simulationTime,{title,summary,importance=0.55,eventId=null}={}){
+  const cleanTitle=safeText(title,180),cleanSummary=safeText(summary,1000);
+  if(!cleanTitle||!cleanSummary)return null;
+  const lockKey="asami:life-narrative:"+require("crypto").createHash("sha1").update([simulationId,entityId].join("|")).digest("hex");
+  return withTransaction(async conn => {
+    const [lockRows]=await conn.query("SELECT GET_LOCK(?,5) AS acquired",[lockKey]);
+    const locked=Number(lockRows[0]?.acquired||0)===1;
+    if(!locked)throw Object.assign(new Error("Could not acquire life narrative lock"),{code:"LIFE_NARRATIVE_LOCK_TIMEOUT"});
+    try {
+      const [rows]=await conn.query(`SELECT COALESCE(MAX(chapter_index),0) AS maxIndex
+        FROM life_narratives
+        WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?)`,
+        [simulationId,entityId]);
+      const id=uuid(),chapterIndex=Number(rows[0]?.maxIndex||0)+1;
+      await conn.query(`INSERT INTO life_narratives
+        (id,simulation_id,entity_id,chapter_index,title,summary,importance,event_id,created_simulation_at,updated_simulation_at,version)
+        VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,?,UUID_TO_BIN(?),?,?,1)`,
+        [id,simulationId,entityId,chapterIndex,cleanTitle,cleanSummary,clamp01(importance),eventId,simulationTime,simulationTime]);
+      return id;
+    } finally {
+      try { await conn.query("SELECT RELEASE_LOCK(?)",[lockKey]); } catch {}
+    }
+  });
+}
 async function recordExpectation({simulationId,entityId,decisionId,simulationTime,actionType,expectedUtility,expectedSuccessProbability,prediction=null}) { const id=uuid();await pool.query(`INSERT INTO cognitive_expectations(id,simulation_id,entity_id,decision_id,action_type,expected_utility,expected_success_probability,prediction,actual_outcome,prediction_error,regret_score,status,created_simulation_at,resolved_simulation_at,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,?,NULL,NULL,NULL,'OPEN',?,NULL,1)`,[id,simulationId,entityId,decisionId,normalize(actionType),clamp01(expectedUtility,0.5),clamp01(expectedSuccessProbability,0.6),prediction?JSON.stringify(prediction):null,simulationTime]);return id; }
 
 async function resolveExpectation({simulationId,entityId,decisionId,simulationTime,actualOutcome,alternativeUtilities=[]}) { const[rows]=await pool.query(`SELECT BIN_TO_UUID(id) AS id,expected_utility AS expectedUtility,expected_success_probability AS expectedSuccessProbability,version FROM cognitive_expectations WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND decision_id=UUID_TO_BIN(?) AND status='OPEN' LIMIT 1`,[simulationId,entityId,decisionId]);if(!rows.length)return null;const row=rows[0],outcomeScore=normalize(actualOutcome)==='SUCCESS'?1:normalize(actualOutcome)==='PARTIAL'?0.5:0,predictionError=outcomeScore-Number(row.expectedSuccessProbability||0),bestAlternative=Math.max(Number(row.expectedUtility||0),...alternativeUtilities.map(Number).filter(Number.isFinite)),regret=Math.max(0,bestAlternative-Number(row.expectedUtility||0))*(1-outcomeScore*0.5),[updated]=await pool.query(`UPDATE cognitive_expectations SET actual_outcome=?,prediction_error=?,regret_score=?,status='RESOLVED',resolved_simulation_at=?,version=version+1 WHERE id=UUID_TO_BIN(?) AND version=?`,[JSON.stringify({outcome:actualOutcome,score:outcomeScore}),predictionError,clamp01(regret,0),simulationTime,row.id,row.version]);return updated.affectedRows?{...row,outcomeScore,predictionError,regret}:null; }
