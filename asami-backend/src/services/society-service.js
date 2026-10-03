@@ -594,7 +594,7 @@ async function evolveConflicts(simulationId, simulationTime) {
 }
 
 async function ensureGovernanceSystem(simulationId,simulationTime,conflictSummary){
-  const [existing]=await pool.query("SELECT BIN_TO_UUID(id) id,BIN_TO_UUID(JSON_UNQUOTE(JSON_EXTRACT(attributes,'$.systemEntityId'))) systemEntityId FROM emergent_systems WHERE simulation_id=UUID_TO_BIN(?) AND system_type='GOVERNANCE' AND stage<>'ENDED' LIMIT 1",[simulationId]);
+  const [existing]=await pool.query("SELECT BIN_TO_UUID(id) id,JSON_UNQUOTE(JSON_EXTRACT(attributes,'$.systemEntityId')) systemEntityId FROM emergent_systems WHERE simulation_id=UUID_TO_BIN(?) AND system_type='GOVERNANCE' AND stage<>'ENDED' LIMIT 1",[simulationId]);
   if(existing.length)return {created:false,governanceId:existing[0].id,systemEntityId:existing[0].systemEntityId};
   if(!conflictSummary?.activeCount || Number(conflictSummary.maxIntensity||0)<0.45)return {created:false,governanceId:null,systemEntityId:null};
   const [simulationRows]=await pool.query("SELECT started_simulation_at startedAt FROM simulations WHERE id=UUID_TO_BIN(?) LIMIT 1",[simulationId]);
