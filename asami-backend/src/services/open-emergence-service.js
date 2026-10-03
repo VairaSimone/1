@@ -625,7 +625,7 @@ async function createSystem(simulationId, simulationTime, proposal, scope, actor
   const systemType = normalize(definition.systemType) || definition.code;
   if (systemType === "GOVERNANCE") {
     const [existingGovernance] = await pool.query(
-      "SELECT BIN_TO_UUID(id) id,BIN_TO_UUID(JSON_UNQUOTE(JSON_EXTRACT(attributes,'$.systemEntityId'))) systemEntityId FROM emergent_systems WHERE simulation_id=UUID_TO_BIN(?) AND system_type='GOVERNANCE' AND stage<>'ENDED' LIMIT 1",
+      "SELECT BIN_TO_UUID(id) id,JSON_UNQUOTE(JSON_EXTRACT(attributes,'$.systemEntityId')) systemEntityId FROM emergent_systems WHERE simulation_id=UUID_TO_BIN(?) AND system_type='GOVERNANCE' AND stage<>'ENDED' LIMIT 1",
       [simulationId]
     );
     if (existingGovernance.length) return { systemId:existingGovernance[0].id, systemEntityId:existingGovernance[0].systemEntityId, definitionId:null, alreadyExists:true };
