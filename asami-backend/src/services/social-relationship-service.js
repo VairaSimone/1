@@ -1,4 +1,4 @@
-const { pool } = require("../db/pool");
+const { pool, withTransaction } = require("../db/pool");
 const { uuid } = require("../lib/ids");
 const { createMemory } = require("./memory-service");
 const { upsertInteractionRelationship } = require("./relationship-service");
@@ -296,7 +296,40 @@ function mergeRelationshipDeltas(base={},outcome={}){
   return merged;
 }
 async function applyConversationOutcome({simulationId,sourceEntityId,targetEntityId,simulationAt,eventId,outcome="NEUTRAL",intent="NONE"}){const rel=await relationshipBetween(simulationId,sourceEntityId,targetEntityId,"ACTIVE");if(!rel)return null;const deltas=conversationOutcomeDeltas(outcome),updated=await updateRelationshipScores(simulationId,rel.id,simulationAt,deltas,eventId);if(updated&&intent==='PURSUE_RELATIONSHIP')return requestPartnership({simulationId,sourceEntityId,targetEntityId,simulationAt,eventId,compatibility:.5});return updated;}
-async function ensureSocialConversation(simulationId,sourceEntityId,targetEntityId,simulationAt){const[existing]=await pool.query(`SELECT BIN_TO_UUID(c.id) AS id FROM conversations c JOIN conversation_participants p1 ON p1.conversation_id=c.id AND p1.entity_id=UUID_TO_BIN(?) JOIN conversation_participants p2 ON p2.conversation_id=c.id AND p2.entity_id=UUID_TO_BIN(?) WHERE c.simulation_id=UUID_TO_BIN(?) AND c.status='ACTIVE' AND p1.left_simulation_at IS NULL AND p2.left_simulation_at IS NULL ORDER BY c.created_simulation_at DESC LIMIT 1`,[sourceEntityId,targetEntityId,simulationId]);if(existing.length)return existing[0].id;const conversationId=uuid();await pool.query(`INSERT INTO conversations(id,simulation_id,channel,created_simulation_at,status,metadata,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),'CHAT',?,'ACTIVE',?,1)`,[conversationId,simulationId,simulationAt,JSON.stringify({type:"AUTONOMOUS_SOCIAL",sourceEntityId,targetEntityId})]);for(const entityId of[sourceEntityId,targetEntityId])await pool.query(`INSERT INTO conversation_participants(conversation_id,simulation_id,entity_id,joined_simulation_at) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?)`,[conversationId,simulationId,entityId,simulationAt]);return conversationId;}
+async function ensureSocialConversation(simulationId,sourceEntityId,targetEntityId,simulationAt){
+  return withTransaction(async conn => {
+    const pairKey=[sourceEntityId,targetEntityId].sort().join("|");
+    const lockKey="asami:social-conversation:"+require("crypto").createHash("sha1").update([simulationId,pairKey].join("|")).digest("hex");
+    const [lockRows]=await conn.query("SELECT GET_LOCK(?,5) AS acquired",[lockKey]);
+    const locked=Number(lockRows[0]?.acquired||0)===1;
+    if(!locked)throw Object.assign(new Error("Could not acquire social conversation lock"),{code:"CONVERSATION_LOCK_TIMEOUT"});
+    try {
+      const [existing]=await conn.query(`SELECT BIN_TO_UUID(c.id) AS id
+        FROM conversations c
+        JOIN conversation_participants p1 ON p1.conversation_id=c.id AND p1.entity_id=UUID_TO_BIN(?)
+        JOIN conversation_participants p2 ON p2.conversation_id=c.id AND p2.entity_id=UUID_TO_BIN(?)
+        WHERE c.simulation_id=UUID_TO_BIN(?) AND c.status='ACTIVE'
+          AND p1.left_simulation_at IS NULL AND p2.left_simulation_at IS NULL
+        ORDER BY c.created_simulation_at DESC LIMIT 1`,
+        [sourceEntityId,targetEntityId,simulationId]);
+      if(existing.length)return existing[0].id;
+      const conversationId=uuid();
+      await conn.query(`INSERT INTO conversations
+        (id,simulation_id,channel,created_simulation_at,status,metadata,version)
+        VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),'CHAT',?,'ACTIVE',?,1)`,
+        [conversationId,simulationId,simulationAt,JSON.stringify({type:"AUTONOMOUS_SOCIAL",sourceEntityId,targetEntityId})]);
+      for(const entityId of[sourceEntityId,targetEntityId])await conn.query(
+        `INSERT INTO conversation_participants
+          (conversation_id,simulation_id,entity_id,joined_simulation_at)
+          VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?)`,
+        [conversationId,simulationId,entityId,simulationAt]
+      );
+      return conversationId;
+    } finally {
+      try { await conn.query("SELECT RELEASE_LOCK(?)",[lockKey]); } catch {}
+    }
+  });
+}
 async function createSocialMessage({simulationId,conversationId,senderEntityId,content,simulationAt,metadata}){const messageId=uuid();await pool.query(`INSERT INTO messages(id,simulation_id,conversation_id,sender_entity_id,message_type,content,simulation_created_at,status,metadata,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),'ASSISTANT',?,?,'DELIVERED',?,1)`,[messageId,simulationId,conversationId,senderEntityId,content,simulationAt,JSON.stringify({source:"AUTONOMOUS_SOCIAL",...(metadata||{})})]);return messageId;}
 async function processSocialInteraction({simulationId,sourceEntityId,targetEntityId,simulationAt,eventId,relationshipIntent="NONE",locationId=null}){
   if(!sourceEntityId||!targetEntityId||sourceEntityId===targetEntityId)return null;
