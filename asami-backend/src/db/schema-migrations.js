@@ -52,7 +52,9 @@ const MEMORY_RETENTION_MIGRATION = {
   memoryRetentionIndex: "idx_memories_retention",
   needHistoryIndex: "idx_need_history_entity_time",
   emotionHistoryIndex: "idx_emotion_history_entity_time",
-  locationHistoryIndex: "idx_location_history_entity_time"
+  locationHistoryIndex: "idx_location_history_entity_time",
+  needHistoryTimeIndex: "idx_need_history_time_entity",
+  emotionHistoryTimeIndex: "idx_emotion_history_time_entity"
 };
 
 async function ensureIndex(table,indexName,definition,db) {
@@ -80,7 +82,9 @@ async function ensureMemoryRetentionMigration(db) {
     ["memories",MEMORY_RETENTION_MIGRATION.memoryDedupeIndex,"simulation_id,entity_id,status,memory_dedupe_key,created_simulation_at"],
     ["memories",MEMORY_RETENTION_MIGRATION.memoryRetentionIndex,"simulation_id,status,created_simulation_at"],
     ["entity_need_history",MEMORY_RETENTION_MIGRATION.needHistoryIndex,"entity_id,simulation_time"],
+    ["entity_need_history",MEMORY_RETENTION_MIGRATION.needHistoryTimeIndex,"simulation_time,entity_id,id"],
     ["entity_emotion_history",MEMORY_RETENTION_MIGRATION.emotionHistoryIndex,"entity_id,simulation_time"],
+    ["entity_emotion_history",MEMORY_RETENTION_MIGRATION.emotionHistoryTimeIndex,"simulation_time,entity_id,id"],
     ["entity_location_history",MEMORY_RETENTION_MIGRATION.locationHistoryIndex,"entity_id,entered_simulation_at"],
     ["memories","idx_memories_actor_retention","simulation_id,entity_id,memory_type,status,created_simulation_at,importance"],
     ["cognitive_expectations","idx_cognitive_expectations_retention","simulation_id,entity_id,status,created_simulation_at"],
