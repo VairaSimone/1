@@ -140,8 +140,27 @@ async function getSocialMind(simulationId,entityId) { const[[memberships],[reput
 
 async function processConversationCommitments({simulationId,entityId,simulationTime,content}) { const text=safeText(content,4000),promiseMatch=/\b(?:ti\s+prometto(?:\s+che|\s+di)?|prometto(?:\s+che|\s+di)|ho\s+promesso(?:\s+che|\s+di)|I\s+promise(?:\s+to)?|I\s+said\s+I\s+would)\b/i.test(text),created={promises:[],obligations:[]};if(promiseMatch){const id=uuid(),due=/domani|tomorrow/i.test(text)?new Date(new Date(simulationTime).getTime()+24*3600000):null,title=safeText(text.replace(/\s+/g,' '),180)||'Commitment';await pool.query(`INSERT INTO promises(id,simulation_id,issuer_entity_id,title,description,target_entity_id,due_simulation_at,status,importance,source_message_id,created_simulation_at,updated_simulation_at,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,NULL,?,'OPEN',?,?,?, ?,1)`,[id,simulationId,entityId,title,text.slice(0,1000),due,0.78,null,simulationTime,simulationTime]);created.promises.push(id);}if(/\b(?:devo|dovrei|mi sono impegnat[oa]|I\s+must|I\s+should)\b/i.test(text)&&!promiseMatch){const id=uuid();await pool.query(`INSERT INTO social_obligations(id,simulation_id,entity_id,title,description,type,priority,due_simulation_at,status,created_simulation_at,updated_simulation_at,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?, 'SELF_DECLARED',?,?,?,?,1)`,[id,simulationId,entityId,safeText(text.replace(/\s+/g,' '),180),text.slice(0,1000),0.5,null,'OPEN',simulationTime,simulationTime]);created.obligations.push(id);}return created; }
 
-async function updateReputationAfterInteraction({simulationId,entityId,observerEntityId,simulationTime,delta=0.02}) { if(!observerEntityId||observerEntityId===entityId)return null;const[rows]=await pool.query(`SELECT BIN_TO_UUID(id) AS id,score,reliability,version FROM reputations WHERE simulation_id=UUID_TO_BIN(?) AND subject_entity_id=UUID_TO_BIN(?) AND observer_entity_id=UUID_TO_BIN(?) AND context='DIRECT_INTERACTION' LIMIT 1`,[simulationId,entityId,observerEntityId]);if(!rows.length){const id=uuid();await pool.query(`INSERT INTO reputations(id,simulation_id,subject_entity_id,observer_entity_id,group_id,score,reliability,context,status,created_simulation_at,updated_simulation_at,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),NULL,?,?, 'DIRECT_INTERACTION','ACTIVE',?,?,1)`,[id,simulationId,entityId,observerEntityId,clamp01(0.5+delta),0.35,simulationTime,simulationTime]);return id;}const row=rows[0],next=clamp01(Number(row.score)+Math.max(-0.05,Math.min(0.05,delta))),[updated]=await pool.query(`UPDATE reputations SET score=?,reliability=?,updated_simulation_at=?,version=version+1 WHERE id=UUID_TO_BIN(?) AND version=?`,[next,clamp01(Number(row.reliability)+0.02),simulationTime,row.id,row.version]);return updated.affectedRows?row.id:null; }
-
+async function updateReputationAfterInteraction({simulationId,entityId,observerEntityId,simulationTime,delta=0.02}) {
+  if(!observerEntityId||observerEntityId===entityId)return null;
+  const boundedDelta=Math.max(-0.05,Math.min(0.05,Number(delta)||0));
+  const id=uuid();
+  await pool.query(`INSERT INTO reputations
+    (id,simulation_id,subject_entity_id,observer_entity_id,group_id,score,reliability,context,status,created_simulation_at,updated_simulation_at,version)
+    VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),NULL,?,0.35,'DIRECT_INTERACTION','ACTIVE',?,?,1)
+    ON DUPLICATE KEY UPDATE
+      score=LEAST(1,GREATEST(0,score+?)),
+      reliability=LEAST(1,reliability+0.02),
+      updated_simulation_at=VALUES(updated_simulation_at),
+      version=version+1`,
+    [id,simulationId,entityId,observerEntityId,clamp01(0.5+boundedDelta),simulationTime,simulationTime,boundedDelta]
+  );
+  const [rows]=await pool.query(`SELECT BIN_TO_UUID(id) AS id,score,reliability
+    FROM reputations
+    WHERE simulation_id=UUID_TO_BIN(?) AND subject_entity_id=UUID_TO_BIN(?)
+      AND observer_entity_id=UUID_TO_BIN(?) AND context='DIRECT_INTERACTION' LIMIT 1`,
+    [simulationId,entityId,observerEntityId]);
+  return rows[0]?.id||null;
+}
 async function buildAttentionContext({simulationId,entityId,context}) {
   const signals=[],needs=Array.isArray(context?.needs)?context.needs:[];
   for(const need of needs){const value=Number(need.value);if(Number.isFinite(value)&&['HUNGER','THIRST','SLEEPINESS'].includes(normalize(need.code))&&value>=0.55)signals.push({type:'PHYSIOLOGICAL',code:normalize(need.code),intensity:clamp01(value),reason:'internal pressure'});if(Number.isFinite(value)&&['SOCIAL_NEED','BELONGING','CURIOSITY','ACHIEVEMENT','FUN'].includes(normalize(need.code))&&value>=0.65)signals.push({type:'MOTIVATIONAL',code:normalize(need.code),intensity:clamp01(value),reason:'persistent drive'});}
