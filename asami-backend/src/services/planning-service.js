@@ -127,11 +127,20 @@ async function blockGoalForResource({simulationId,entityId,goalId,simulationTime
     }
 
     observability.recordGoalBlocked(simulationId,{resource,reason});
-    logger.warn({
-      simulationId,entityId,goalId,simulationTime,resource,
-      reason:reason||"RESOURCE_UNAVAILABLE",
-      actionType:normalizeAction(actionType)
-    },"goal blocked by unavailable critical resource");
+    logger.warnThrottled(
+      `planning:resource-blocked:${simulationId}:${resource}`,
+      600000,
+      {
+        simulationId,
+        entityId,
+        goalId,
+        simulationTime,
+        resource,
+        reason:reason||"RESOURCE_UNAVAILABLE",
+        actionType:normalizeAction(actionType)
+      },
+      "goal blocked by unavailable critical resource"
+    );
     return true;
   });
 }
