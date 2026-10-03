@@ -727,15 +727,16 @@ async function compactOldDailySample(conn, {
   }
 
   const [result] = await conn.query(
-    "DELETE FROM " + table + " WHERE id IN (" +
-      "SELECT id FROM (" +
+    "DELETE target FROM " + table + " target JOIN (" +
+      "SELECT ranked.id FROM (" +
         "SELECT id, ROW_NUMBER() OVER (PARTITION BY " + partition +
         " ORDER BY " + timeColumn + " DESC) AS rn " +
         "FROM " + table +
         " WHERE simulation_id=UUID_TO_BIN(?) AND " + timeColumn + " < ?" +
-      ") ranked WHERE ranked.rn > 1 LIMIT " + POLICY.maxDeletesPerTable +
-    ")",
-    [simulationId, cutoff]
+      ") ranked WHERE ranked.rn > 1 " +
+      "LIMIT " + POLICY.maxDeletesPerTable +
+    ") victims ON victims.id=target.id"
+  , [simulationId, cutoff]
   );
 
   const deleted = Number(result.affectedRows || 0);
