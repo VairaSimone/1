@@ -357,7 +357,12 @@ const decision=await decisionService.makeDecision({simulationId,entityId,simulat
     });
     if(stagnation){
       observability.increment(simulationId,"goal_stagnation_alerts_total");
-      logger.warn({...stagnation,event:"GOAL_STAGNATION"},"goal shows behavioral stagnation");
+      logger.warnThrottled(
+        `autonomy:goal-stagnation:${simulationId}`,
+        3600000,
+        {...stagnation,event:"GOAL_STAGNATION"},
+        "goal shows behavioral stagnation"
+      );
     }
   }
   return{decision,started,intentionId,goalState,aiChoice};
