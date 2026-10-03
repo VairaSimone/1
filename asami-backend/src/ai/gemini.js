@@ -719,8 +719,8 @@ class GeminiService {
             model
           };
           logger.warnThrottled(
-            `gemini:provider-limit:${kind}:${model}:${fallbackReason}`,
-            60000,
+            `gemini:provider-limit:${kind}:${fallbackReason}`,
+            900000,
             {
               kind,
               model,
@@ -751,8 +751,8 @@ class GeminiService {
           };
           const fallbackModel=models[modelIndex+1]||null;
           logger.warnThrottled(
-            `gemini:provider-failure:${kind}:${model}:${fallbackReason}`,
-            60000,
+            `gemini:provider-failure:${kind}`,
+            300000,
             {
               kind,
               model,
@@ -814,7 +814,7 @@ class GeminiService {
           : "all attempted Gemini models failed; deterministic fallback used";
     logger.warnThrottled(
       `gemini:all-failed:${kind}`,
-      60000,
+      900000,
       {
         kind,
         models,
