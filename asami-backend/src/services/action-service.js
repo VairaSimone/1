@@ -458,7 +458,9 @@ const physicalLocation=await currentLocation(entityId,simulationId,conn);
 const physical=before.resourceFinalized?before.resource:(String(actionType||"").toUpperCase()==="EATING" ? (await consumePurchasedFood({simulationId,entityId,simulationTime,db:conn}) || await resolveActionResource({simulationId,locationId:physicalLocation,actionType,simulationTime,conn})) : await resolveActionResource({simulationId,locationId:physicalLocation,actionType,simulationTime,conn}));physical.actionType=actionType;
 const normalizedAction=String(actionType||"").toUpperCase();
 const economic=await executeEconomicAction({conn,simulationId,entityId,actionType:normalizedAction,simulationTime,durationMinutes:Number(before.activityDurationMinutes)||Number(before.durationMinutes)||30});
-const dynamic=economic ? null : await executeDynamicActivity({
+const runtimeCapabilities=(await loadCapabilitiesForEntities(simulationId,[entityId])).get(String(entityId))||[];
+const dynamicAvailable=runtimeCapabilities.some(item=>String(item.code||"").toUpperCase()===normalizedAction);
+const dynamic=economic || !dynamicAvailable ? null : await executeDynamicActivity({
   conn,simulationId,entityId,actionId,actionType:normalizedAction,simulationTime,targetLocationId
 });
 const economicNeedEffect=economic?.ok ? await applyEconomicNeedEffect({conn,entityId,actionId,simulationTime,effect:economic.needEffect}) : null;
