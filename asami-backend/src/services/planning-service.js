@@ -33,6 +33,26 @@ function resourceForGoalNeed(needCode){
   return {HUNGER:"food",THIRST:"water"}[normalizeAction(needCode)]||null;
 }
 
+async function isFoodMarketAvailable(simulationId,entityId){
+  if(!simulationId||!entityId)return false;
+  const [rows]=await pool.query(
+    `SELECT ms.price,ms.supply,ea.balance
+       FROM emergent_market_state ms
+       JOIN emergent_economy_accounts ea
+         ON ea.simulation_id=ms.simulation_id
+        AND ea.entity_id=UUID_TO_BIN(?)
+      WHERE ms.simulation_id=UUID_TO_BIN(?)
+        AND ms.good_code='FOOD'
+        AND ms.supply>0
+        AND ms.price>0
+        AND ea.balance>=ms.price
+      ORDER BY ms.price ASC
+      LIMIT 1`,
+    [entityId,simulationId]
+  );
+  return rows.length>0;
+}
+
 function isResourceBlockedFailure(actionType,outcome,actionResult){
   const normalizedAction=normalizeAction(actionType);
   if(!["EATING","DRINKING"].includes(normalizedAction))return null;
@@ -420,7 +440,10 @@ async function ensureGoalPlan({simulationId,entityId,simulationTime,needs}){
 
     if(activeGoal.status==="BLOCKED"){
       const resource=goalResult.resource||resourceForGoalNeed(needCode);
-      if(resource&&await isCriticalResourceReachable(simulationId,entityId,resource)){
+      const reachable=resource==="food"
+        ?await isFoodMarketAvailable(simulationId,entityId)
+        :await isCriticalResourceReachable(simulationId,entityId,resource);
+      if(resource&&reachable){
         await unblockBlockedGoal({simulationId,entityId,goalId:activeGoal.id,simulationTime});
         activeGoal=await getActiveGoal(simulationId,entityId);
       }else{
@@ -588,17 +611,22 @@ async function advancePlanForAction({simulationId,entityId,goalId,actionType,out
 
   const resourceBlock=isResourceBlockedFailure(normalizedAction,outcome,actionResult);
   if(resourceBlock){
-    await blockGoalForResource({
-      simulationId,
-      entityId,
-      goalId,
-      simulationTime,
-      resource:resourceBlock.resource,
-      reason:resourceBlock.reason,
-      actionType:normalizedAction,
-      actionResult
-    });
-    return{changed:true,completed:false,progress:null,planId:plan.id,blocked:true,resource:resourceBlock.resource};
+    const economicAlternative=resourceBlock.resource==="food"
+      ?await isFoodMarketAvailable(simulationId,entityId)
+      :false;
+    if(!economicAlternative){
+      await blockGoalForResource({
+        simulationId,
+        entityId,
+        goalId,
+        simulationTime,
+        resource:resourceBlock.resource,
+        reason:resourceBlock.reason,
+        actionType:normalizedAction,
+        actionResult
+      });
+      return{changed:true,completed:false,progress:null,planId:plan.id,blocked:true,resource:resourceBlock.resource};
+    }
   }
 
   if(expectedAction===normalizedAction&&successful){
