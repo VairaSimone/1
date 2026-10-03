@@ -114,7 +114,7 @@ async function ensureMarketInventory(simulationId,simulationTime){
     if(!system.entityId||!isMarketStructure(systemMarket))continue;
     const [rows]=await pool.query('SELECT quantity FROM emergent_inventory WHERE simulation_id=UUID_TO_BIN(?) AND owner_entity_id=UUID_TO_BIN(?) AND good_code="FOOD" LIMIT 1',[simulationId,system.entityId]);
     if(rows.length)continue;
-    await pool.query('INSERT INTO emergent_inventory (id,simulation_id,owner_entity_id,good_code,quantity,updated_simulation_at,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),"FOOD",12,?,1)',[uuid(),simulationId,system.entityId,simulationTime]);
+    await pool.query('INSERT IGNORE INTO emergent_inventory (id,simulation_id,owner_entity_id,good_code,quantity,updated_simulation_at,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),"FOOD",12,?,1)',[uuid(),simulationId,system.entityId,simulationTime]);
   }
 }
 async function ensureJobs(simulationId,simulationTime){
