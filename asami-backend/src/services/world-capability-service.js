@@ -452,7 +452,7 @@ async function loadCapabilitiesForEntities(simulationId, entityIds = []) {
     "FROM emergent_jobs ej JOIN emergent_structures es ON es.simulation_id=ej.simulation_id AND es.entity_id=ej.employer_entity_id " +
     "WHERE ej.simulation_id=UUID_TO_BIN(?) AND ej.status='ACTIVE' AND ej.employee_entity_id IN (" + placeholders + ")" +
     " UNION ALL " +
-    "SELECT BIN_TO_UUID(ej.employee_entity_id) employeeId,es.scope_location_id locationId,ej.role,ej.wage_per_hour wage " +
+    "SELECT BIN_TO_UUID(ej.employee_entity_id) employeeId,BIN_TO_UUID(es.scope_location_id) locationId,ej.role,ej.wage_per_hour wage " +
     "FROM emergent_jobs ej JOIN emergent_systems es ON es.simulation_id=ej.simulation_id AND JSON_UNQUOTE(JSON_EXTRACT(es.attributes,'$.systemEntityId'))=BIN_TO_UUID(ej.employer_entity_id) " +
     "WHERE ej.simulation_id=UUID_TO_BIN(?) AND ej.status='ACTIVE' AND ej.employee_entity_id IN (" + placeholders + ")",
     [simulationId, ...ids, simulationId, ...ids]
