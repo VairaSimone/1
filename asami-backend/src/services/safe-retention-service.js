@@ -43,6 +43,11 @@ const POLICY = Object.freeze({
   maxCounterfactualsPerActor: Math.min(20000, positiveInt(process.env.RETENTION_MAX_COUNTERFACTUALS_PER_ACTOR, 2500, 100)),
   maxCounterfactualWorldsPerActor: Math.min(20000, positiveInt(process.env.RETENTION_MAX_COUNTERFACTUAL_WORLDS_PER_ACTOR, 3000, 100)),
   relationshipHistoryDays: positiveInt(process.env.RETENTION_RELATIONSHIP_HISTORY_DAYS, 45, 7),
+  cognitiveStateDetailDays: positiveInt(process.env.RETENTION_COGNITIVE_STATE_DETAIL_DAYS, 7, 1),
+  societyWealthDetailDays: positiveInt(process.env.RETENTION_SOCIETY_WEALTH_DETAIL_DAYS, 7, 1),
+  societyTradeDetailDays: positiveInt(process.env.RETENTION_SOCIETY_TRADE_DETAIL_DAYS, 14, 1),
+  societyProductionDetailDays: positiveInt(process.env.RETENTION_SOCIETY_PRODUCTION_DETAIL_DAYS, 14, 1),
+  snapshotDetailDays: positiveInt(process.env.RETENTION_SNAPSHOT_DETAIL_DAYS, 7, 1),
   eventImportanceKeepThreshold: boundedNumber(process.env.RETENTION_EVENT_IMPORTANCE_KEEP_THRESHOLD, 0.8, 0, 1),
   batchSize: Math.min(5000, positiveInt(process.env.RETENTION_BATCH_SIZE, 2000, 250)),
   maxDeletesPerTable: Math.min(20000, positiveInt(process.env.RETENTION_MAX_DELETES_PER_TABLE, 8000, 500)),
@@ -692,6 +697,190 @@ async function deleteOldActions(conn, simulationId, simulationTime) {
   });
 }
 
+
+async function compactOldDailySample(conn, {
+  table,
+  simulationId,
+  cutoff,
+  partitionColumns,
+  timeColumn,
+  resultKey = "deleted"
+}) {
+  const safeTables = new Set(["cognitive_states", "emergent_wealth_history", "simulation_snapshots"]);
+  const safeTimeColumns = new Set(["simulation_time"]);
+  if (!safeTables.has(table) || !safeTimeColumns.has(timeColumn)) {
+    throw new Error("Unsupported daily-sample retention target");
+  }
+
+  const partition = partitionColumns.join(",");
+  const countSql =
+    "SELECT COALESCE(SUM(cnt-1),0) AS candidates FROM (" +
+    "SELECT " + partition + ", COUNT(*) AS cnt " +
+    "FROM " + table +
+    " WHERE simulation_id=UUID_TO_BIN(?) AND " + timeColumn + " < ? " +
+    "GROUP BY " + partition +
+    " HAVING COUNT(*) > 1" +
+    ") groups_to_compact";
+
+  if (POLICY.dryRun) {
+    const [rows] = await conn.query(countSql, [simulationId, cutoff]);
+    const candidates = Number(rows[0]?.candidates || 0);
+    return { [resultKey]: 0, candidates, remainingCandidates: candidates, dryRun: true };
+  }
+
+  const [result] = await conn.query(
+    "DELETE FROM " + table + " WHERE id IN (" +
+      "SELECT id FROM (" +
+        "SELECT id, ROW_NUMBER() OVER (PARTITION BY " + partition +
+        " ORDER BY " + timeColumn + " DESC) AS rn " +
+        "FROM " + table +
+        " WHERE simulation_id=UUID_TO_BIN(?) AND " + timeColumn + " < ?" +
+      ") ranked WHERE ranked.rn > 1 LIMIT " + POLICY.maxDeletesPerTable +
+    ")",
+    [simulationId, cutoff]
+  );
+
+  const deleted = Number(result.affectedRows || 0);
+  const [backlog] = await conn.query(countSql, [simulationId, cutoff]);
+  return {
+    [resultKey]: deleted,
+    remainingCandidates: Number(backlog[0]?.candidates || 0),
+    budgetExhausted: retentionBudgetRemainingMs(simulationId) <= 0
+  };
+}
+
+async function compactOldCognitiveStates(conn, simulationId, simulationTime) {
+  const cutoff = cutoffDateTime(simulationTime, POLICY.cognitiveStateDetailDays);
+  return compactOldDailySample(conn, {
+    table: "cognitive_states",
+    simulationId,
+    cutoff,
+    partitionColumns: ["entity_id", "DATE(simulation_time)"],
+    timeColumn: "simulation_time",
+    resultKey: "deleted"
+  });
+}
+
+async function compactOldEmergentWealthHistory(conn, simulationId, simulationTime) {
+  const cutoff = cutoffDateTime(simulationTime, POLICY.societyWealthDetailDays);
+  return compactOldDailySample(conn, {
+    table: "emergent_wealth_history",
+    simulationId,
+    cutoff,
+    partitionColumns: ["entity_id", "DATE(simulation_time)"],
+    timeColumn: "simulation_time",
+    resultKey: "deleted"
+  });
+}
+
+async function compactOldSnapshots(conn, simulationId, simulationTime) {
+  const cutoff = cutoffDateTime(simulationTime, POLICY.snapshotDetailDays);
+  return compactOldDailySample(conn, {
+    table: "simulation_snapshots",
+    simulationId,
+    cutoff,
+    partitionColumns: ["simulation_id", "DATE(simulation_time)"],
+    timeColumn: "simulation_time",
+    resultKey: "deleted"
+  });
+}
+
+async function aggregateAndDeleteOldEmergentTrades(conn, simulationId, simulationTime) {
+  const cutoff = cutoffDateTime(simulationTime, POLICY.societyTradeDetailDays);
+  const countSql =
+    "SELECT COUNT(*) AS candidates FROM emergent_trades " +
+    "WHERE simulation_id=UUID_TO_BIN(?) AND simulation_at < ?";
+
+  if (POLICY.dryRun) {
+    const [rows] = await conn.query(countSql, [simulationId, cutoff]);
+    const candidates = Number(rows[0]?.candidates || 0);
+    return { deleted: 0, candidates, remainingCandidates: candidates, dryRun: true };
+  }
+
+  if (!retentionBudgetAvailable(simulationId)) {
+    const [rows] = await conn.query(countSql, [simulationId, cutoff]);
+    return { deleted: 0, candidates: Number(rows[0]?.candidates || 0), remainingCandidates: Number(rows[0]?.candidates || 0), budgetExhausted: true };
+  }
+
+  await conn.query(
+    "INSERT IGNORE INTO emergent_trade_daily_metrics " +
+    "(simulation_id,simulation_date,location_id,good_code,trade_count,buyer_count,seller_count,total_quantity,total_value,average_unit_price,min_unit_price,max_unit_price,first_simulation_at,last_simulation_at) " +
+    "SELECT simulation_id,DATE(simulation_at),location_id,good_code,COUNT(*),COUNT(DISTINCT buyer_entity_id),COUNT(DISTINCT seller_entity_id),SUM(quantity),SUM(total),AVG(unit_price),MIN(unit_price),MAX(unit_price),MIN(simulation_at),MAX(simulation_at) " +
+    "FROM emergent_trades " +
+    "WHERE simulation_id=UUID_TO_BIN(?) AND simulation_at < ? " +
+    "GROUP BY simulation_id,DATE(simulation_at),location_id,good_code",
+    [simulationId, cutoff]
+  );
+
+  let deleted = 0;
+  while (deleted < POLICY.maxDeletesPerTable && retentionBudgetAvailable(simulationId)) {
+    const limit = Math.min(POLICY.batchSize, POLICY.maxDeletesPerTable - deleted);
+    const [result] = await conn.query(
+      "DELETE FROM emergent_trades " +
+      "WHERE id IN (SELECT id FROM (SELECT id FROM emergent_trades WHERE simulation_id=UUID_TO_BIN(?) AND simulation_at < ? ORDER BY simulation_at ASC LIMIT " + limit + ") doomed)",
+      [simulationId, cutoff]
+    );
+    const affected = Number(result.affectedRows || 0);
+    deleted += affected;
+    if (affected < limit) break;
+  }
+
+  const [backlog] = await conn.query(countSql, [simulationId, cutoff]);
+  return {
+    deleted,
+    remainingCandidates: Number(backlog[0]?.candidates || 0),
+    budgetExhausted: retentionBudgetRemainingMs(simulationId) <= 0
+  };
+}
+
+async function aggregateAndDeleteOldEmergentProduction(conn, simulationId, simulationTime) {
+  const cutoff = cutoffDateTime(simulationTime, POLICY.societyProductionDetailDays);
+  const countSql =
+    "SELECT COUNT(*) AS candidates FROM emergent_production_history " +
+    "WHERE simulation_id=UUID_TO_BIN(?) AND simulation_at < ?";
+
+  if (POLICY.dryRun) {
+    const [rows] = await conn.query(countSql, [simulationId, cutoff]);
+    const candidates = Number(rows[0]?.candidates || 0);
+    return { deleted: 0, candidates, remainingCandidates: candidates, dryRun: true };
+  }
+
+  if (!retentionBudgetAvailable(simulationId)) {
+    const [rows] = await conn.query(countSql, [simulationId, cutoff]);
+    return { deleted: 0, candidates: Number(rows[0]?.candidates || 0), remainingCandidates: Number(rows[0]?.candidates || 0), budgetExhausted: true };
+  }
+
+  await conn.query(
+    "INSERT IGNORE INTO emergent_production_daily_metrics " +
+    "(simulation_id,simulation_date,producer_entity_id,structure_entity_id,good_code,production_count,total_quantity,average_quantity,first_simulation_at,last_simulation_at) " +
+    "SELECT simulation_id,DATE(simulation_at),producer_entity_id,structure_entity_id,good_code,COUNT(*),SUM(quantity),AVG(quantity),MIN(simulation_at),MAX(simulation_at) " +
+    "FROM emergent_production_history " +
+    "WHERE simulation_id=UUID_TO_BIN(?) AND simulation_at < ? " +
+    "GROUP BY simulation_id,DATE(simulation_at),producer_entity_id,structure_entity_id,good_code",
+    [simulationId, cutoff]
+  );
+
+  let deleted = 0;
+  while (deleted < POLICY.maxDeletesPerTable && retentionBudgetAvailable(simulationId)) {
+    const limit = Math.min(POLICY.batchSize, POLICY.maxDeletesPerTable - deleted);
+    const [result] = await conn.query(
+      "DELETE FROM emergent_production_history " +
+      "WHERE id IN (SELECT id FROM (SELECT id FROM emergent_production_history WHERE simulation_id=UUID_TO_BIN(?) AND simulation_at < ? ORDER BY simulation_at ASC LIMIT " + limit + ") doomed)",
+      [simulationId, cutoff]
+    );
+    const affected = Number(result.affectedRows || 0);
+    deleted += affected;
+    if (affected < limit) break;
+  }
+
+  const [backlog] = await conn.query(countSql, [simulationId, cutoff]);
+  return {
+    deleted,
+    remainingCandidates: Number(backlog[0]?.candidates || 0),
+    budgetExhausted: retentionBudgetRemainingMs(simulationId) <= 0
+  };
+}
+
 async function runSafeRetention(simulationId, simulationTime) {
   if (!POLICY.enabled || !simulationId || !simulationTime) return { skipped: true, reason: "disabled" };
   const mysqlSimulationTime = normalizeSimulationTimestamp(simulationTime);
@@ -704,6 +893,11 @@ async function runSafeRetention(simulationId, simulationTime) {
     // the whole retention budget and the backlog never catches up.
     const needs = await deleteOldNeedHistory(lock.conn, simulationId, mysqlSimulationTime);
     const emotions = await deleteOldEmotionHistory(lock.conn, simulationId, mysqlSimulationTime);
+    const cognitiveStates = await compactOldCognitiveStates(lock.conn, simulationId, mysqlSimulationTime);
+    const societyWealth = await compactOldEmergentWealthHistory(lock.conn, simulationId, mysqlSimulationTime);
+    const societyTrades = await aggregateAndDeleteOldEmergentTrades(lock.conn, simulationId, mysqlSimulationTime);
+    const societyProduction = await aggregateAndDeleteOldEmergentProduction(lock.conn, simulationId, mysqlSimulationTime);
+    const snapshots = await compactOldSnapshots(lock.conn, simulationId, mysqlSimulationTime);
     const context = await compactOldDecisionContexts(lock.conn, simulationId, mysqlSimulationTime);
     const options = await deleteUnselectedDecisionOptions(lock.conn, simulationId, mysqlSimulationTime);
     const events = await withEventWriteLock(
@@ -736,6 +930,11 @@ async function runSafeRetention(simulationId, simulationTime) {
       actionsDeleted: Number(actions.deleted || 0),
       needHistoryDeleted: Number(needs.deleted || 0),
       emotionHistoryDeleted: Number(emotions.deleted || 0),
+      cognitiveStatesCompacted: Number(cognitiveStates.deleted || 0),
+      societyWealthCompacted: Number(societyWealth.deleted || 0),
+      societyTradesDeleted: Number(societyTrades.deleted || 0),
+      societyProductionDeleted: Number(societyProduction.deleted || 0),
+      snapshotsCompacted: Number(snapshots.deleted || 0),
       memoriesDeduped: Number(duplicateMemories.deleted || 0),
       episodicMemoryCapArchived: Number(episodicMemoryCap.archived || 0),
       cognitiveExpectationsCapped: Number(cognitiveActorCaps.expectations || 0),
@@ -907,6 +1106,11 @@ function getRetentionPolicy() {
 module.exports = {
   archiveExcessEpisodicMemories,
   deleteActorCognitiveArtifacts,
+  compactOldCognitiveStates,
+  compactOldEmergentWealthHistory,
+  aggregateAndDeleteOldEmergentTrades,
+  aggregateAndDeleteOldEmergentProduction,
+  compactOldSnapshots,
   deleteOldRelationshipHistory,
   getRetentionPolicy,
   isTerminalDecisionStatus,
