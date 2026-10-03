@@ -686,7 +686,7 @@ async function evolvePolitics(simulationId,simulationTime){
     if(total>=Math.min(7,people.length) && ratio>=.60){
       await pool.query(`UPDATE emergent_policies SET status="ENACTED",support_score=?,opposition_score=?,updated_simulation_at=?,version=version+1 WHERE id=UUID_TO_BIN(?) AND status="PROPOSED"`,[ratio,1-ratio,simulationTime,policy.id]);
       enacted.push(policy.id);
-      await createEvent({simulationId,eventTypeCode:"SOCIAL",title:"A policy was enacted: "+policy.title,description:policy.statement,simulationAt:simulationTime,importance:.74,metadata:{emergent:true,kind:"POLICY_ENACTED",policyId:policy.id,governanceSystemId}});
+      await createEvent({simulationId,eventTypeCode:"SOCIAL",title:"A policy was enacted: "+policy.title,description:policy.statement,simulationAt:simulationTime,importance:.74,metadata:{emergent:true,kind:"POLICY_ENACTED",policyId:policy.id,governanceSystemId:governanceId}});
     }else if(total>=Math.min(7,people.length) && ratio<=.40){
       await pool.query(`UPDATE emergent_policies SET status="REJECTED",support_score=?,opposition_score=?,updated_simulation_at=?,version=version+1 WHERE id=UUID_TO_BIN(?) AND status="PROPOSED"`,[ratio,1-ratio,simulationTime,policy.id]);
     }
