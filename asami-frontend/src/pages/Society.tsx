@@ -80,6 +80,7 @@ export function Society({ society, world }: { society: SocietySnapshot | null; w
   const metric = latestMetric(society)
   const systems = society.systems
   const markets = society.markets
+  const marketLocationCount = new Set(markets.map(market => String(market.locationId || ''))).size
   const jobs = society.jobs.filter(job => job.status === 'ACTIVE')
   const enacted = society.policies.filter(policy => policy.status === 'ENACTED')
   const proposed = society.policies.filter(policy => policy.status === 'PROPOSED')
@@ -181,7 +182,7 @@ export function Society({ society, world }: { society: SocietySnapshot | null; w
           <div><span>Nuove idee</span><strong>{society.openEnded?.proposals?.length ?? 0}</strong><p>proposte registrate</p></div>
           <div><span>Invenzioni strutturali</span><strong>{macroDefinitions.length}</strong><p>strutture, istituzioni e sistemi</p></div>
           <div><span>Attività derivate</span><strong>{derivedActivities.length}</strong><p>nuove capacità utilizzabili</p></div>
-          <div><span>Mercati</span><strong>{society.markets.length}</strong><p>luoghi con prezzo</p></div>
+          <div><span>Mercati</span><strong>{marketLocationCount}</strong><p>luoghi con prezzo</p></div>
           <div><span>Imprese</span><strong>{society.businesses?.filter(item => item.status === 'ACTIVE').length ?? 0}</strong><p>attive ora</p></div>
           <div><span>Lavoro</span><strong>{society.jobs.length}</strong><p>rapporti attivi</p></div>
           <div><span>Scambi</span><strong>{society.trades.length}</strong><p>registrati nel periodo</p></div>
