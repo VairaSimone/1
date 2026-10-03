@@ -360,7 +360,7 @@ async function applyProductionEffect({conn,simulationId,entityId,simulationTime,
   let producerEntityId=structureRows[0]?.producerEntityId||null;
   if(!producerEntityId){
     const [systemRows]=await conn.query(
-      "SELECT BIN_TO_UUID(JSON_UNQUOTE(JSON_EXTRACT(attributes,'$.systemEntityId'))) producerEntityId " +
+      "SELECT JSON_UNQUOTE(JSON_EXTRACT(attributes,'$.systemEntityId')) producerEntityId " +
       "FROM emergent_systems WHERE simulation_id=UUID_TO_BIN(?) AND scope_location_id=UUID_TO_BIN(?) LIMIT 1 FOR UPDATE",
       [simulationId,locationId]
     );
@@ -424,6 +424,73 @@ async function applyProductionEffect({conn,simulationId,entityId,simulationTime,
   );
   const baseOutput=Number(effect.quantity);
   const output=Number((baseOutput*capacity).toFixed(4));
+
+  let productionSubsidy=0;
+  const [policyRows]=await conn.query(
+    `SELECT parameters FROM emergent_policies
+      WHERE simulation_id=UUID_TO_BIN(?) AND status='ENACTED'
+      ORDER BY updated_simulation_at DESC LIMIT 1`,
+    [simulationId]
+  );
+  const policy=parseJson(policyRows[0]?.parameters,{});
+  const subsidyRate=normalize(policy.fundingModel)==='COMMON_POOL'
+    ? Math.max(0,Math.min(.35,Number(policy.productionSubsidyRate||0)))
+    : 0;
+  if(subsidyRate>0){
+    const [governanceRows]=await conn.query(
+      `SELECT JSON_UNQUOTE(JSON_EXTRACT(attributes,'$.systemEntityId')) systemEntityId
+         FROM emergent_systems
+        WHERE simulation_id=UUID_TO_BIN(?) AND system_type='GOVERNANCE' AND stage<>'ENDED'
+        LIMIT 1 FOR UPDATE`,
+      [simulationId]
+    );
+    const governmentEntityId=governanceRows[0]?.systemEntityId||null;
+    if(governmentEntityId){
+      const [accounts]=await conn.query(
+        `SELECT id,balance FROM emergent_economy_accounts
+          WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?)
+          FOR UPDATE`,
+        [simulationId,governmentEntityId]
+      );
+      const [goods]=await conn.query(
+        `SELECT base_price basePrice FROM emergent_goods
+          WHERE simulation_id=UUID_TO_BIN(?) AND code=? LIMIT 1`,
+        [simulationId,effect.goodCode]
+      );
+      if(accounts.length){
+        const basePrice=Number(goods[0]?.basePrice||0);
+        const requested=Number((output*basePrice*subsidyRate).toFixed(4));
+        productionSubsidy=Math.min(Number(accounts[0].balance||0),Math.max(0,requested));
+        if(productionSubsidy>0){
+          const [producerAccount]=await conn.query(
+            `SELECT id FROM emergent_economy_accounts
+              WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?)
+              LIMIT 1 FOR UPDATE`,
+            [simulationId,producerEntityId]
+          );
+          if(producerAccount.length){
+            await conn.query(
+              `UPDATE emergent_economy_accounts
+                  SET balance=balance-?,lifetime_spending=lifetime_spending+?,
+                      last_updated_simulation_at=?,version=version+1
+                WHERE id=?`,
+              [productionSubsidy,productionSubsidy,simulationTime,accounts[0].id]
+            );
+            await conn.query(
+              `UPDATE emergent_economy_accounts
+                  SET balance=balance+?,lifetime_income=lifetime_income+?,
+                      last_updated_simulation_at=?,version=version+1
+                WHERE id=?`,
+              [productionSubsidy,productionSubsidy,simulationTime,producerAccount[0].id]
+            );
+          }else{
+            productionSubsidy=0;
+          }
+        }
+      }
+    }
+  }
+
   if(outputRows.length){
     await conn.query("UPDATE emergent_inventory SET quantity=quantity+?,updated_simulation_at=?,version=version+1 WHERE id=?",
       [output,simulationTime,outputRows[0].id]);
@@ -440,11 +507,11 @@ async function applyProductionEffect({conn,simulationId,entityId,simulationTime,
       VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,?)`,
     [
       uuid(),simulationId,entityId,producerEntityId,effect.goodCode,output,
-      JSON.stringify({resourceInputs,inventoryInputs,capacity}),simulationTime
+      JSON.stringify({resourceInputs,inventoryInputs,capacity,productionSubsidy}),simulationTime
     ]
   );
 
-  return {ok:true,effect:{...effect,producerEntityId,outputQuantity:output,capacity}};
+  return {ok:true,effect:{...effect,producerEntityId,outputQuantity:output,capacity,productionSubsidy}};
 }
 
 async function executeDynamicActivity({conn,simulationId,entityId,actionId,actionType,simulationTime,targetLocationId=null}) {
