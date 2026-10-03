@@ -609,7 +609,7 @@ async function evolveConflicts(simulationId, simulationTime) {
     }
   }
   const [summary]=await pool.query("SELECT COUNT(*) activeCount,COALESCE(MAX(intensity),0) maxIntensity FROM emergent_conflicts WHERE simulation_id=UUID_TO_BIN(?) AND status='ACTIVE'",[simulationId]);
-  const [strongestRows]=await pool.query("SELECT BIN_TO_UUID(id) id,BIN_TO_UUID(scope_location_id) scopeLocationId,conflict_type conflictType,intensity FROM emergent_conflicts WHERE simulation_id=UUID_TO_BIN(?) AND status='ACTIVE' ORDER BY intensity DESC LIMIT 1",[simulationId]);
+  const [strongestRows]=await pool.query("SELECT BIN_TO_UUID(id) id,BIN_TO_UUID(scope_location_id) scopeLocationId,conflict_type conflictType,left_type leftType,BIN_TO_UUID(left_id) leftId,right_type rightType,BIN_TO_UUID(right_id) rightId,intensity FROM emergent_conflicts WHERE simulation_id=UUID_TO_BIN(?) AND status='ACTIVE' ORDER BY intensity DESC LIMIT 1",[simulationId]);
   return {created,resolved,activeCount:Number(summary[0]?.activeCount||0),maxIntensity:Number(summary[0]?.maxIntensity||0),strongest:strongestRows[0]||null};
 }
 
@@ -636,7 +636,19 @@ async function ensureGovernanceSystem(simulationId,simulationTime,conflictSummar
   const [people]=await pool.query("SELECT COUNT(*) count FROM entities e JOIN entity_types et ON et.id=e.entity_type_id WHERE e.simulation_id=UUID_TO_BIN(?) AND et.code='PERSON' AND e.status='ACTIVE'",[simulationId]);
   const validation=await validateDefinition(simulationId,definition,{scopeLocationId:conflict.scopeLocationId,localResources:{},proposerCount:Number(people[0]?.count||0)});
   if(!validation.valid||!proposerEntityId){
-    logger.warn({simulationId,simulationTime,errors:validation.errors},'governance bridge definition was not feasible');
+    logger.warnThrottled(
+      `society:governance-bridge-invalid:${simulationId}`,
+      900000,
+      {
+        simulationId,
+        simulationTime,
+        errors:validation.errors,
+        valid:validation.valid,
+        proposerEntityId:proposerEntityId||null,
+        reason:!proposerEntityId?"MISSING_PROPOSER":validation.errors.join("|")||"UNKNOWN"
+      },
+      'governance bridge definition was not feasible'
+    );
     return {created:false,governanceId:null,systemEntityId:null,reason:'GOVERNANCE_DEFINITION_INVALID'};
   }
   const systemId=uuid(),systemEntityId=uuid(),proposalId=uuid();
