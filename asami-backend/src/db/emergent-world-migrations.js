@@ -96,6 +96,18 @@ async function ensureEmergentWorldMigrations() {
     )
   `);
 
+  const policyExpiryColumn = await pool.query(`SHOW COLUMNS FROM emergent_policies LIKE 'expires_simulation_at'`);
+  if (!policyExpiryColumn[0]?.length) {
+    await pool.query(`ALTER TABLE emergent_policies ADD COLUMN expires_simulation_at DATETIME(3) NULL AFTER updated_simulation_at`);
+  }
+  await pool.query(`
+    UPDATE emergent_policies
+       SET expires_simulation_at = DATE_ADD(updated_simulation_at, INTERVAL 72 HOUR)
+     WHERE expires_simulation_at IS NULL
+       AND issue_code LIKE 'ECONOMIC_%'
+       AND status='ENACTED'
+  `);
+
   await pool.query(`
     CREATE TABLE IF NOT EXISTS emergent_conflicts (
       id BINARY(16) PRIMARY KEY,
