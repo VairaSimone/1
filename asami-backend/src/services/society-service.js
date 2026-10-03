@@ -2,12 +2,19 @@ const { pool, withTransaction } = require("../db/pool");
 const { uuid } = require("../lib/ids");
 const { createEvent } = require("./event-service");
 const logger = require("../lib/logger");
-const { validateDefinition, registerDefinition } = require("./emergent-definition-service");
+const { validateDefinition, registerDefinition, normalizeDefinition } = require("./emergent-definition-service");
 
 const SYSTEM_ENTITY_TYPE = "00000000-0000-4000-8000-000000000005";
 
 function parseJson(value,fallback={}){if(value===null||value===undefined)return fallback;if(typeof value==="object")return value;try{return JSON.parse(value)}catch{return fallback}}
 function normalize(value){return String(value||"").trim().toUpperCase()}
+function uuidString(value){
+  if(Buffer.isBuffer(value)&&value.length===16){
+    const hex=value.toString("hex");
+    return hex.slice(0,8)+"-"+hex.slice(8,12)+"-"+hex.slice(12,16)+"-"+hex.slice(16,20)+"-"+hex.slice(20);
+  }
+  return String(value||"").trim();
+}
 function clamp(value,min=0,max=1){const n=Number(value);return Number.isFinite(n)?Math.max(min,Math.min(max,n)):min}
 function gini(values){const a=values.map(Number).filter(Number.isFinite).map(x=>Math.max(0,x)).sort((x,y)=>x-y);const n=a.length;if(n<2)return 0;const sum=a.reduce((s,x)=>s+x,0);if(sum<=0)return 0;let weighted=0;for(let i=0;i<n;i++)weighted+=(i+1)*a[i];return clamp((2*weighted)/(n*sum)-(n+1)/n,0,1)}
 function hoursBetween(a,b){const x=new Date(a).getTime(),y=new Date(b).getTime();return Number.isFinite(x)&&Number.isFinite(y)?Math.max(0,(y-x)/3600000):1}
@@ -499,9 +506,15 @@ async function restockMarkets(simulationId,simulationTime){
 }
 
 async function upsertEmergentConflict(simulationId, simulationTime, candidate) {
-  const ordered = [String(candidate.leftId), String(candidate.rightId)].sort();
+  const candidateLeftId = uuidString(candidate.leftId);
+  const candidateRightId = uuidString(candidate.rightId);
+  const ordered = [candidateLeftId, candidateRightId].sort();
   const leftId = ordered[0], rightId = ordered[1];
-  const [existing] = await pool.query(`SELECT id,intensity FROM emergent_conflicts WHERE simulation_id=UUID_TO_BIN(?) AND status='ACTIVE' AND conflict_type=? AND left_type=? AND left_id=UUID_TO_BIN(?) AND right_type=? AND right_id=UUID_TO_BIN(?) LIMIT 1`,[simulationId,candidate.conflictType,candidate.leftType,leftId,candidate.rightType,rightId]);
+  if(!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(leftId) ||
+     !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(rightId)){
+    throw new Error("Invalid UUID in emergent conflict participants");
+  }
+  const [existing] = await pool.query(`SELECT BIN_TO_UUID(id) id,intensity FROM emergent_conflicts WHERE simulation_id=UUID_TO_BIN(?) AND status='ACTIVE' AND conflict_type=? AND left_type=? AND left_id=UUID_TO_BIN(?) AND right_type=? AND right_id=UUID_TO_BIN(?) LIMIT 1`,[simulationId,candidate.conflictType,candidate.leftType,leftId,candidate.rightType,rightId]);
   if (existing.length) {
     const nextIntensity = Number(Math.max(Number(existing[0].intensity || 0), Number(candidate.intensity || 0)).toFixed(4));
     await pool.query(`UPDATE emergent_conflicts SET intensity=?,metadata=?,version=version+1 WHERE id=UUID_TO_BIN(?) AND status='ACTIVE'`,[nextIntensity,JSON.stringify(candidate.metadata||{}),existing[0].id]);
