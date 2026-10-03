@@ -322,9 +322,13 @@ async function consumeResource({simulationId,locationId,resource,amount,simulati
   if(!locationId||!resource||!quantity)return{ok:true,consumed:0,remaining:null,resource:resource||null};
   let result=null;
   const next=await updateLocationAttributes(simulationId,locationId,current=>{
-    const resources={...(current.resources||{})},available=clamp(resources[resource]),consumed=Math.min(available,quantity);
-    resources[resource]=available-consumed;
-    result={ok:consumed>=quantity,consumed,remaining:resources[resource],resource};
+    const resources={...(current.resources||{})},available=clamp(resources[resource]);
+    // Resource actions are atomic: never consume a partial amount and then
+    // replenish the remainder, otherwise net consumption exceeds the action result.
+    const enough=available>=quantity;
+    const consumed=enough?quantity:0;
+    if(enough)resources[resource]=available-quantity;
+    result={ok:enough,consumed,remaining:resources[resource],resource};
     return{...current,resources,physicalUpdatedAt:simulationTime};
   },db);
   return next&&result?result:{ok:false,consumed:0,remaining:null,resource};
