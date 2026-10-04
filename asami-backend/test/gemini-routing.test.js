@@ -17,7 +17,8 @@ test("Gemini uses a stable multi-model fallback chain",()=>{
   assert.match(envSource,/GEMINI_MODEL[\s\S]*default\("gemini-3\.8-flash"\)/);
   assert.match(envSource,/GEMINI_FALLBACK_MODELS/);
   assert.match(envSource,/GEMINI_AUTONOMY_MAX_MODELS: z\.coerce\.number/);
-  assert.match(geminiSource,/this\.models=\[this\.model,\.\.\.\(Array\.isArray\(env\.GEMINI_FALLBACK_MODELS\)/);
+  assert.match(geminiSource,/this\.models=\[this\.model,"gemini-3\.1-flash-lite"/);
+  assert.match(geminiSource,/this\.models=\[this\.model,"gemini-3\.1-flash-lite",\.\.\.\(Array\.isArray\(env\.GEMINI_FALLBACK_MODELS\)/);
   assert.match(envSource,/gemini-3\.1-flash-lite/);
 });
 
