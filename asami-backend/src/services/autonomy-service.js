@@ -279,6 +279,62 @@ function chooseSocialTarget(socialContext,simulationId,entityId,originId){
   return null;
 }
 function sanitizeGeminiChoice(aiChoice,context,{socialContext,currentLocationId,worldLocations=[]}={}){if(!aiChoice)return null;const allowed=new Set((context.allowedActionTypes||[]).map(value=>String(value).toUpperCase())),selectedAction=String(aiChoice.selectedActionType||"").toUpperCase();if(!allowed.has(selectedAction))return null;const knownEntityIds=new Set([...(socialContext?.candidates||[]),...(context?.social?.candidates||[])].map(candidate=>candidate.id).filter(Boolean));const targetEntityId=aiChoice.targetEntityId&&knownEntityIds.has(aiChoice.targetEntityId)?aiChoice.targetEntityId:null;let targetLocationId=null;if(aiChoice.targetLocationId){const location=worldLocations.find(item=>item.locationId===aiChoice.targetLocationId);const route=currentLocationId&&location?actionService.shortestRoute(worldLocations,currentLocationId,aiChoice.targetLocationId):null;if(location&&route)targetLocationId=aiChoice.targetLocationId;}const strategy=aiChoice.strategy&&typeof aiChoice.strategy==='object'?aiChoice.strategy:null,proposal=aiChoice.planProposal&&typeof aiChoice.planProposal==='object'?{...aiChoice.planProposal,steps:(aiChoice.planProposal.steps||[]).filter(step=>!step.actionType||allowed.has(String(step.actionType).toUpperCase())).map(step=>({...step,actionType:step.actionType?String(step.actionType).toUpperCase():undefined})).slice(0,8)}:null;return{...aiChoice,selectedActionType:selectedAction,targetEntityId,targetLocationId,strategy,planProposal:proposal};}
+async function markDecisionPipelineFailed({simulationId,entityId,decisionId,intentionId=null,simulationTime,phase,error}={}){
+  if(!decisionId)return false;
+
+  const failure={
+    actionType:null,
+    failureReason:"DECISION_PIPELINE_INCOMPLETE",
+    phase:phase||"UNKNOWN",
+    errorCode:String(error?.code||"UNKNOWN"),
+    error:String(error?.message||"Decision pipeline failed"),
+    simulationTime
+  };
+
+  if(intentionId){
+    await pool.query(
+      `UPDATE intentions
+       SET status='CANCELLED',version=version+1
+       WHERE id=UUID_TO_BIN(?)
+         AND simulation_id=UUID_TO_BIN(?)
+         AND entity_id=UUID_TO_BIN(?)
+         AND decision_id=UUID_TO_BIN(?)
+         AND status='ACTIVE'`,
+      [intentionId,simulationId,entityId,decisionId]
+    );
+  }
+
+  const [updated]=await pool.query(
+    `UPDATE decisions
+     SET status='FAILED',
+         actual_outcome=?
+     WHERE id=UUID_TO_BIN(?)
+       AND simulation_id=UUID_TO_BIN(?)
+       AND entity_id=UUID_TO_BIN(?)
+       AND status IN ('CREATED','EVALUATED')`,
+    [
+      JSON.stringify(failure),
+      decisionId,
+      simulationId,
+      entityId
+    ]
+  );
+
+  if(updated.affectedRows){
+    logger.warn({
+      simulationId,
+      entityId,
+      decisionId,
+      intentionId,
+      simulationTime,
+      phase:phase||"UNKNOWN",
+      errorCode:String(error?.code||"UNKNOWN")
+    },"autonomy decision failed because the intention/action pipeline was incomplete");
+  }
+
+  return Boolean(updated.affectedRows);
+}
+
 async function actForEntity({simulationId,entityId,simulationTime,gemini,tickId=null,batchContext=null,needsOverride=null}){const entity=batchContext?.entities?.get(entityId)||await getEntity(simulationId,entityId);if(!entity)return null;let context=batchContext?.contexts?.get(entityId)||await decisionService.buildDecisionContext(simulationId,entityId,simulationTime);context={...context,simulationTime};
   if(batchContext?.contexts?.has(entityId)){
     const latestNeeds=Array.isArray(needsOverride)&&needsOverride.length?needsOverride:context.needs;
@@ -347,7 +403,60 @@ if(geminiTrigger){
   }
 }
 context.geminiDecision=geminiDecision;
-const decision=await decisionService.makeDecision({simulationId,entityId,simulationTime,triggerType:geminiTrigger?.type||null,triggerEventId:null,context,aiChoice});const sourceType=aiChoice?"AI_ASSISTED":"AUTONOMOUS";const intentionId=await ensureIntention({simulationId,entityId,simulationTime,decision,sourceType,goalState,aiChoice,geminiDecision});const started=await require("./action-service").startAction({simulationId,entityId,decisionId:decision.decisionId,intentionId,goalId:goalState.goal?.id||null,planId:goalState.plan?.id||null,planStepId:activePlanStep?.id||null,actionType:decision.actionType,simulationTime,targetEntityId:decision.targetEntityId,targetLocationId:decision.targetLocationId,movementAvoidLocationId:context.previousLocationId||null,relationshipIntent:deriveSocialIntent({actionType:decision.actionType,targetId:decision.targetEntityId,partner:socialContext.partner,candidates:socialContext.candidates}),tickId});
+const decision=await decisionService.makeDecision({simulationId,entityId,simulationTime,triggerType:geminiTrigger?.type||null,triggerEventId:null,context,aiChoice});
+  const sourceType=aiChoice?"AI_ASSISTED":"AUTONOMOUS";
+  let intentionId=null;
+  let started=null;
+  try{
+    intentionId=await ensureIntention({
+      simulationId,entityId,simulationTime,decision,sourceType,goalState,aiChoice,geminiDecision
+    });
+    started=await require("./action-service").startAction({
+      simulationId,
+      entityId,
+      decisionId:decision.decisionId,
+      intentionId,
+      goalId:goalState.goal?.id||null,
+      planId:goalState.plan?.id||null,
+      planStepId:activePlanStep?.id||null,
+      actionType:decision.actionType,
+      simulationTime,
+      targetEntityId:decision.targetEntityId,
+      targetLocationId:decision.targetLocationId,
+      movementAvoidLocationId:context.previousLocationId||null,
+      relationshipIntent:deriveSocialIntent({
+        actionType:decision.actionType,
+        targetId:decision.targetEntityId,
+        partner:socialContext.partner,
+        candidates:socialContext.candidates
+      }),
+      tickId
+    });
+  }catch(err){
+    try{
+      await markDecisionPipelineFailed({
+        simulationId,
+        entityId,
+        decisionId:decision.decisionId,
+        intentionId,
+        simulationTime,
+        phase:intentionId?"ACTION_START":"INTENTION_CREATE",
+        error:err
+      });
+    }catch(compensationError){
+      logger.error({
+        simulationId,
+        entityId,
+        decisionId:decision.decisionId,
+        intentionId,
+        simulationTime,
+        event:"DECISION_PIPELINE_COMPENSATION_FAILED",
+        errorCode:String(compensationError?.code||"UNKNOWN"),
+        error:String(compensationError?.message||compensationError)
+      },"failed to compensate an incomplete decision pipeline");
+    }
+    throw err;
+  }
   if(goalState.goal){
     const stagnation=observability.recordGoalProgress(simulationId,entityId,simulationTime,{
       goalId:goalState.goal.id,
@@ -367,7 +476,7 @@ const decision=await decisionService.makeDecision({simulationId,entityId,simulat
   }
   return{decision,started,intentionId,goalState,aiChoice};
 }
-async function ensureIntention({simulationId,entityId,simulationTime,decision,sourceType,goalState,aiChoice,geminiDecision}){const intentionId=require("../lib/ids").uuid(),decisionSource=decision?.decisionSource||sourceType||"DETERMINISTIC",reason=serializeReason({source:decisionSource,status:geminiDecision?.status||"NOT_CONSULTED",geminiReason:geminiDecision?.reason||null,decision:aiChoice?.strategy||decision.reason||"autonomous decision"}),goalId=goalState.goal?.id||null,planId=goalState.plan?.id||null,mysqlTime=mysqlSimulationDateTime(simulationTime);await pool.query(`INSERT INTO intentions(id,simulation_id,entity_id,goal_id,plan_id,action_type,target_entity_id,target_location_id,scheduled_simulation_at,priority,status,reason,created_simulation_at,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,UUID_TO_BIN(?),UUID_TO_BIN(?),NULL,?,'ACTIVE',?,?,1)`,[intentionId,simulationId,entityId,goalId,planId,decision.actionType,decision.targetEntityId,decision.targetLocationId,goalState.goal?.priority||.5,reason,mysqlTime]);return intentionId;}
+async function ensureIntention({simulationId,entityId,simulationTime,decision,sourceType,goalState,aiChoice,geminiDecision}){const intentionId=require("../lib/ids").uuid(),decisionSource=decision?.decisionSource||sourceType||"DETERMINISTIC",reason=serializeReason({source:decisionSource,status:geminiDecision?.status||"NOT_CONSULTED",geminiReason:geminiDecision?.reason||null,decision:aiChoice?.strategy||decision.reason||"autonomous decision"}),goalId=goalState.goal?.id||null,planId=goalState.plan?.id||null,mysqlTime=mysqlSimulationDateTime(simulationTime);await pool.query(`INSERT INTO intentions(id,simulation_id,entity_id,goal_id,plan_id,decision_id,action_type,target_entity_id,target_location_id,scheduled_simulation_at,priority,status,reason,created_simulation_at,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,UUID_TO_BIN(?),UUID_TO_BIN(?),NULL,?,'ACTIVE',?,?,1)`,[intentionId,simulationId,entityId,goalId,planId,decision.decisionId,decision.actionType,decision.targetEntityId,decision.targetLocationId,goalState.goal?.priority||.5,reason,mysqlTime]);return intentionId;}
 async function completeGoalForAction(goalId,actionType,simulationTime,outcome,actionResult={}) {
   let resolvedGoalId=goalId||null;
   let simulationId=actionResult?.simulationId||null;
