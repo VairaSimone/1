@@ -40,8 +40,8 @@ test("intentions have a direct nullable decision link with an idempotent migrati
   assert.match(migration,/ADD COLUMN decision_id BINARY\(16\) NULL/);
   assert.match(migration,/a\.source_intention_id=i\.id/);
   assert.match(migration,/SET i\.decision_id=a\.decision_id/);
-  assert.match(migration,/fk_intentions_decision/);
   assert.match(migration,/fk_intentions_decision_same_simulation/);
+  assert.doesNotMatch(migration,/ADD CONSTRAINT fk_intentions_decision\b/);
   assert.match(migration,/if \(Number\(columns\[0\]\?\.count \|\| 0\) === 0\)/);
   assert.match(autonomy,/decision_id/);
   assert.match(autonomy,/decision\.decisionId/);
