@@ -1,4 +1,4 @@
-const { pool } = require("../db/pool");
+const { pool, normalizeSimulationTimestamp } = require("../db/pool");
 const { env } = require("../config/env");
 const { advancePlanForAction } = require("./planning-service");
 const { markActionPostProcessingComplete } = require("./action-service");
@@ -19,6 +19,9 @@ async function reconcileStaleEvaluatedDecisions(simulationId,simulationTime,{lim
     Number(env.DECISION_RECONCILIATION_GRACE_MINUTES)||5
   );
 
+  const cutoff=new Date(new Date(simulationTime).getTime()-graceMinutes*60000);
+  const cutoffSimulationTime=normalizeSimulationTimestamp(cutoff);
+
   const [rows]=await pool.query(
     `SELECT BIN_TO_UUID(d.id) AS decisionId,
             BIN_TO_UUID(d.entity_id) AS entityId,
@@ -37,10 +40,10 @@ async function reconcileStaleEvaluatedDecisions(simulationId,simulationTime,{lim
       AND a.simulation_id=d.simulation_id
      WHERE d.simulation_id=UUID_TO_BIN(?)
        AND d.status='EVALUATED'
-       AND d.simulation_time<=DATE_SUB(?,INTERVAL ? MINUTE)
+       AND d.simulation_time<=?
      ORDER BY d.simulation_time ASC
      LIMIT ?`,
-    [simulationId,simulationTime,graceMinutes,safeLimit]
+    [simulationId,cutoffSimulationTime,safeLimit]
   );
 
   let repaired=0,kept=0;
@@ -63,7 +66,7 @@ async function reconcileStaleEvaluatedDecisions(simulationId,simulationTime,{lim
                JSON_OBJECT(
                  'failureReason',?,
                  'recoveredBy','DECISION_RECONCILER',
-                 'actionId',BIN_TO_UUID(?)
+                 'actionId',?
                )
              )
          WHERE id=UUID_TO_BIN(?)
