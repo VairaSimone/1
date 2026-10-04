@@ -234,8 +234,8 @@ function criticalNeedState(needs=[],{entityId=null,recentActions=[],simulationTi
   return ranked[0]||null;
 }
 function criticalNeedAction(needs=[],options={}){return criticalNeedState(needs,options)?.action||null;}
-function applyPlanCommitment(candidates,{needs=[],activePlanStep=null}={}){if(!Array.isArray(candidates)||!activePlanStep)return candidates;const action=normalizeAction(activePlanStep.result?.actionType||activePlanStep.actionType);if(!action)return candidates;const critical=criticalNeedAction(needs);if(critical&&critical!==action){const walking=candidates.find(c=>normalizeAction(c.action)==="WALKING");const servesResource=action==="WALKING"&&walking?.resourceIntent?.resource===(critical==="DRINKING"?"water":critical==="EATING"?"food":null);if(!servesResource)return candidates;}const target=candidates.find(c=>normalizeAction(c.action)===action);if(!target)return candidates;return candidates.map(c=>normalizeAction(c.action)===action?{...c,score:Number(c.score||0)+1.25,planCommitted:true}:{...c,score:Number(c.score||0)-.65}).sort((a,b)=>Number(b.score||0)-Number(a.score||0));}
-function applyExplorationCommitment(candidates,{needs=[],explorationDestination=null,activePlanStep=null}={}){if(!Array.isArray(candidates)||!explorationDestination||activePlanStep)return candidates;const curiosity=Number(needs.find(n=>normalizeAction(n.code)==="CURIOSITY")?.value||0),novelty=Number(explorationDestination.novelty||0);if(curiosity<.55||novelty<.55||criticalNeedState(needs))return candidates;const target=candidates.find(c=>normalizeAction(c.action)==="EXPLORING");if(!target)return candidates;target.targetLocationId=explorationDestination.locationId;target.explorationIntent={reason:"NOVELTY_OPPORTUNITY",novelty,interest:Number(explorationDestination.interest||0),expectedTravelMinutes:Number(explorationDestination.travelMinutes||0)};const maxOther=candidates.filter(c=>normalizeAction(c.action)!=="EXPLORING").reduce((m,c)=>Math.max(m,Number(c.score||0)),-Infinity);target.score=Math.max(Number(target.score||0),maxOther+.3);return candidates.sort((a,b)=>Number(b.score||0)-Number(a.score||0));}
+function applyPlanCommitment(candidates,{needs=[],activePlanStep=null,entityId=null,recentActions=[],simulationTime=null}={}){if(!Array.isArray(candidates)||!activePlanStep)return candidates;const action=normalizeAction(activePlanStep.result?.actionType||activePlanStep.actionType);if(!action)return candidates;const critical=criticalNeedAction(needs,{entityId,recentActions,simulationTime});if(critical&&critical!==action){const walking=candidates.find(c=>normalizeAction(c.action)==="WALKING");const servesResource=action==="WALKING"&&walking?.resourceIntent?.resource===(critical==="DRINKING"?"water":critical==="EATING"?"food":null);if(!servesResource)return candidates;}const target=candidates.find(c=>normalizeAction(c.action)===action);if(!target)return candidates;return candidates.map(c=>normalizeAction(c.action)===action?{...c,score:Number(c.score||0)+1.25,planCommitted:true}:{...c,score:Number(c.score||0)-.65}).sort((a,b)=>Number(b.score||0)-Number(a.score||0));}
+function applyExplorationCommitment(candidates,{needs=[],explorationDestination=null,activePlanStep=null,entityId=null,recentActions=[],simulationTime=null}={}){if(!Array.isArray(candidates)||!explorationDestination||activePlanStep)return candidates;const curiosity=Number(needs.find(n=>normalizeAction(n.code)==="CURIOSITY")?.value||0),novelty=Number(explorationDestination.novelty||0);if(curiosity<.55||novelty<.55||criticalNeedState(needs,{entityId,recentActions,simulationTime}))return candidates;const target=candidates.find(c=>normalizeAction(c.action)==="EXPLORING");if(!target)return candidates;target.targetLocationId=explorationDestination.locationId;target.explorationIntent={reason:"NOVELTY_OPPORTUNITY",novelty,interest:Number(explorationDestination.interest||0),expectedTravelMinutes:Number(explorationDestination.travelMinutes||0)};const maxOther=candidates.filter(c=>normalizeAction(c.action)!=="EXPLORING").reduce((m,c)=>Math.max(m,Number(c.score||0)),-Infinity);target.score=Math.max(Number(target.score||0),maxOther+.3);return candidates.sort((a,b)=>Number(b.score||0)-Number(a.score||0));}
 function socialPairBias(entityId,targetId){const v=stableHash(`social:${entityId}:${targetId}`)/0xffffffff;return(v-.5)*.16;}
 function chooseSocialTargetCandidate(context,entityId){
   const candidates=Array.isArray(context?.social?.candidates)?context.social.candidates:[];
@@ -274,7 +274,7 @@ function applySocialIsolationFallback(candidates,context){
     return candidate;
   }).sort((a,b)=>Number(b.score||0)-Number(a.score||0));
 }
-function deriveProactivity({needs=[],goals=[],social=null,explorationDestination=null,activePlanStep=null}){const pressures=Object.fromEntries(needs.map(n=>[normalizeAction(n.code),Number(n.value||0)])),signals=[],topPressure=Object.entries(pressures).filter(([code])=>!['ENERGY','SAFETY'].includes(code)).sort((a,b)=>b[1]-a[1])[0];if(topPressure&&topPressure[1]>=.55)signals.push({type:"NEED",code:topPressure[0],intensity:topPressure[1]});const activeGoal=goals.find(g=>Number(g.progress||0)<1);if(activeGoal)signals.push({type:"GOAL",goalId:activeGoal.id,priority:Number(activeGoal.priority||0)});if(explorationDestination&&!criticalNeedState(needs))signals.push({type:"EXPLORATION",locationId:explorationDestination.locationId,novelty:Number(explorationDestination.novelty||0),score:Number(explorationDestination.score||0)});const socialCandidates=Array.isArray(social?.candidates)?social.candidates:[];if(socialCandidates.length&&!criticalNeedState(needs)&&Math.max(pressures.SOCIAL_NEED||0,pressures.BELONGING||0)>=.35)signals.push({type:"SOCIAL",targetEntityId:socialCandidates[0].id,candidateCount:socialCandidates.length});if(activePlanStep)signals.push({type:"PLAN",stepId:activePlanStep.id,actionType:normalizeAction(activePlanStep.result?.actionType||activePlanStep.actionType)});const critical=criticalNeedState(needs,{entityId,simulationTime:context?.simulationTime||null,recentActions:context?.recentActions||[]});return{mode:signals.length?"PROACTIVE":"AUTONOMOUS",priority:critical?"CRITICAL":signals.some(s=>s.type==="NEED")?"HIGH":signals.length?"MEDIUM":"LOW",signals,autonomous:Boolean(signals.length||critical),trigger:signals.length||critical?"INTERNAL_STATE":null};}
+function deriveProactivity({needs=[],goals=[],social=null,explorationDestination=null,activePlanStep=null}){const pressures=Object.fromEntries(needs.map(n=>[normalizeAction(n.code),Number(n.value||0)])),signals=[],topPressure=Object.entries(pressures).filter(([code])=>!['ENERGY','SAFETY'].includes(code)).sort((a,b)=>b[1]-a[1])[0];if(topPressure&&topPressure[1]>=.55)signals.push({type:"NEED",code:topPressure[0],intensity:topPressure[1]});const activeGoal=goals.find(g=>Number(g.progress||0)<1);if(activeGoal)signals.push({type:"GOAL",goalId:activeGoal.id,priority:Number(activeGoal.priority||0)});if(explorationDestination&&!criticalNeedState(needs))signals.push({type:"EXPLORATION",locationId:explorationDestination.locationId,novelty:Number(explorationDestination.novelty||0),score:Number(explorationDestination.score||0)});const socialCandidates=Array.isArray(social?.candidates)?social.candidates:[];if(socialCandidates.length&&!criticalNeedState(needs)&&Math.max(pressures.SOCIAL_NEED||0,pressures.BELONGING||0)>=.35)signals.push({type:"SOCIAL",targetEntityId:socialCandidates[0].id,candidateCount:socialCandidates.length});if(activePlanStep)signals.push({type:"PLAN",stepId:activePlanStep.id,actionType:normalizeAction(activePlanStep.result?.actionType||activePlanStep.actionType)});const critical=criticalNeedState(needs);return{mode:signals.length?"PROACTIVE":"AUTONOMOUS",priority:critical?"CRITICAL":signals.some(s=>s.type==="NEED")?"HIGH":signals.length?"MEDIUM":"LOW",signals,autonomous:Boolean(signals.length||critical),trigger:signals.length||critical?"INTERNAL_STATE":null};}
 function applyProactiveOpportunityBias(candidates,proactivity){if(!proactivity?.autonomous||!Array.isArray(candidates))return candidates;const signals=new Set((proactivity.signals||[]).map(s=>s.type));return candidates.map(c=>{let bonus=0,a=normalizeAction(c.action);if(signals.has("EXPLORATION")&&a==="EXPLORING")bonus+=.22;if(signals.has("SOCIAL")&&a==="TALKING")bonus+=.20;if(signals.has("PLAN")&&(proactivity.signals||[]).some(s=>s.type==="PLAN"&&normalizeAction(s.actionType)===a))bonus+=.24;if(signals.has("GOAL")&&["WALKING","EXPLORING","TALKING","STUDYING","READING","WORKING","PLAYING","EATING","DRINKING","SLEEPING"].includes(a))bonus+=.04;return bonus?{...c,score:Number(c.score||0)+bonus}:c;}).sort((a,b)=>Number(b.score||0)-Number(a.score||0));}
 async function loadResourceContext(simulationId,entityId,location,simulationTime,excludedLocationIds=[]){
   const[rows]=await pool.query(`SELECT BIN_TO_UUID(e.id) AS locationId,l.location_type AS locationType,l.latitude,l.longitude,l.address_data AS addressData,e.attributes FROM locations l JOIN entities e ON e.id=l.entity_id WHERE l.simulation_id=UUID_TO_BIN(?) AND e.simulation_id=UUID_TO_BIN(?) AND e.status='ACTIVE'`,[simulationId,simulationId]);
@@ -421,7 +421,7 @@ needs=personalizeDecisionNeeds(needs,traits,cognitiveProfile.habits||[],recentAc
 const dynamicActivities=(await loadCapabilitiesForEntities(simulationId,[entityId])).get(String(entityId))||[];
 const activityCatalog=await loadActivityCatalog();
 const availableActivities=[...new Map([...activityCatalog,...dynamicActivities].map(activity=>[activity.code,activity])).values()];
-const recoveryBlocks=activeRecoveryBlocks(recentInterruptions,needs),recentSocialTargets=recentSocialInteractions.map(row=>row.targetEntityId).filter(Boolean),recentSocialTargetCounts=recentSocialTargets.reduce((counts,id)=>{counts[id]=(counts[id]||0)+1;return counts;},{}),excludedLocationIds=[];for(const plan of cognitiveProfile.plans||[])for(const id of plan.strategy?.avoidLocationIds||[])if(id&&!excludedLocationIds.includes(id))excludedLocationIds.push(id);const resourceExclusions=criticalResourceNeedState(needs)?[]:excludedLocationIds;const resourceContext=await loadResourceContext(simulationId,entityId,currentLocation,effectiveSimulationTime,resourceExclusions);let candidates=availableActivities.map(activity=>({action:activity.code,score:ACTIONS.includes(activity.code)?scoreAction(activity.code,needs,traits,resourceContext):scoreDynamicActivity(activity,needs,traits),dynamic:!ACTIONS.includes(activity.code),activityDefinition:activity,targetLocationId:activity.parameters?.targetLocationId||activity.locationId||null}));candidates=candidates.map(c=>({...c,score:Number(c.score||0)+cognitiveDecisionModifier(cognitiveProfile,c.action)+Math.max(-MAX_EXPERIENCE_SCORE_EFFECT,Math.min(MAX_EXPERIENCE_SCORE_EFFECT,cognitiveExperienceModifier(cognitiveProfile,c.action,{locationType:currentLocation?.locationType,locationId:currentLocation?.locationId,simulationTime:effectiveSimulationTime})))+activityDiversityBonus(c.action,recentActions.map(r=>r.actionType))}));candidates=applyIndividualityBias(candidates,entityId);candidates=applyPlanBias(candidates,cognitiveProfile.plans);candidates=applyRecentActionPenalty(candidates,recentActions.map(r=>r.actionType));candidates=applyLocationBias(candidates,currentLocation);candidates=applyResourceRoutingBias(candidates,resourceContext,needs);candidates=applyRecoveryBlocks(candidates,recoveryBlocks,criticalProtectedActions(needs,resourceContext));candidates=applyWanderingGuard(candidates,needs);candidates.sort((a,b)=>Number(b.score||0)-Number(a.score||0));const needPriority=needPriorityState(needs);return{entityId,simulationTime:effectiveSimulationTime,needs,traits,goals,location:currentLocation,recentActions:recentActions,recentInterruptions:recentInterruptions.map(row=>({...row,result:parseJson(row.result,{})})),recentSocialTargets,recentSocialTargetCounts,recoveryBlocks,resourceContext,dynamicActivities,activityTypes:availableActivities,cognitiveProfile,needPriority,allowedActionTypes:availableActivities.map(activity=>activity.code),candidates};}
+const recoveryBlocks=activeRecoveryBlocks(recentInterruptions,needs),recentSocialTargets=recentSocialInteractions.map(row=>row.targetEntityId).filter(Boolean),recentSocialTargetCounts=recentSocialTargets.reduce((counts,id)=>{counts[id]=(counts[id]||0)+1;return counts;},{}),excludedLocationIds=[];for(const plan of cognitiveProfile.plans||[])for(const id of plan.strategy?.avoidLocationIds||[])if(id&&!excludedLocationIds.includes(id))excludedLocationIds.push(id);const resourceExclusions=criticalResourceNeedState(needs,{entityId,recentActions,simulationTime:effectiveSimulationTime})?[]:excludedLocationIds;const resourceContext=await loadResourceContext(simulationId,entityId,currentLocation,effectiveSimulationTime,resourceExclusions);let candidates=availableActivities.map(activity=>({action:activity.code,score:ACTIONS.includes(activity.code)?scoreAction(activity.code,needs,traits,resourceContext):scoreDynamicActivity(activity,needs,traits),dynamic:!ACTIONS.includes(activity.code),activityDefinition:activity,targetLocationId:activity.parameters?.targetLocationId||activity.locationId||null}));candidates=candidates.map(c=>({...c,score:Number(c.score||0)+cognitiveDecisionModifier(cognitiveProfile,c.action)+Math.max(-MAX_EXPERIENCE_SCORE_EFFECT,Math.min(MAX_EXPERIENCE_SCORE_EFFECT,cognitiveExperienceModifier(cognitiveProfile,c.action,{locationType:currentLocation?.locationType,locationId:currentLocation?.locationId,simulationTime:effectiveSimulationTime})))+activityDiversityBonus(c.action,recentActions.map(r=>r.actionType))}));candidates=applyIndividualityBias(candidates,entityId);candidates=applyPlanBias(candidates,cognitiveProfile.plans);candidates=applyRecentActionPenalty(candidates,recentActions.map(r=>r.actionType));candidates=applyLocationBias(candidates,currentLocation);candidates=applyResourceRoutingBias(candidates,resourceContext,needs);candidates=applyRecoveryBlocks(candidates,recoveryBlocks,criticalProtectedActions(needs,resourceContext,{entityId,recentActions,simulationTime:effectiveSimulationTime}));candidates=applyWanderingGuard(candidates,needs);candidates.sort((a,b)=>Number(b.score||0)-Number(a.score||0));const needPriority=needPriorityState(needs);return{entityId,simulationTime:effectiveSimulationTime,needs,traits,goals,location:currentLocation,recentActions:recentActions,recentInterruptions:recentInterruptions.map(row=>({...row,result:parseJson(row.result,{})})),recentSocialTargets,recentSocialTargetCounts,recoveryBlocks,resourceContext,dynamicActivities,activityTypes:availableActivities,cognitiveProfile,needPriority,allowedActionTypes:availableActivities.map(activity=>activity.code),candidates};}
 function rebuildDecisionCandidates(context={},entityId,needs=context?.needs||[]){
   const traits=context.traits||[],profile=context.cognitiveProfile||{},resourceContext=context.resourceContext||{};
   const availableActivities=context.activityTypes||[...ACTIONS.map(code=>({code})),...(context.dynamicActivities||[])];
@@ -430,11 +430,11 @@ function rebuildDecisionCandidates(context={},entityId,needs=context?.needs||[])
   candidates=applyIndividualityBias(candidates,entityId);candidates=applyPlanBias(candidates,profile.plans);candidates=applyRecentActionPenalty(candidates,context.recentActions||[]);candidates=applyLocationBias(candidates,context.location);candidates=applyResourceRoutingBias(candidates,resourceContext,needs);
   const recoveryBlocks=Array.isArray(context.recoveryBlocks)?context.recoveryBlocks:activeRecoveryBlocks(context.recentInterruptions||[],needs);
   candidates.sort((a,b)=>Number(b.score||0)-Number(a.score||0));
-  return applyRecoveryBlocks(candidates,recoveryBlocks,criticalProtectedActions(needs,resourceContext));
+  return applyRecoveryBlocks(candidates,recoveryBlocks,criticalProtectedActions(needs,resourceContext,{entityId,recentActions,simulationTime:effectiveSimulationTime}));
 }
 function calibratedSuccessProbability({action,candidates=[],context={}}={}){
   const normalized=normalizeAction(action);
-  const recent=Array.isArray(context.recentActions)?context.recentActions.map(normalizeAction):[];
+  const recent=Array.isArray(context.recentActions)?context.recentActions.map(item=>normalizeAction(item?.actionType||item)):[];
   const repetition=recent.filter(item=>item===normalized).length;
   const resourceSafe=!["EATING","DRINKING"].includes(normalized)||Boolean(context.resourceContext?.actions?.[normalized]?.locallyAvailable);
   const candidate=Array.isArray(candidates)?candidates.find(item=>normalizeAction(item.action)===normalized):null;
@@ -645,7 +645,7 @@ function compactDecisionContext(context = {}) {
       locationId: context.location.locationId || null,
       locationType: context.location.locationType || null
     } : null,
-    recentActions: Array.isArray(context.recentActions) ? context.recentActions.slice(0, 12).map(normalizeAction) : [],
+    recentActions: Array.isArray(context.recentActions) ? context.recentActions.slice(0, 12).map(item=>normalizeAction(item?.actionType||item)) : [],
     recentSocialTargets: Array.isArray(context.recentSocialTargets) ? context.recentSocialTargets.slice(0, MAX_RECENT_SOCIAL_INTERACTIONS) : [],
     recentSocialTargetCounts: context.recentSocialTargetCounts || {},
     recoveryBlocks: Array.isArray(context.recoveryBlocks) ? context.recoveryBlocks.slice(0, 6).map(block => ({
@@ -752,7 +752,7 @@ function criticalResourceNeedState(needs = [],options={}) {
 }
 
 function resolveCriticalResourceRecovery(context = {}) {
-  const critical = criticalResourceNeedState(context.needs || []);
+  const critical = criticalResourceNeedState(context.needs || [],{entityId:context.entityId||null,recentActions:context.recentActions||[],simulationTime:context.simulationTime||null});
   if (!critical) return null;
 
   const candidates = Array.isArray(context.candidates) ? context.candidates : [];
@@ -851,11 +851,11 @@ function resolveCriticalResourceRecovery(context = {}) {
 }
 
 
-function criticalProtectedActions(needs=[],resourceContext={}){
+function criticalProtectedActions(needs=[],resourceContext={},options={}){
   const protectedActions=new Set();
-  const critical=criticalNeedState(needs);
+  const critical=criticalNeedState(needs,options);
   if(critical?.action)protectedActions.add(normalizeAction(critical.action));
-  const resourceCritical=criticalResourceNeedState(needs);
+  const resourceCritical=criticalResourceNeedState(needs,options);
   if(resourceCritical){
     const resource=resourceCritical.resource;
     const action=normalizeAction(resourceCritical.action);
@@ -867,7 +867,7 @@ function criticalProtectedActions(needs=[],resourceContext={}){
   }
   return [...protectedActions];
 }
-function resolveCriticalDecisionRequirement(needs = [], recovery = null) {
+function resolveCriticalDecisionRequirement(needs = [], recovery = null, options = {}) {
   if (recovery?.critical) {
     return {
       needCode: normalizeAction(recovery.critical.code),
@@ -878,7 +878,7 @@ function resolveCriticalDecisionRequirement(needs = [], recovery = null) {
     };
   }
 
-  const critical = criticalNeedState(needs,{entityId:context?.entityId||null,recentActions:context?.recentActions||[],simulationTime:context?.simulationTime||null});
+  const critical = criticalNeedState(needs, options);
   if (!critical) return null;
 
   return {
@@ -890,8 +890,8 @@ function resolveCriticalDecisionRequirement(needs = [], recovery = null) {
   };
 }
 
-function validateCriticalDecision(needs = [], actionType, targetLocationId = null, recovery = null) {
-  const requirement = resolveCriticalDecisionRequirement(needs, recovery);
+function validateCriticalDecision(needs = [], actionType, targetLocationId = null, recovery = null, options = {}) {
+  const requirement = resolveCriticalDecisionRequirement(needs, recovery, options);
   if (!requirement) return null;
 
   const action = normalizeAction(actionType);
@@ -986,7 +986,8 @@ async function makeDecision({
   const committed = resolvePlanCommitment({ ...context, candidates });
   const criticalRequirement = resolveCriticalDecisionRequirement(
     context?.needs || [],
-    criticalResourceRecovery
+    criticalResourceRecovery,
+    {entityId:context?.entityId||null,recentActions:context?.recentActions||[],simulationTime:context?.simulationTime||null}
   );
   const criticalAction = criticalRequirement?.requiredAction || null;
   const criticalNeedCode = criticalRequirement?.needCode || null;
@@ -1091,7 +1092,7 @@ async function makeDecision({
     selectionMode === "AI_DELIBERATION"
       ? aiChoice?.targetLocationId || chosenCandidate.targetLocationId || null
       : chosenCandidate.targetLocationId || null;
-  validateCriticalDecision(context?.needs || [], chosen, selectedTargetLocationId, criticalResourceRecovery);
+  validateCriticalDecision(context?.needs || [], chosen, selectedTargetLocationId, criticalResourceRecovery,{entityId:context?.entityId||null,recentActions:context?.recentActions||[],simulationTime:context?.simulationTime||null});
   const needPriority = needPriorityState(context?.needs || []);
   const mysqlSimulationTime = effectiveSimulationTimeString(simulationTime);
 
