@@ -46,3 +46,21 @@ test('economic seed and structural proposal maintenance are exported for runtime
   assert.equal(typeof ensureEconomicSeed,'function');
   assert.equal(typeof countRecentStructuralPressureProposals,'function');
 });
+
+test('rebuildDecisionCandidates uses the context simulation time without throwing',()=>{
+  const {rebuildDecisionCandidates}=require('../src/services/decision-service');
+  assert.doesNotThrow(()=>rebuildDecisionCandidates({
+    simulationTime:SIM_TIME,
+    needs:[
+      {code:'THIRST',value:1,priorityWeight:1},
+      {code:'HUNGER',value:1,priorityWeight:1}
+    ],
+    traits:[],
+    goals:[],
+    recentActions:[],
+    recoveryBlocks:[],
+    resourceContext:{},
+    activityTypes:[{code:'DRINKING'},{code:'EATING'},{code:'WALKING'}],
+    cognitiveProfile:{}
+  },'00000000-0000-4000-8000-000000000001'));
+});
