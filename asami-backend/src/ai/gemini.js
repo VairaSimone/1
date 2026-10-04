@@ -324,7 +324,7 @@ class GeminiService {
   constructor(){
     this.client=null;
     this.model=env.GEMINI_MODEL;
-    this.models=[this.model,...(Array.isArray(env.GEMINI_FALLBACK_MODELS)?env.GEMINI_FALLBACK_MODELS:[])]
+    this.models=[this.model,"gemini-3.1-flash-lite",...(Array.isArray(env.GEMINI_FALLBACK_MODELS)?env.GEMINI_FALLBACK_MODELS:[])]
       .map(model=>String(model||"").trim())
       .filter(Boolean)
       .filter((model,index,self)=>self.indexOf(model)===index);
@@ -420,6 +420,7 @@ class GeminiService {
       autonomyOutputTokenCeiling:env.GEMINI_AUTONOMY_OUTPUT_TOKEN_CEILING,
       autonomyCompactOutputTokenCeiling:env.GEMINI_AUTONOMY_COMPACT_OUTPUT_TOKEN_CEILING,
       autonomyIntervalMinutes:env.GEMINI_AUTONOMY_MIN_INTERVAL_MINUTES,
+      autonomyMaxModels:env.GEMINI_AUTONOMY_MAX_MODELS,
       dialogueModel:env.GEMINI_DIALOGUE_MODEL,
       dialogueFallbacks:this.dialogueModels.slice(1),
       dialogueTimeoutMs:env.GEMINI_DIALOGUE_TIMEOUT_MS,
@@ -685,7 +686,13 @@ class GeminiService {
               error:err?.message||String(err),
               rawPreview:typeof raw==="string"?raw.slice(0,500):"",
               fallbackTo:fallbackModel,
-              latencyMs:Date.now()-startedAt
+              latencyMs:Date.now()-startedAt,
+              providerError:{
+                name:err?.name||null,
+                code:err?.code||null,
+                status:failure.status||null,
+                message:String(err?.message||err||"").slice(0,500)
+              }
             },
             fallbackModel
               ? "Gemini produced invalid structured output; trying fallback model"
@@ -854,7 +861,7 @@ class GeminiService {
     return this.generateJson(prompt,schema,{
       kind:"autonomy",
       thinkingLevel,
-      maxModels:advanced?null:1,
+      maxModels:advanced ? null : Number(env.GEMINI_AUTONOMY_MAX_MODELS),
       outputTokenCeilingOverride:outputTokenCeiling
     });
   }

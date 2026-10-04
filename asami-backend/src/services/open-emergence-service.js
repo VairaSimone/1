@@ -263,7 +263,7 @@ async function askGemini(gemini, { simulationTime, scope, signal, proposer, acto
     return await gemini.generateJson(prompt, ProposalSchema, {
       kind: "autonomy",
       thinkingLevel: "low",
-      maxModels: 2,
+      maxModels: Math.max(2, Math.min(5, Number(require("../config/env").env.GEMINI_AUTONOMY_MAX_MODELS) || 3)),
       outputTokenCeilingOverride: 2048,
       timeoutMsOverride: 15000,
       deadlineAt: Date.now() + 15000

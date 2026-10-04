@@ -16,7 +16,10 @@ const entityRepoSource=fs.readFileSync(path.join(__dirname,"../src/repositories/
 test("Gemini uses a stable multi-model fallback chain",()=>{
   assert.match(envSource,/GEMINI_MODEL[\s\S]*default\("gemini-3\.8-flash"\)/);
   assert.match(envSource,/GEMINI_FALLBACK_MODELS/);
-  assert.match(geminiSource,/this\.models=\[this\.model,\.\.\.\(Array\.isArray\(env\.GEMINI_FALLBACK_MODELS\)/);
+  assert.match(envSource,/GEMINI_AUTONOMY_MAX_MODELS: z\.coerce\.number/);
+  assert.match(geminiSource,/this\.models=\[this\.model,"gemini-3\.1-flash-lite"/);
+  assert.match(geminiSource,/this\.models=\[this\.model,"gemini-3\.1-flash-lite",\.\.\.\(Array\.isArray\(env\.GEMINI_FALLBACK_MODELS\)/);
+  assert.match(envSource,/gemini-3\.1-flash-lite/);
 });
 
 test("Gemini transient failures are isolated per model",()=>{
@@ -160,7 +163,7 @@ test("Routine dialogue uses minimal thinking and compact structured output",()=>
 test("Autonomy uses advanced output only for high-value decisions",()=>{
   assert.match(geminiSource,/function decisionNeedsAdvancedCognition\(context\)/);
   assert.match(geminiSource,/const schema=advanced\?AdvancedDecisionSchema:DecisionSchema/);
-  assert.match(geminiSource,/maxModels:advanced\?null:1/);
+  assert.match(geminiSource,/maxModels:advanced \? null : Number\(env\.GEMINI_AUTONOMY_MAX_MODELS\)/);
   assert.match(geminiSource,/Do not output strategy or planProposal/);
 });
 
