@@ -202,24 +202,6 @@ async function ensureIntentionDecisionLinkMigration(db) {
     );
   }
 
-  const [foreignKeys] = await db.query(
-    `SELECT COUNT(*) AS count
-     FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS
-     WHERE CONSTRAINT_SCHEMA=DATABASE()
-       AND TABLE_NAME='intentions'
-       AND CONSTRAINT_NAME='fk_intentions_decision'`
-  );
-  if (Number(foreignKeys[0]?.count || 0) === 0) {
-    await db.query(
-      `ALTER TABLE intentions
-       ADD CONSTRAINT fk_intentions_decision
-       FOREIGN KEY (decision_id)
-       REFERENCES decisions(id)
-       ON DELETE SET NULL
-       ON UPDATE RESTRICT`
-    );
-  }
-
   const [sameSimulationForeignKeys] = await db.query(
     `SELECT COUNT(*) AS count
      FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS
