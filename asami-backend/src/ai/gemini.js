@@ -685,7 +685,13 @@ class GeminiService {
               error:err?.message||String(err),
               rawPreview:typeof raw==="string"?raw.slice(0,500):"",
               fallbackTo:fallbackModel,
-              latencyMs:Date.now()-startedAt
+              latencyMs:Date.now()-startedAt,
+              providerError:{
+                name:err?.name||null,
+                code:err?.code||null,
+                status:failure.status||null,
+                message:String(err?.message||err||"").slice(0,500)
+              }
             },
             fallbackModel
               ? "Gemini produced invalid structured output; trying fallback model"
@@ -854,7 +860,7 @@ class GeminiService {
     return this.generateJson(prompt,schema,{
       kind:"autonomy",
       thinkingLevel,
-      maxModels:advanced?null:1,
+      maxModels:advanced ? null : Number(env.GEMINI_AUTONOMY_MAX_MODELS),
       outputTokenCeilingOverride:outputTokenCeiling
     });
   }
