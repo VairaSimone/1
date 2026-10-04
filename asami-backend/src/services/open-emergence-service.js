@@ -17,6 +17,7 @@ const logger = require("../lib/logger");
 const PERSON = "00000000-0000-4000-8000-000000000001";
 const LOCATION = "00000000-0000-4000-8000-000000000003";
 const PROPOSAL_COOLDOWN_HOURS = 24;
+const NEED_STRUCTURE_COOLDOWN_HOURS = 72;
 const MAX_AI_ACTIVITIES = 4;
 
 const ProposalSchema = z.object({
@@ -205,7 +206,7 @@ function deterministicFallbackDefinition(signal, proposer, simulationTime, { eco
   const names = ['Practice', 'Organize', 'Teach', 'Coordinate'];
   return normalizeDefinition({ kind, code: baseCode, name: (proposer.displayName || 'Locali') + ' - ' + needLabel + ' initiative', category: categories[variant], market: false, production: false, purpose: 'A new autonomous response to a shared ' + needLabel + ' pressure.', products: [], targetNeeds: [{ code: signal.needCode, weight: 2 }], activities: [{ code: activityCode, name: names[variant] + ' ' + needLabel + ' locally', category: categories[variant], durationMinutes: variant === 0 ? 45 : variant === 1 ? 60 : variant === 2 ? 75 : 90, needWeights: { [signal.needCode]: 2 }, gate: { needCode: signal.needCode, min: 0.30 }, effects: [{ type: 'NEED_DELTA', needCode: signal.needCode, delta: needDelta }] }], formation: 'BOTTOM_UP', membership: 'VOLUNTARY', origin: 'DETERMINISTIC_FALLBACK' });
 }
-async function askGemini(gemini, { simulationTime, scope, signal, proposer, actors, economicOpportunity = false, similarProposalCount = 0, recurringPressureProposals = 0, recentLocalDefinitions = [] }) {
+async function askGemini(gemini, { simulationTime, scope, signal, proposer, actors, economicOpportunity = false, similarProposalCount = 0, recurringPressureProposals = 0, recentLocalDefinitions = [], existingLocalNeedCoverage = [] }) {
   if (!gemini || typeof gemini.generateJson !== "function") return null;
   const context = {
     simulationTime,
@@ -237,6 +238,7 @@ async function askGemini(gemini, { simulationTime, scope, signal, proposer, acto
     economicOpportunity,
     recurringSimilarProposals: Number(similarProposalCount || 0),
     recurringPressureProposals: Number(recurringPressureProposals || 0),
+    existingLocalNeedCoverage: existingLocalNeedCoverage.map(item => ({source:item.source,type:item.type,code:item.code,name:item.name,createdAt:item.createdAt})),
     recentLocalDefinitions
   };
 
@@ -245,7 +247,7 @@ async function askGemini(gemini, { simulationTime, scope, signal, proposer, acto
     "One inhabitant is proposing a genuinely new social possibility in response to a shared local pressure.",
     "Invent a novel STRUCTURE, INSTITUTION, ACTIVITY, or SYSTEM. Do not assume a fixed project taxonomy.",
     "A SYSTEM may declare systemType='GOVERNANCE' when durable coordination, representation, competing interests, or conflict require it.",
-    "Treat existing local inventions as part of the society's history: do not recreate the same semantic solution. Extend, specialize, transform, or replace an existing solution when appropriate.",
+    "Treat existing local inventions as part of the society's history: use an existing local solution when it already addresses the pressure; only create a new structural solution when it adds a missing capability. Extend, specialize, transform, or replace an existing solution when appropriate.",
     "Do not repeat a semantic solution already present elsewhere merely by renaming it; change the process, effects, category, organization, or outputs.",
     "If recurringSimilarProposals or recurringPressureProposals is greater than zero, prefer a genuinely different consequence or a concrete evolution of the existing local invention rather than another renamed copy.",
     "The definition is data, not code. It may only use safe effects: NEED_DELTA, RESOURCE_DELTA, INVENTORY_DELTA, PRODUCTION.",
@@ -311,6 +313,46 @@ function isMaterialEconomicDefinition(definition = {}) {
     || activities.some(activity => ['WORK','PRODUCTION','CRAFT','COMMERCE'].includes(normalize(activity?.category)));
 }
 
+function definitionTargetsNeed(definition={},needCode){
+  const target=code(needCode);
+  const targets=Array.isArray(definition.targetNeeds)?definition.targetNeeds:[];
+  if(targets.some(item=>code(item?.code)===target&&Number(item?.weight||0)!==0))return true;
+  const activities=Array.isArray(definition.activities)?definition.activities:[];
+  return activities.some(activity=>{
+    if(Object.keys(activity?.needWeights||{}).some(item=>code(item)===target&&Number(activity.needWeights[item]||0)!==0))return true;
+    return (Array.isArray(activity?.effects)?activity.effects:[]).some(effect=>normalize(effect?.type)==='NEED_DELTA'&&code(effect?.needCode)===target&&Number(effect?.delta||0)!==0);
+  });
+}
+async function findLocalNeedCoverage(simulationId,scopeLocationId,needCode){
+  if(!scopeLocationId)return [];
+  const [[structures],[systems],[catalog]] = await Promise.all([
+    pool.query(`SELECT BIN_TO_UUID(es.entity_id) entityId,es.structure_type structureType,es.attributes,es.created_simulation_at createdAt FROM emergent_structures es WHERE es.simulation_id=UUID_TO_BIN(?) AND es.scope_location_id=UUID_TO_BIN(?)`,[simulationId,scopeLocationId]),
+    pool.query(`SELECT BIN_TO_UUID(id) systemId,system_type systemType,attributes,created_simulation_at createdAt FROM emergent_systems WHERE simulation_id=UUID_TO_BIN(?) AND scope_location_id=UUID_TO_BIN(?) AND stage<>'ENDED'`,[simulationId,scopeLocationId]),
+    pool.query(`SELECT kind,code,name,definition,created_simulation_at createdAt FROM emergent_definition_catalog WHERE simulation_id=UUID_TO_BIN(?) AND scope_location_id=UUID_TO_BIN(?) AND status='ACTIVE' AND kind IN ('STRUCTURE','INSTITUTION','SYSTEM')`,[simulationId,scopeLocationId])
+  ]);
+  const found=[];
+  for(const row of structures){
+    const definition=parseJson(row.attributes,{})?.definition||{};
+    if(definitionTargetsNeed(definition,needCode))found.push({source:'STRUCTURE',id:row.entityId,type:row.structureType,code:definition.code||row.structureType,name:definition.name||row.structureType,createdAt:row.createdAt,definition});
+  }
+  for(const row of systems){
+    const definition=parseJson(row.attributes,{})?.definition||{};
+    if(definitionTargetsNeed(definition,needCode))found.push({source:'SYSTEM',id:row.systemId,type:row.systemType,code:definition.code||row.systemType,name:definition.name||row.systemType,createdAt:row.createdAt,definition});
+  }
+  for(const row of catalog){
+    const definition=parseJson(row.definition,{});
+    if(definitionTargetsNeed(definition,needCode))found.push({source:'DEFINITION',id:null,type:row.kind,code:row.code,name:row.name,createdAt:row.createdAt,definition});
+  }
+  return found.sort((a,b)=>new Date(b.createdAt||0)-new Date(a.createdAt||0));
+}
+async function countRecentStructuralPressureProposals(simulationId,scopeLocationId,needCode,simulationTime){
+  const [rows]=await pool.query(
+    `SELECT definition FROM emergent_world_proposals WHERE simulation_id=UUID_TO_BIN(?) AND scope_location_id=UUID_TO_BIN(?) AND status='ACCEPTED' AND kind IN ('STRUCTURE','INSTITUTION','SYSTEM') AND created_simulation_at>=DATE_SUB(?,INTERVAL ${NEED_STRUCTURE_COOLDOWN_HOURS} HOUR) ORDER BY created_simulation_at DESC LIMIT 40`,
+    [simulationId,scopeLocationId,simulationTime]
+  );
+  const target=code(needCode);
+  return rows.reduce((count,row)=>count+(definitionTargetsNeed(parseJson(row.definition,{}),target)?1:0),0);
+}
 async function countRecentPressureProposals(simulationId, scopeLocationId, needCode, simulationTime) {
   const [rows] = await pool.query(
     "SELECT definition FROM emergent_world_proposals WHERE simulation_id=UUID_TO_BIN(?) AND scope_location_id=UUID_TO_BIN(?) AND status='ACCEPTED' AND created_simulation_at>=DATE_SUB(?,INTERVAL 7 DAY) ORDER BY created_simulation_at DESC LIMIT 40",
@@ -770,19 +812,30 @@ async function proposeForLocation(simulationId, simulationTime, scope, actors, g
   const simulationAgeHours=Number.isFinite(startedAt)&&Number.isFinite(now)?Math.max(0,(now-startedAt)/3600000):0;
   const economicState=economicRows[0]||{};
   const similarityProbe=deterministicFallbackDefinition(signal,proposer,simulationTime,{variantIndex:0});
-  const [similarProposalCount,recurringPressureProposals]=await Promise.all([
+  const [similarProposalCount,recurringPressureProposals,existingLocalNeedCoverage,recentStructuralPressureProposals]=await Promise.all([
     countRecentSimilarProposals(simulationId,scope.locationId,similarityProbe,simulationTime),
-    countRecentPressureProposals(simulationId,scope.locationId,signal.needCode,simulationTime)
+    countRecentPressureProposals(simulationId,scope.locationId,signal.needCode,simulationTime),
+    findLocalNeedCoverage(simulationId,scope.locationId,signal.needCode),
+    countRecentStructuralPressureProposals(simulationId,scope.locationId,signal.needCode,simulationTime)
   ]);
   const economicOpportunity=simulationAgeHours>=72&&Number(economicState.businessCount||0)===0&&Number(economicState.marketCount||0)===0&&(similarProposalCount>=2||recurringPressureProposals>=3);
   const [recentLocalDefinitions]=await pool.query("SELECT kind,code,name,category,definition FROM emergent_definition_catalog WHERE simulation_id=UUID_TO_BIN(?) AND scope_location_id=UUID_TO_BIN(?) AND status='ACTIVE' ORDER BY created_simulation_at DESC LIMIT 12",[simulationId,scope.locationId]);
-  const generated=await askGemini(gemini,{simulationTime,scope,signal,proposer,actors,economicOpportunity,similarProposalCount,recurringPressureProposals,recentLocalDefinitions:recentLocalDefinitions.map(row=>({kind:row.kind,code:row.code,name:row.name,category:row.category,definition:parseJson(row.definition,{})}))});
+  if(recentStructuralPressureProposals>0){
+    logger.debug({simulationId,simulationTime,scopeLocationId:scope.locationId,needCode:signal.needCode},'open-ended structural proposal suppressed by per-need cooldown');
+    return null;
+  }
+  const generated=await askGemini(gemini,{simulationTime,scope,signal,proposer,actors,economicOpportunity,similarProposalCount,recurringPressureProposals,existingLocalNeedCoverage,recentLocalDefinitions:recentLocalDefinitions.map(row=>({kind:row.kind,code:row.code,name:row.name,category:row.category,definition:parseJson(row.definition,{})}))});
   const generationStatus=gemini?.lastRequestStatus||null;
   let generationSource=generated?'GEMINI':'DETERMINISTIC_FALLBACK';
   let definition=generated?normalizeDefinition({...generated,origin:'GEMINI'}):deterministicFallbackDefinition(signal,proposer,simulationTime,{economicOpportunity,variantIndex:similarProposalCount});
   if(economicOpportunity&&!isMaterialEconomicDefinition(definition)){
     definition=deterministicFallbackDefinition(signal,proposer,simulationTime,{economicOpportunity:true,variantIndex:similarProposalCount});
     generationSource='DETERMINISTIC_FALLBACK_AFTER_AI_NOT_ECONOMIC';
+  }
+  const structuralDefinition=['STRUCTURE','INSTITUTION','SYSTEM'].includes(normalize(definition.kind));
+  if(structuralDefinition && existingLocalNeedCoverage.length && !(economicOpportunity && isMaterialEconomicDefinition(definition))){
+    logger.debug({simulationId,simulationTime,scopeLocationId:scope.locationId,needCode:signal.needCode,coveredBy:existingLocalNeedCoverage.map(item=>item.code)},'open-ended structural proposal suppressed because local capability already covers the pressure');
+    return null;
   }
   const initialGlobalSimilar=await countRecentGlobalSimilarProposals(simulationId,definition,simulationTime);
   if(initialGlobalSimilar>0){
@@ -976,5 +1029,9 @@ module.exports = {
   semanticDefinitionSignature,
   isMaterialEconomicDefinition,
   evolveEmergentSystems,
-  ProposalSchema
+  ProposalSchema,
+  definitionTargetsNeed,
+  findLocalNeedCoverage,
+  countRecentStructuralPressureProposals,
+  NEED_STRUCTURE_COOLDOWN_HOURS
 };
