@@ -57,6 +57,18 @@ async function reconcileStaleEvaluatedDecisions(simulationId,simulationTime,{lim
     }
 
     if(["FAILED","CANCELLED"].includes(actionStatus)){
+      if(row.intentionId&&intentionStatus==="ACTIVE"){
+        await pool.query(
+          `UPDATE intentions
+           SET status='CANCELLED',version=version+1
+           WHERE id=UUID_TO_BIN(?)
+             AND simulation_id=UUID_TO_BIN(?)
+             AND decision_id=UUID_TO_BIN(?)
+             AND status='ACTIVE'`,
+          [row.intentionId,simulationId,row.decisionId]
+        );
+      }
+
       const nextStatus=actionStatus==="FAILED"?"FAILED":"CANCELLED";
       const [updated]=await pool.query(
         `UPDATE decisions
