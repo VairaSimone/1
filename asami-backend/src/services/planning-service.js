@@ -251,6 +251,76 @@ async function unblockBlockedGoal({simulationId,entityId,goalId,simulationTime})
     return true;
   });
 }
+async function revalidateBlockedResourceGoals({simulationId,simulationTime,limit=100}={}){
+  if(!simulationId)return{checked:0,eligible:0,reachable:0,unblocked:0};
+
+  const safeLimit=Math.max(1,Math.min(500,Number(limit)||100));
+  const [rows]=await pool.query(
+    `SELECT BIN_TO_UUID(id) AS goalId,
+            BIN_TO_UUID(entity_id) AS entityId,
+            result
+     FROM goals
+     WHERE simulation_id=UUID_TO_BIN(?)
+       AND status='BLOCKED'
+     ORDER BY created_simulation_at ASC
+     LIMIT ?`,
+    [simulationId,safeLimit]
+  );
+
+  let eligible=0,reachable=0,unblocked=0;
+  for(const row of rows){
+    const result=parseJson(row.result,{})||{};
+    const reason=String(result.reason||result.blockedReason||"").toUpperCase();
+    const resource=String(result.resource||"").trim().toLowerCase();
+    const retry=Boolean(result.retryWhenResourceAvailable);
+
+    if(reason!=="RESOURCE_UNAVAILABLE" || !retry || !["food","water"].includes(resource)){
+      continue;
+    }
+
+    eligible+=1;
+    try{
+      const available=await isCriticalResourceReachable(
+        simulationId,
+        row.entityId,
+        resource
+      );
+      if(!available)continue;
+
+      reachable+=1;
+      if(await unblockBlockedGoal({
+        simulationId,
+        entityId:row.entityId,
+        goalId:row.goalId,
+        simulationTime
+      })){
+        unblocked+=1;
+      }
+    }catch(err){
+      logger.warnThrottled(
+        `planning:blocked-resource-revalidate:${simulationId}:${resource}`,
+        600000,
+        {
+          simulationId,
+          entityId:row.entityId,
+          goalId:row.goalId,
+          resource,
+          simulationTime,
+          error:String(err?.message||err)
+        },
+        "blocked resource goal revalidation failed"
+      );
+    }
+  }
+
+  return{
+    checked:rows.length,
+    eligible,
+    reachable,
+    unblocked
+  };
+}
+
 async function abandonGoal({simulationId,entityId,goalId,simulationTime,reason}){
   if(!goalId)return false;
   const mysqlTime=mysqlSimulationDateTime(simulationTime);
@@ -981,4 +1051,4 @@ async function advancePlanForAction({simulationId,entityId,goalId,actionType,out
 
   return{changed,completed:false,progress,planId:refreshedPlan.id};
 }
-module.exports={GOAL_TEMPLATES,MAX_GOAL_AGE_HOURS,PERSONAL_GOAL_INTERVAL_HOURS,LONG_TERM_GOAL_INTERVAL_HOURS,PERSISTENT_GOAL_TYPES,selectTopNeed,selectActiveStep,createPlanForGoal,ensureGoalPlan,advancePlanForAction,advancePersistentGoalFromAnyAutonomousAction,abandonGoal,ensurePersistentGoals};
+module.exports={GOAL_TEMPLATES,MAX_GOAL_AGE_HOURS,PERSONAL_GOAL_INTERVAL_HOURS,LONG_TERM_GOAL_INTERVAL_HOURS,PERSISTENT_GOAL_TYPES,selectTopNeed,selectActiveStep,createPlanForGoal,ensureGoalPlan,advancePlanForAction,advancePersistentGoalFromAnyAutonomousAction,abandonGoal,ensurePersistentGoals,unblockBlockedGoal,revalidateBlockedResourceGoals};
