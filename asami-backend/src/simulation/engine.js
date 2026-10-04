@@ -20,7 +20,8 @@ const { refreshMentalStateFromSimulation } = require("../services/personality-se
 const { recordSignificantExperience } = require("../services/experience-learning-service");
 const safeRetentionService = require("../services/safe-retention-service");
 const maybeRunSafeRetention = typeof safeRetentionService.maybeRunSafeRetention === "function" ? safeRetentionService.maybeRunSafeRetention : null;
-const { reconcileCompletedActions } = require("../services/action-reconciliation-service");
+const { reconcileCompletedActions, reconcileStaleEvaluatedDecisions } = require("../services/action-reconciliation-service");
+const { revalidateBlockedResourceGoals } = require("../services/planning-service");
 const { runSimulationIntegrityCheck } = require("../services/integrity-check-service");
 const { calibrateDecisionOutcome } = require("../services/decision-service");
 const observability = require("../services/simulation-observability");
@@ -438,6 +439,25 @@ class SimulationEngine {
               resources: distributedResources.replenished
             }, "distributed resource maintenance applied");
           }
+
+          setPhase("planning.revalidate_blocked_resources");
+          const blockedGoalRevalidation = await revalidateBlockedResourceGoals({
+            simulationId: sim.id,
+            simulationTime: nextTime.toISOString(),
+            limit: 100
+          });
+          if (blockedGoalRevalidation.unblocked) {
+            logger.info({
+              simulationId: sim.id,
+              simulationTime: nextTime.toISOString(),
+              event: "BLOCKED_RESOURCE_GOALS_REVALIDATED",
+              checked: blockedGoalRevalidation.checked,
+              eligible: blockedGoalRevalidation.eligible,
+              reachable: blockedGoalRevalidation.reachable,
+              unblocked: blockedGoalRevalidation.unblocked
+            }, "blocked resource goals were revalidated and unblocked");
+          }
+
           setPhase("world.relationships");
           await evolveRelationships(sim.id, nextTime);
           setPhase("action.reconcile");
@@ -445,6 +465,21 @@ class SimulationEngine {
           if (reconciliation.reconciled) {
             logger.info({simulationId:sim.id,simulationTime:nextTime.toISOString(),event:"ACTION_RECONCILIATION",reconciled:reconciliation.reconciled},"completed action post-processing reconciled");
           }
+
+          const staleDecisionReconciliation = await reconcileStaleEvaluatedDecisions(
+            sim.id,
+            nextTime.toISOString()
+          );
+          if (staleDecisionReconciliation.repaired) {
+            logger.warn({
+              simulationId: sim.id,
+              simulationTime: nextTime.toISOString(),
+              event: "DECISION_RECONCILIATION",
+              checked: staleDecisionReconciliation.checked,
+              repaired: staleDecisionReconciliation.repaired
+            }, "stale evaluated decisions reconciled");
+          }
+
           setPhase("integrity.check");
           const integrity = await runSimulationIntegrityCheck(sim.id,nextTime.toISOString());
           if(!integrity.skipped && !integrity.healthy){
