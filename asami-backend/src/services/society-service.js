@@ -744,6 +744,53 @@ async function recordWealth(simulationId,simulationTime){
 }
 
 
+const ECONOMIC_SEED_DEFINITIONS = Object.freeze({
+  MARKET: {
+    worldCode:'GROCERY', structureType:'MARKET', code:'SEEDED_LOCAL_MARKET_V1', name:'Mercato locale', category:'COMMERCE',
+    purpose:'A small local market gives the neighborhood a durable place to exchange essential goods.',
+    market:true, production:false,
+    activities:[{code:'LOCAL_MARKET_EXCHANGE',name:'Exchange essential goods locally',category:'COMMERCE',durationMinutes:25,needWeights:{HUNGER:1.2},gate:{needCode:'HUNGER',min:0.25},effects:[{type:'NEED_DELTA',needCode:'HUNGER',delta:-0.03}]}]
+  },
+  PRODUCER: {
+    worldCode:'WORKSHOP', structureType:'WORKSHOP', code:'SEEDED_LOCAL_WORKSHOP_V1', name:'Laboratorio locale', category:'PRODUCTION',
+    purpose:'A small local workshop gives inhabitants a place to turn time and materials into useful goods.',
+    market:false, production:true,
+    activities:[{code:'LOCAL_TOOL_PRODUCTION',name:'Produce useful tools',category:'PRODUCTION',durationMinutes:120,needWeights:{ACHIEVEMENT:1.5,CURIOSITY:0.3},gate:{needCode:'ACHIEVEMENT',min:0.25},effects:[{type:'PRODUCTION',goodCode:'TOOLS',quantity:2,resourceInputs:{water:1},inventoryInputs:{}}]}]
+  }
+});
+function economicSeedDefinition(kind){
+  const source=ECONOMIC_SEED_DEFINITIONS[kind];
+  return normalizeDefinition({...source,kind:'STRUCTURE',products:[],targetNeeds:[{code:kind==='MARKET'?'HUNGER':'ACHIEVEMENT',weight:1.5}],formation:'SEEDED_INFRASTRUCTURE',membership:'VOLUNTARY',origin:'INITIAL_ECONOMIC_SEED'});
+}
+async function ensureEconomicSeed(simulationId,simulationTime){
+  const [locations]=await pool.query(`SELECT BIN_TO_UUID(e.id) locationId,e.display_name name,l.location_type locationType,l.address_data addressData,e.attributes FROM entities e JOIN locations l ON l.entity_id=e.id AND l.simulation_id=e.simulation_id WHERE e.simulation_id=UUID_TO_BIN(?) AND e.entity_type_id=UUID_TO_BIN(?) AND e.status='ACTIVE'`,[simulationId,'00000000-0000-4000-8000-000000000003']);
+  const byCode=locations.map(row=>({...row,addressData:parseJson(row.addressData,{}),attributes:parseJson(row.attributes,{})}));
+  const [existingStructures]=await pool.query(`SELECT BIN_TO_UUID(es.entity_id) entityId,es.structure_type structureType,es.attributes FROM emergent_structures es WHERE es.simulation_id=UUID_TO_BIN(?)`,[simulationId]);
+  const existing=existingStructures.map(row=>({...row,attributes:parseJson(row.attributes,{})}));
+  const haveMarket=existing.some(row=>isMarketStructure(row)),haveProducer=existing.some(row=>isProducerStructure(row));
+  const seedPlan=[];
+  if(!haveMarket)seedPlan.push({kind:'MARKET',location:byCode.find(row=>String(row.addressData?.worldCode||row.attributes?.worldCode||'').toUpperCase()==='GROCERY')});
+  if(!haveProducer)seedPlan.push({kind:'PRODUCER',location:byCode.find(row=>String(row.addressData?.worldCode||row.attributes?.worldCode||'').toUpperCase()==='WORKSHOP')});
+  let created=0;
+  for(const item of seedPlan){
+    if(!item.location)continue;
+    const definition=economicSeedDefinition(item.kind);
+    const [people]=await pool.query(`SELECT BIN_TO_UUID(e.id) entityId FROM entities e JOIN entity_types et ON et.id=e.entity_type_id JOIN entity_locations_current elc ON elc.entity_id=e.id AND elc.simulation_id=e.simulation_id AND elc.location_id=UUID_TO_BIN(?) WHERE e.simulation_id=UUID_TO_BIN(?) AND et.code='PERSON' AND e.status='ACTIVE' ORDER BY e.created_simulation_at ASC LIMIT 12`,[item.location.locationId,simulationId]);
+    const [fallbackFounder]=await pool.query(`SELECT BIN_TO_UUID(e.id) entityId FROM entities e JOIN entity_types et ON et.id=e.entity_type_id WHERE e.simulation_id=UUID_TO_BIN(?) AND et.code='PERSON' AND e.status='ACTIVE' ORDER BY e.created_simulation_at ASC LIMIT 1`,[simulationId]);
+    const founderEntityId=people[0]?.entityId||fallbackFounder[0]?.entityId||null;
+    if(!founderEntityId)continue;
+    const projectId=uuid();
+    await pool.query(`INSERT INTO emergent_projects (id,simulation_id,proposer_entity_id,scope_location_id,project_type,issue_code,title,description,status,support_score,required_support,proposal,created_simulation_at,updated_simulation_at,completed_simulation_at,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,?,?,?,?, ?,?,?,?,1)`,[projectId,simulationId,founderEntityId,item.location.locationId,definition.code,'ECONOMIC_SEED',definition.name,definition.purpose,'COMPLETED',1,1,JSON.stringify({source:'INITIAL_ECONOMIC_SEED',worldCode:item.kind==='MARKET'?'GROCERY':'WORKSHOP'}),simulationTime,simulationTime,simulationTime]);
+    const [definitionRows]=await pool.query(`SELECT BIN_TO_UUID(id) id FROM emergent_definition_catalog WHERE simulation_id=UUID_TO_BIN(?) AND kind='STRUCTURE' AND code=? LIMIT 1`,[simulationId,definition.code]);
+    const definitionId=definitionRows[0]?.id||await registerDefinition(simulationId,{kind:'STRUCTURE',definition,scopeLocationId:item.location.locationId,originEntityId:founderEntityId,originProposalId:null,simulationTime});
+    await pool.query(`INSERT INTO emergent_structures (id,simulation_id,project_id,entity_id,structure_type,name,scope_location_id,activities,attributes,created_simulation_at,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,UUID_TO_BIN(?),?,?,?,1)`,[uuid(),simulationId,projectId,item.location.locationId,definition.structureType||item.kind,definition.name,item.location.locationId,JSON.stringify(definition.activities.map(activity=>activity.code)),JSON.stringify({origin:'INITIAL_ECONOMIC_SEED',seed:true,worldCode:item.kind==='MARKET'?'GROCERY':'WORKSHOP',definition,definitionId}),simulationTime]);
+    const members=people.length?people.map(row=>row.entityId):[founderEntityId];
+    for(const memberId of members)await pool.query(`INSERT IGNORE INTO emergent_project_members(project_id,simulation_id,entity_id,role,motivation,joined_simulation_at) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),'FOUNDING_MEMBER',?,?)`,[projectId,simulationId,memberId,JSON.stringify({origin:'INITIAL_ECONOMIC_SEED',kind:item.kind}),simulationTime]);
+    await createEvent({simulationId,eventTypeCode:'ECONOMIC',title:definition.name+' became available',description:definition.purpose,simulationAt:simulationTime,importance:.62,metadata:{emergent:true,kind:'ECONOMIC_SEED_CREATED',seedKind:item.kind,locationId:item.location.locationId,definitionCode:definition.code}});
+    created++;
+  }
+  return {created,marketSeeded:seedPlan.some(item=>item.kind==='MARKET'&&item.location),producerSeeded:seedPlan.some(item=>item.kind==='PRODUCER'&&item.location)};
+}
 async function createBusinessWithCapital({simulationId,entityId,ownerEntityId,simulationTime}) {
   return withTransaction(async conn => {
     const [businessInsert]=await conn.query(
@@ -1445,6 +1492,8 @@ async function executeEconomicAction({conn,simulationId,entityId,actionType,simu
 async function evolveSociety(simulationId,simulationTime){
   await ensureCatalog(simulationId,simulationTime);
   await ensureAccounts(simulationId,simulationTime);
+  const economicSeed=await ensureEconomicSeed(simulationId,simulationTime);
+  await ensureAccounts(simulationId,simulationTime);
   await ensureMarketInventory(simulationId,simulationTime);
   await ensureBusinesses(simulationId,simulationTime);
   await ensureJobs(simulationId,simulationTime);
@@ -1458,8 +1507,8 @@ async function evolveSociety(simulationId,simulationTime){
   const politics=await evolvePolitics(simulationId,simulationTime);
   const economicPolicy=await ensureEconomicPolicyProposal(simulationId,simulationTime,business);
   const wealth=await recordWealth(simulationId,simulationTime);
-  logger.debugThrottled(`SOCIETY_EVOLUTION:${simulationId}`,120000,{simulationId,simulationTime,wealth,politics,wholesale,business,laborChanges,economicPolicy,conflicts,governance},"society evolution completed");
-  return {wealth,politics,wholesale,business,laborChanges,economicPolicy,conflicts,governance};
+  logger.debugThrottled(`SOCIETY_EVOLUTION:${simulationId}`,120000,{simulationId,simulationTime,wealth,politics,wholesale,business,laborChanges,economicPolicy,conflicts,governance,economicSeed},"society evolution completed");
+  return {wealth,politics,wholesale,business,laborChanges,economicPolicy,conflicts,governance,economicSeed};
 }
 
 async function getSocietySnapshot(simulationId){
@@ -1503,4 +1552,4 @@ async function getSocietySnapshot(simulationId){
   return {systems:decode(systems),goods,markets,accounts,jobs,trades,metrics,policies:decode(policies),conflicts:decode(conflicts),businessMetrics,businesses,events:decode(events),openEnded:{proposals:decodeOpen(openProposals),definitions:decodeOpen(openDefinitions)}};
 }
 
-module.exports={evolveSociety,evolvePolitics,evolveConflicts,ensureGovernanceSystem,executeEconomicAction,consumePurchasedFood,getSocietySnapshot,gini,ensureCatalog,restockMarkets,isMarketStructure,isProducerStructure,ensureBusinesses,evolveBusinesses,matchLaborMarket,latestEconomicPolicy,ensureEconomicPolicyProposal};
+module.exports={evolveSociety,evolvePolitics,evolveConflicts,ensureGovernanceSystem,executeEconomicAction,consumePurchasedFood,getSocietySnapshot,gini,ensureCatalog,restockMarkets,isMarketStructure,isProducerStructure,ensureBusinesses,evolveBusinesses,matchLaborMarket,latestEconomicPolicy,ensureEconomicPolicyProposal,ensureEconomicSeed,economicSeedDefinition};
