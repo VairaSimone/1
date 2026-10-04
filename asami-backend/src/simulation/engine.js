@@ -28,6 +28,22 @@ const { WEATHER_DURATIONS_HOURS } = require("../services/environment-service");
 
 const INTERRUPTIBLE_ACTIONS = new Set(["SLEEPING", "WORKING", "STUDYING"]);
 const CRITICAL_EVENT_PATTERNS = /DANGER|EMERGENCY|ACCIDENT|THREAT|CRISIS|EVACUATION|ATTACK|FIRE/i;
+
+// Normal physiological interrupts remain strict outside sleep. Sleep gets a
+// separate tolerance window for hunger/thirst so their passive decay cannot
+// repeatedly kill recovery before ENERGY/SLEEPINESS have time to recover.
+const CRITICAL_NEED_THRESHOLDS = Object.freeze({
+  THIRST: 0.80,
+  HUNGER: 0.80,
+  SLEEPINESS: 0.85,
+  ENERGY: 0.15,
+  SAFETY: 0.20
+});
+const SLEEP_INTERRUPTION_THRESHOLDS = Object.freeze({
+  THIRST: 0.95,
+  HUNGER: 0.95,
+  SAFETY: 0.20
+});
 const EXPECTED_ENTITY_CONDITION_CODES = new Set(["MOVEMENT_ORIGIN_REQUIRED","MOVEMENT_DESTINATION_REQUIRED","MOVEMENT_DESTINATION_UNREACHABLE","MOVEMENT_ALREADY_ACTIVE","CRITICAL_RESOURCE_RECOVERY_UNAVAILABLE","CRITICAL_ACTION_UNAVAILABLE"]);
 function isExpectedEntityCondition(err){return EXPECTED_ENTITY_CONDITION_CODES.has(String(err?.code||"").toUpperCase());}
 function isCriticalResourceRecoveryUnavailable(err){return String(err?.code||"").toUpperCase()==="CRITICAL_RESOURCE_RECOVERY_UNAVAILABLE";}
@@ -146,11 +162,15 @@ function isCriticalNeed(code, value) {
 }
 
 function getCriticalInterruptionNeed(activeActionType, needs = []) {
-  if (!INTERRUPTIBLE_ACTIONS.has(String(activeActionType || "").toUpperCase())) return null;
+  const action = String(activeActionType || "").toUpperCase();
+  if (!INTERRUPTIBLE_ACTIONS.has(action)) return null;
+
   let selected = null;
   for (const need of needs) {
-    const code = String(need.code || "").toUpperCase(), value = Number(need.value);
-    if (!isCriticalNeed(code, value)) continue;
+    const code = String(need.code || "").toUpperCase();
+    const value = Number(need.value);
+    if (!Number.isFinite(value)) continue;
+
     const compatible = {
       THIRST: new Set(["DRINKING"]),
       HUNGER: new Set(["EATING"]),
@@ -158,9 +178,25 @@ function getCriticalInterruptionNeed(activeActionType, needs = []) {
       ENERGY: new Set(["SLEEPING", "RESTING"]),
       SAFETY: new Set([])
     }[code];
-    if (compatible?.has(String(activeActionType).toUpperCase())) continue;
-    const distance = getNeedDirection(code) === "HIGH" ? value : 1 - value;
-    if (!selected || distance > selected.distance) selected = { code, value, threshold: ({ THIRST: 0.8, HUNGER: 0.8, SLEEPINESS: 0.85, ENERGY: 0.15, SAFETY: 0.2 })[code], distance };
+    if (compatible?.has(action)) continue;
+
+    const threshold = action === "SLEEPING"
+      ? SLEEP_INTERRUPTION_THRESHOLDS[code]
+      : CRITICAL_NEED_THRESHOLDS[code];
+    if (!Number.isFinite(threshold)) continue;
+
+    const direction = getNeedDirection(code);
+    const critical = direction === "HIGH"
+      ? value >= threshold
+      : direction === "LOW"
+        ? value <= threshold
+        : false;
+    if (!critical) continue;
+
+    const distance = direction === "HIGH" ? value : 1 - value;
+    if (!selected || distance > selected.distance) {
+      selected = { code, value, threshold, distance };
+    }
   }
   return selected;
 }

@@ -126,12 +126,16 @@ function recoveryBlockForInterruption(interruption){
     SAFETY:["WORKING","STUDYING","PLAYING","EXPLORING","WALKING"]
   }[code]||[];
   if(!blocks.length) return null;
+
+  // Hysteresis: once recovery is required, its protective block is released
+  // only after the need drops materially below the trigger threshold.
   const releaseBelow={THIRST:.55,HUNGER:.55,ENERGY:.35,SAFETY:.35}[code] ?? .5;
   return {
     code,
     interruptedAction,
     blockedActions:[...new Set(blocks.concat(interruptedAction==="SLEEPING"&&!blocks.includes("SLEEPING")?["SLEEPING"]:[]))],
-    releaseBelow
+    releaseBelow,
+    hysteresis:true
   };
 }
 function activeRecoveryBlocks(interruptions=[],needs=[]){

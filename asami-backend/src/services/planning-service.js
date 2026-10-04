@@ -53,6 +53,29 @@ async function isFoodMarketAvailable(simulationId,entityId){
   return rows.length>0;
 }
 
+function resourceForAction(actionType){
+  return{
+    EATING:"food",
+    DRINKING:"water"
+  }[normalizeAction(actionType)]||null;
+}
+
+function stepRequiresResource(step,resource){
+  const normalizedResource=String(resource||"").trim().toLowerCase();
+  if(!normalizedResource)return false;
+  const stepResult=parseJson(step?.result,{})||{};
+  const expectedAction=normalizeAction(stepResult.actionType||step?.actionType);
+  const declaredResource=String(
+    stepResult.resource||
+    stepResult.requiredResource||
+    step?.resource||
+    step?.requiredResource||
+    ""
+  ).trim().toLowerCase();
+  return declaredResource===normalizedResource ||
+    resourceForAction(expectedAction)===normalizedResource;
+}
+
 function isResourceBlockedFailure(actionType,outcome,actionResult){
   const normalizedAction=normalizeAction(actionType);
   if(!["EATING","DRINKING"].includes(normalizedAction))return null;
@@ -440,9 +463,12 @@ async function ensureGoalPlan({simulationId,entityId,simulationTime,needs}){
 
     if(activeGoal.status==="BLOCKED"){
       const resource=goalResult.resource||resourceForGoalNeed(needCode);
-      const reachable=resource==="food"
-        ?await isFoodMarketAvailable(simulationId,entityId)
-        :await isCriticalResourceReachable(simulationId,entityId,resource);
+      // Physical reachability is the source of truth for the action itself.
+      // This also lets simulations recover legacy BLOCKED food goals even when
+      // the economy subsystem has not created a market row yet.
+      const reachable=resource
+        ?await isCriticalResourceReachable(simulationId,entityId,resource)
+        :false;
       if(resource&&reachable){
         await unblockBlockedGoal({simulationId,entityId,goalId:activeGoal.id,simulationTime});
         activeGoal=await getActiveGoal(simulationId,entityId);
@@ -610,23 +636,21 @@ async function advancePlanForAction({simulationId,entityId,goalId,actionType,out
   let changed=false;
 
   const resourceBlock=isResourceBlockedFailure(normalizedAction,outcome,actionResult);
-  if(resourceBlock){
-    const economicAlternative=resourceBlock.resource==="food"
-      ?await isFoodMarketAvailable(simulationId,entityId)
-      :false;
-    if(!economicAlternative){
-      await blockGoalForResource({
-        simulationId,
-        entityId,
-        goalId,
-        simulationTime,
-        resource:resourceBlock.resource,
-        reason:resourceBlock.reason,
-        actionType:normalizedAction,
-        actionResult
-      });
-      return{changed:true,completed:false,progress:null,planId:plan.id,blocked:true,resource:resourceBlock.resource};
-    }
+
+  // Resource failures are actionable only for the step that actually requires
+  // that resource/action. Incidental EATING/DRINKING must not block unrelated goals.
+  //
+  // Matching failures intentionally continue through the normal step-failure
+  // path, which marks the step FAILED and triggers replanning while keeping
+  // the parent goal ACTIVE.
+  if(
+    resourceBlock &&
+    (
+      expectedAction!==normalizedAction ||
+      !stepRequiresResource(step,resourceBlock.resource)
+    )
+  ){
+    return{changed:false,completed:false,progress:null,planId:plan.id,resourceFailureIgnored:true};
   }
 
   if(expectedAction===normalizedAction&&successful){
@@ -732,6 +756,11 @@ async function advancePlanForAction({simulationId,entityId,goalId,actionType,out
             attempts,
             lastAttemptAt:simulationTime,
             lastActionResult:actionResult||null,
+            ...(resourceBlock?{
+              blockedReason:"RESOURCE_UNAVAILABLE_REQUIRES_REPLAN",
+              resource:resourceBlock.resource,
+              resourceReason:resourceBlock.reason
+            }:{}),
             avoidLocationIds:[...avoidLocationIds].slice(0,8),
             avoidTargetEntityIds:[...avoidTargetEntityIds].slice(0,8)
           }),
@@ -761,7 +790,13 @@ async function advancePlanForAction({simulationId,entityId,goalId,actionType,out
               attempts,
               lastAttemptAt:simulationTime,
               lastActionResult:actionResult,
-              blockedReason:"ACTION_FAILED_REQUIRES_REPLAN",
+              blockedReason:resourceBlock
+                ?"RESOURCE_UNAVAILABLE_REQUIRES_REPLAN"
+                :"ACTION_FAILED_REQUIRES_REPLAN",
+              ...(resourceBlock?{
+                resource:resourceBlock.resource,
+                resourceReason:resourceBlock.reason
+              }:{}),
               avoidLocationIds:[...avoidLocationIds].slice(0,8),
               avoidTargetEntityIds:[...avoidTargetEntityIds].slice(0,8)
             }),
