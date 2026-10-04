@@ -151,6 +151,96 @@ async function ensureActionIdempotencyMigration(db) {
   }
 }
 
+const INTENTION_DECISION_MIGRATION = {
+  column: "decision_id",
+  index: "idx_intentions_simulation_decision"
+};
+
+async function ensureIntentionDecisionLinkMigration(db) {
+  const [columns] = await db.query(
+    `SELECT COUNT(*) AS count
+     FROM INFORMATION_SCHEMA.COLUMNS
+     WHERE TABLE_SCHEMA=DATABASE()
+       AND TABLE_NAME='intentions'
+       AND COLUMN_NAME=?`,
+    [INTENTION_DECISION_MIGRATION.column]
+  );
+
+  if (Number(columns[0]?.count || 0) === 0) {
+    await db.query(
+      `ALTER TABLE intentions
+       ADD COLUMN decision_id BINARY(16) NULL
+       AFTER plan_id`
+    );
+  }
+
+  // Backfill the link from the canonical action linkage. Actions already
+  // reference both the decision and the source intention, so this does not
+  // require guessing based on timestamps or action type.
+  await db.query(
+    `UPDATE intentions i
+     JOIN actions a
+       ON a.source_intention_id=i.id
+      AND a.simulation_id=i.simulation_id
+     SET i.decision_id=a.decision_id
+     WHERE i.decision_id IS NULL
+       AND a.decision_id IS NOT NULL`
+  );
+
+  const [indexes] = await db.query(
+    `SELECT COUNT(*) AS count
+     FROM INFORMATION_SCHEMA.STATISTICS
+     WHERE TABLE_SCHEMA=DATABASE()
+       AND TABLE_NAME='intentions'
+       AND INDEX_NAME=?`,
+    [INTENTION_DECISION_MIGRATION.index]
+  );
+  if (Number(indexes[0]?.count || 0) === 0) {
+    await db.query(
+      `ALTER TABLE intentions
+       ADD KEY idx_intentions_simulation_decision (simulation_id,decision_id)`
+    );
+  }
+
+  const [foreignKeys] = await db.query(
+    `SELECT COUNT(*) AS count
+     FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS
+     WHERE CONSTRAINT_SCHEMA=DATABASE()
+       AND TABLE_NAME='intentions'
+       AND CONSTRAINT_NAME='fk_intentions_decision'`
+  );
+  if (Number(foreignKeys[0]?.count || 0) === 0) {
+    await db.query(
+      `ALTER TABLE intentions
+       ADD CONSTRAINT fk_intentions_decision
+       FOREIGN KEY (decision_id)
+       REFERENCES decisions(id)
+       ON DELETE SET NULL
+       ON UPDATE RESTRICT`
+    );
+  }
+
+  const [sameSimulationForeignKeys] = await db.query(
+    `SELECT COUNT(*) AS count
+     FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS
+     WHERE CONSTRAINT_SCHEMA=DATABASE()
+       AND TABLE_NAME='intentions'
+       AND CONSTRAINT_NAME='fk_intentions_decision_same_simulation'`
+  );
+  if (Number(sameSimulationForeignKeys[0]?.count || 0) === 0) {
+    await db.query(
+      `ALTER TABLE intentions
+       ADD CONSTRAINT fk_intentions_decision_same_simulation
+       FOREIGN KEY (simulation_id,decision_id)
+       REFERENCES decisions(simulation_id,id)
+       ON DELETE CASCADE
+       ON UPDATE RESTRICT`
+    );
+  }
+
+  return true;
+}
+
 async function ensureDecisionOptionIntegrityMigration(db) {
   const [columns] = await db.query(
     `SELECT COUNT(*) AS count
@@ -244,6 +334,7 @@ async function ensurePlanningStatusMigrations() {
     }
     await ensureActionIdempotencyMigration(conn);
     await ensureDecisionOptionIntegrityMigration(conn);
+    await ensureIntentionDecisionLinkMigration(conn);
     await ensureActionLifecycleMigration(conn);
     const memoryRetention=await ensureMemoryRetentionMigration(conn);
     return { changed, actionIdempotency: true, actionLifecycle: true, memoryRetention };
