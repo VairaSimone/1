@@ -1,8 +1,8 @@
 const test=require('node:test');
 const assert=require('node:assert/strict');
 const {criticalNeedAction,criticalNeedTemporalSignal}=require('../src/services/decision-service');
-const {economicSeedDefinition,NEED_STRUCTURE_COOLDOWN_HOURS,ensureEconomicSeed}=require('../src/services/society-service');
-const {definitionTargetsNeed,countRecentStructuralPressureProposals}=require('../src/services/open-emergence-service');
+const {economicSeedDefinition,ensureEconomicSeed}=require('../src/services/society-service');
+const {definitionTargetsNeed,countRecentStructuralPressureProposals,NEED_STRUCTURE_COOLDOWN_HOURS}=require('../src/services/open-emergence-service');
 
 const SIM_TIME='2026-12-17T08:30:54.600Z';
 const TIED_NEEDS=[
