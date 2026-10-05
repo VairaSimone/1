@@ -290,7 +290,11 @@ function compactSnapshot(metrics={}) {
       goalBlocked:Number(counters.goal_blocked_total||0),
       goalStagnation:Number(counters.goal_stagnation_total||0),
       actorInactivity:Number(counters.actor_inactivity_total||0),
-      integrityViolations:Number(counters.integrity_violation_total||0)
+      integrityViolations:Number(counters.integrity_violation_total||0),
+      staleEvaluatedDecisions:Number(counters.stale_evaluated_decisions_total||0),
+      staleEvaluatedInvariantViolations:Number(counters.stale_evaluated_decision_invariant_violations_total||0),
+      staleEvaluatedRepaired:Number(counters.stale_evaluated_decisions_repaired_total||0),
+      staleEvaluatedCurrent:Number(gauges.stale_evaluated_decisions_current||0)
     }
   };
 }
