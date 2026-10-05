@@ -206,7 +206,7 @@ function deterministicFallbackDefinition(signal, proposer, simulationTime, { eco
   const names = ['Practice', 'Organize', 'Teach', 'Coordinate'];
   return normalizeDefinition({ kind, code: baseCode, name: (proposer.displayName || 'Locali') + ' - ' + needLabel + ' initiative', category: categories[variant], market: false, production: false, purpose: 'A new autonomous response to a shared ' + needLabel + ' pressure.', products: [], targetNeeds: [{ code: signal.needCode, weight: 2 }], activities: [{ code: activityCode, name: names[variant] + ' ' + needLabel + ' locally', category: categories[variant], durationMinutes: variant === 0 ? 45 : variant === 1 ? 60 : variant === 2 ? 75 : 90, needWeights: { [signal.needCode]: 2 }, gate: { needCode: signal.needCode, min: 0.30 }, effects: [{ type: 'NEED_DELTA', needCode: signal.needCode, delta: needDelta }] }], formation: 'BOTTOM_UP', membership: 'VOLUNTARY', origin: 'DETERMINISTIC_FALLBACK' });
 }
-async function askGemini(gemini, { simulationTime, scope, signal, proposer, actors, economicOpportunity = false, similarProposalCount = 0, recurringPressureProposals = 0, recentLocalDefinitions = [], existingLocalNeedCoverage = [] }) {
+async function askGemini(gemini, { simulationId, simulationTime, scope, signal, proposer, actors, economicOpportunity = false, similarProposalCount = 0, recurringPressureProposals = 0, recentLocalDefinitions = [], existingLocalNeedCoverage = [] }) {
   if (!gemini || typeof gemini.generateJson !== "function") return null;
   const context = {
     simulationTime,
@@ -266,7 +266,10 @@ async function askGemini(gemini, { simulationTime, scope, signal, proposer, acto
       maxModels: Math.max(2, Math.min(5, Number(require("../config/env").env.GEMINI_AUTONOMY_MAX_MODELS) || 3)),
       outputTokenCeilingOverride: 2048,
       timeoutMsOverride: 15000,
-      deadlineAt: Date.now() + 15000
+      deadlineAt: Date.now() + 15000,
+      simulationId,
+      entityId: proposer.entityId,
+      simulationTime
     });
   } catch (error) {
     logger.warn({
@@ -824,7 +827,7 @@ async function proposeForLocation(simulationId, simulationTime, scope, actors, g
     logger.debug({simulationId,simulationTime,scopeLocationId:scope.locationId,needCode:signal.needCode},'open-ended structural proposal suppressed by per-need cooldown');
     return null;
   }
-  const generated=await askGemini(gemini,{simulationTime,scope,signal,proposer,actors,economicOpportunity,similarProposalCount,recurringPressureProposals,existingLocalNeedCoverage,recentLocalDefinitions:recentLocalDefinitions.map(row=>({kind:row.kind,code:row.code,name:row.name,category:row.category,definition:parseJson(row.definition,{})}))});
+  const generated=await askGemini(gemini,{simulationId,simulationTime,scope,signal,proposer,actors,economicOpportunity,similarProposalCount,recurringPressureProposals,existingLocalNeedCoverage,recentLocalDefinitions:recentLocalDefinitions.map(row=>({kind:row.kind,code:row.code,name:row.name,category:row.category,definition:parseJson(row.definition,{})}))});
   const generationStatus=gemini?.lastRequestStatus||null;
   let generationSource=generated?'GEMINI':'DETERMINISTIC_FALLBACK';
   let definition=generated?normalizeDefinition({...generated,origin:'GEMINI'}):deterministicFallbackDefinition(signal,proposer,simulationTime,{economicOpportunity,variantIndex:similarProposalCount});
