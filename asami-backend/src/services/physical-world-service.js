@@ -68,11 +68,12 @@ async function seedPhysicalWorld(simulationId,simulationTime){
   for(const row of rows){
     const attributes=parseJson(row.attributes,{}),code=normalizeWorldCode(attributes.worldCode||row.locationType);
     if(!LOCATION_RESOURCES[code])continue;
-    const resources=attributes.resources||{},objects=Array.isArray(attributes.objects)?attributes.objects:[],defaults=LOCATION_RESOURCES[code];
+    const resources=attributes.resources||{},objects=Array.isArray(attributes.objects)?attributes.objects:(LOCATION_OBJECTS[code]||[]),defaults=LOCATION_RESOURCES[code];
     const desiredResources=Object.fromEntries(Object.entries(defaults).map(([k,v])=>[k,Number.isFinite(Number(resources[k]))?Number(resources[k]):v]));
     const desiredObjects=objects.length?objects:(LOCATION_OBJECTS[code]||[]);
-    const next={...attributes,resources:desiredResources,objects:desiredObjects,physicalUpdatedAt:simulationTime};
-    if(JSON.stringify(resources)===JSON.stringify(desiredResources)&&JSON.stringify(objects)===JSON.stringify(desiredObjects))continue;
+    const desiredRegenerationAt=attributes.resourceRegenerationAt||simulationTime;
+    const next={...attributes,resources:desiredResources,objects:desiredObjects,resourceRegenerationAt:desiredRegenerationAt,physicalUpdatedAt:simulationTime};
+    if(JSON.stringify(resources)===JSON.stringify(desiredResources)&&JSON.stringify(objects)===JSON.stringify(desiredObjects)&&attributes.resourceRegenerationAt===desiredRegenerationAt)continue;
     await pool.query(
       `UPDATE entities SET attributes=?,version=version+1
        WHERE id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?) AND version=?`,
@@ -97,7 +98,8 @@ async function loadActiveLocations(simulationId){
       worldCode:normalizeWorldCode(attributes.worldCode||row.locationType),
       data:parseJson(row.addressData,{}),
       resources:attributes.resources&&typeof attributes.resources==='object'?attributes.resources:{},
-      resourceEmergencies:attributes.resourceEmergencies&&typeof attributes.resourceEmergencies==='object'?attributes.resourceEmergencies:{}
+      resourceEmergencies:attributes.resourceEmergencies&&typeof attributes.resourceEmergencies==='object'?attributes.resourceEmergencies:{},
+       resourceRegenerationAt:attributes.resourceRegenerationAt||null
     };
   });
 }
@@ -182,76 +184,81 @@ async function ensureResourceReserveAtLocation({simulationId,locationId,resource
       reserve,
       reason
     };
-    return{...current,resources,resourceEmergencies:emergencies,physicalUpdatedAt:simulationTime};
+    return{...current,resources,resourceEmergencies:emergencies,resourceRegenerationAt:simulationTime,physicalUpdatedAt:simulationTime};
   },db);
   if(!next)return{recovered:false,replenished:0,locationId,resource,reserve};
   return result;
 }
 
 const RESOURCE_DISTRIBUTION_POLICY = Object.freeze({
-  water: { minimum: 4, cap: 20 }
+  water: { regenerationPerSimulationHour: 0.10, cap: 24 }
 });
 
 async function maintainDistributedResources(simulationId, simulationTime) {
-  const locations = await loadActiveLocations(simulationId);
-  if (!locations.length) return { replenished: [], checked: 0 };
+  const locations=await loadActiveLocations(simulationId);
+  if(!locations.length)return{replenished:[],checked:0};
 
-  const [actorRows] = await pool.query(
-    `SELECT BIN_TO_UUID(elc.location_id) AS locationId, COUNT(*) AS actors
-     FROM entity_locations_current elc
-     JOIN entities e ON e.id=elc.entity_id AND e.simulation_id=elc.simulation_id
-     JOIN entity_types et ON et.id=e.entity_type_id
-     WHERE elc.simulation_id=UUID_TO_BIN(?)
-       AND elc.location_id IS NOT NULL
-       AND et.category='ACTOR'
-       AND e.status NOT IN ('INACTIVE','DEAD')
-     GROUP BY elc.location_id`,
-    [simulationId]
-  );
-  const actorsByLocation = new Map(actorRows.map(row => [String(row.locationId), Number(row.actors || 0)]));
-  const replenished = [];
+  const nowMs=new Date(simulationTime).getTime();
+  if(!Number.isFinite(nowMs))return{replenished:[],checked:locations.length};
 
-  for (const location of locations) {
-    const actorCount = actorsByLocation.get(String(location.locationId)) || 0;
-    if (actorCount <= 0) continue;
-    const defaults = LOCATION_RESOURCES[location.worldCode] || {};
-    for (const [resource, policy] of Object.entries(RESOURCE_DISTRIBUTION_POLICY)) {
-      if (Number(defaults[resource] || 0) < 1) continue;
+  const replenished=[];
+  for(const location of locations){
+    const defaults=LOCATION_RESOURCES[location.worldCode]||{};
+    for(const [resource,policy] of Object.entries(RESOURCE_DISTRIBUTION_POLICY)){
+      if(Number(defaults[resource]||0)<1)continue;
 
-      const current = Number(location.resources?.[resource] ?? 0);
-      if (current >= policy.minimum) continue;
+      const current=Math.max(0,Number(location.resources?.[resource]??0));
+      const lastMs=location.resourceRegenerationAt
+        ?new Date(location.resourceRegenerationAt).getTime()
+        :NaN;
 
-      const target = Math.min(
-        policy.cap,
-        policy.minimum + Math.min(8, actorCount * 2)
-      );
-      const amount = Math.max(0, target - Math.max(0, current));
-      if (amount <= 0) continue;
+      if(!Number.isFinite(lastMs)){
+        const initialized=await updateLocationAttributes(simulationId,location.locationId,currentAttrs=>({
+          ...currentAttrs,
+          resourceRegenerationAt:simulationTime
+        }));
+        if(initialized)location.resourceRegenerationAt=simulationTime;
+        continue;
+      }
 
-      const remaining = await replenishResource({
-        simulationId,
-        locationId: location.locationId,
-        resource,
-        amount,
-        simulationTime
+      const elapsedHours=Math.max(0,Math.min(168,(nowMs-lastMs)/3600000));
+      if(elapsedHours<=0)continue;
+
+      const targetIncrease=Math.max(0,Number(policy.regenerationPerSimulationHour))*elapsedHours;
+      const amount=Math.min(Math.max(0,Number(policy.cap)-current),targetIncrease);
+
+      const next=await updateLocationAttributes(simulationId,location.locationId,currentAttrs=>{
+        const resources={...(currentAttrs.resources||{})};
+        const latestCurrent=Math.max(0,Number(resources[resource]??0));
+        const latestAmount=Math.min(
+          Math.max(0,Number(policy.cap)-latestCurrent),
+          targetIncrease
+        );
+        if(latestAmount>0)resources[resource]=latestCurrent+latestAmount;
+        return{...currentAttrs,resources,resourceRegenerationAt:simulationTime,physicalUpdatedAt:simulationTime};
       });
-      if (remaining !== null) {
-        replenished.push({
-          locationId: location.locationId,
-          locationType: location.locationType,
-          resource,
-          actorCount,
-          previous: current,
-          replenished: amount,
-          remaining,
-          reason: "OCCUPIED_LOCATION_DISTRIBUTION"
-        });
-        location.resources = { ...location.resources, [resource]: remaining };
+
+      if(next){
+        const remaining=Number(next.resources?.[resource]??0);
+        const actualReplenished=Math.max(0,remaining-current);
+        if(actualReplenished>0){
+          replenished.push({
+            locationId:location.locationId,
+            locationType:location.locationType,
+            resource,
+            elapsedHours:Number(elapsedHours.toFixed(3)),
+            replenished:Number(actualReplenished.toFixed(3)),
+            remaining,
+            reason:"TIME_BASED_REGENERATION"
+          });
+        }
+        location.resources={...location.resources,[resource]:remaining};
+        location.resourceRegenerationAt=simulationTime;
       }
     }
   }
 
-  return { replenished, checked: actorsByLocation.size };
+  return{replenished,checked:locations.length};
 }
 
 async function isCriticalResourceReachable(simulationId,entityId,resource){
@@ -329,7 +336,7 @@ async function consumeResource({simulationId,locationId,resource,amount,simulati
     const consumed=enough?quantity:0;
     if(enough)resources[resource]=available-quantity;
     result={ok:enough,consumed,remaining:resources[resource],resource};
-    return{...current,resources,physicalUpdatedAt:simulationTime};
+    return{...current,resources,resourceRegenerationAt:simulationTime,physicalUpdatedAt:simulationTime};
   },db);
   return next&&result?result:{ok:false,consumed:0,remaining:null,resource};
 }
@@ -350,21 +357,14 @@ async function replenishResource({simulationId,locationId,resource,amount,simula
 async function resolveActionResource({simulationId,locationId,actionType,simulationTime,conn=null}){
   const usage={DRINKING:{resource:"water",amount:1},EATING:{resource:"food",amount:1}}[actionType];
   if(!usage)return{ok:true,consumed:0,remaining:null,resource:null};
-  const first=await consumeResource({simulationId,locationId,resource:usage.resource,amount:usage.amount,simulationTime,db:conn||pool});
-  if(first.ok||first.remaining===null)return first;
-  const emergency=await ensureResourceReserveAtLocation({
+  return consumeResource({
     simulationId,
     locationId,
     resource:usage.resource,
+    amount:usage.amount,
     simulationTime,
-    reason:"ACTION_RESOURCE_RACE",
     db:conn||pool
   });
-  if(!emergency.recovered)return first;
-  const recovered=await consumeResource({simulationId,locationId,resource:usage.resource,amount:usage.amount,simulationTime,db:conn||pool});
-  return recovered.ok
-    ? {...recovered,emergencyRecovered:true,emergencyReason:emergency.reason,replenishedBy:emergency.replenished}
-    : first;
 }
 
 module.exports={
@@ -382,5 +382,6 @@ module.exports={
   CRITICAL_RESOURCE_RESERVES,
   RESOURCE_EMERGENCY_TTL_MINUTES,
   LOCATION_RESOURCES,
-  LOCATION_OBJECTS
+  LOCATION_OBJECTS,
+  RESOURCE_DISTRIBUTION_POLICY
 };
