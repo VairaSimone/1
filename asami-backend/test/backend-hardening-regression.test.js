@@ -476,7 +476,8 @@ test('occupied locations receive bounded critical-resource maintenance and plann
   const decision=read('services/decision-service.js');
   assert.match(physical,/RESOURCE_DISTRIBUTION_POLICY/);
   assert.match(physical,/maintainDistributedResources/);
-  assert.match(physical,/OCCUPIED_LOCATION_DISTRIBUTION/);
+  assert.match(physical,/TIME_BASED_REGENERATION/);
+  assert.doesNotMatch(physical,/OCCUPIED_LOCATION_DISTRIBUTION/);
   assert.match(engine,/maintainDistributedResources/);
   assert.match(decision,/findNearestResourceLocation/);
   assert.match(decision,/RESOURCE_UNAVAILABLE_LOCALLY/);
@@ -498,7 +499,7 @@ test('Gemini autonomy receives a bounded context',()=>{
   assert.match(source,/buildGeminiDecisionContext/);
   assert.match(source,/memories\.slice\(0,6\)/);
   assert.match(source,/recentFailures/);
-  assert.match(source,/gemini\.chooseDecision\(geminiContext\)/);
+  assert.match(source,/gemini\.chooseDecision\(geminiContext,\{simulationId,entityId,simulationTime\}\)/);
 });
 
 test('mental state is refreshed from canonical needs on every actor tick',()=>{
