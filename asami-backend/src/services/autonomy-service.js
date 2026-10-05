@@ -627,7 +627,7 @@ async function actForEntity({simulationId,entityId,simulationTime,gemini,tickId=
         :{status:"FALLBACK",source:"DETERMINISTIC_FALLBACK",reason:"UNKNOWN",attempted:true,retryAfterMs:0};
 
       if(requestStatus.attempted){
-        markGeminiDecisionUsed(entity.id,simulationTime,{highValue:effectiveGeminiTrigger.priority==="HIGH",triggerKey:effectiveGeminiTrigger.key||null});
+        markGeminiDecisionUsed(entity.id,simulationTime,{highValue:effectiveGeminiTrigger.priority==="HIGH",triggerKey:aiChoice?effectiveGeminiTrigger.key||null:null});
       }
 
       aiChoice=sanitizeGeminiChoice(generated,context,{socialContext,currentLocationId,worldLocations});
