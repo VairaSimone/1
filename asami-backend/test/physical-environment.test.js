@@ -1,7 +1,7 @@
 const test=require("node:test");
 const assert=require("node:assert/strict");
 const {shortestRoute,haversineMeters}=require("../src/services/action-service");
-const {LOCATION_RESOURCES,LOCATION_OBJECTS}=require("../src/services/physical-world-service");
+const {LOCATION_RESOURCES,LOCATION_OBJECTS,RESOURCE_DISTRIBUTION_POLICY}=require("../src/services/physical-world-service");
 const {EVENTS,WEATHER}=require("../src/services/environment-service");
 
 test("route uses connected path and real geographic distance",()=>{
@@ -36,3 +36,6 @@ test("temporary weather durations are explicitly bounded",()=>{
   assert.match(source,/weatherCode='CLEAR'/);
   assert.match(source,/lastWeatherChangeAt/);
 });
+
+
+test("water regeneration is time-based and capped",()=>{assert.equal(RESOURCE_DISTRIBUTION_POLICY.water.regenerationPerSimulationHour,0.10);assert.equal(RESOURCE_DISTRIBUTION_POLICY.water.cap,24);assert.equal("minimum" in RESOURCE_DISTRIBUTION_POLICY.water,false);});
