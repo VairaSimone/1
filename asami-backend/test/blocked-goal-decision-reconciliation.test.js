@@ -119,6 +119,14 @@ test("engine executes stale decision reconciliation in the same maintenance phas
   assert.ok(action>=0&&stale>action&&integrity>stale);
 });
 
+test("integrity checks independently flag EVALUATED decisions beyond the hard lifetime",()=>{
+  const source=read("services/integrity-check-service.js");
+  assert.match(source,/staleEvaluatedCutoff/);
+  assert.match(source,/name:"stale_evaluated_decisions"/);
+  assert.match(source,/status='EVALUATED'/);
+  assert.match(source,/DECISION_RECONCILIATION_MAX_EVALUATED_MINUTES/);
+});
+
 test("reconciler configuration has a bounded default grace window and batch size",()=>{
   const source=read("config/env.js");
   assert.match(source,/DECISION_RECONCILIATION_GRACE_MINUTES/);
