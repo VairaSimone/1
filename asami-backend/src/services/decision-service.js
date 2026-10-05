@@ -6,6 +6,7 @@ const {cognitiveExperienceModifier}=require("./experience-learning-service");
 const {calculateTraitNeedModifiers,calculateHistoryModifier,calculateHabitModifier}=require("./need-individualization-service");
 const {loadCapabilitiesForEntities,loadActivityCatalog,scoreDynamicActivity}=require("./world-capability-service");
 const {assertTransition}=require("./state-machine");
+const observability = require("./simulation-observability");
 const RESOURCE_SEARCH_TTL_MINUTES=180,RESOURCE_TRAVEL_BONUS=.85,WALKING_SPEED_KMH=4.8,ROAD_FACTOR=1.18,MAX_EXPERIENCE_SCORE_EFFECT=.65,MAX_RECENT_ACTIONS=12,MAX_RECENT_INTERRUPTION_HOURS=12,MAX_RECENT_SOCIAL_INTERACTIONS=12,STOCHASTIC_TOP_K=4,BASE_TEMPERATURE=.24,CRITICAL_TIE_WINDOW=.22,CRITICAL_DEBT_HOURS=12,CRITICAL_RECENT_SATISFACTION_HOURS=4;
 const LOCATION_ACTION_BIAS={HOME:{SLEEPING:.50,RESTING:.30,EATING:.18,DRINKING:.12},CAFE:{TALKING:.45,DRINKING:.35,EATING:.20,PLAYING:.08,READING:.05},SHOP:{EATING:.36,DRINKING:.42,EXPLORING:.05,WALKING:.05},LIBRARY:{READING:.45,STUDYING:.50,WORKING:.05,TALKING:-.08},SCHOOL:{STUDYING:.48,READING:.30,TALKING:.06,PLAYING:.03},PARK:{WALKING:.32,PLAYING:.35,TALKING:.25,EXPLORING:.28},SQUARE:{TALKING:.35,WALKING:.20,PLAYING:.18,EXPLORING:.08},COMMUNITY:{TALKING:.35,WORKING:.22,STUDYING:.18,PLAYING:.12},GYM:{PLAYING:.48,WALKING:.20,RESTING:.10},CLINIC:{RESTING:.20,WALKING:.05},NATURE:{EXPLORING:.42,WALKING:.36,PLAYING:.18},WORKSHOP:{WORKING:.46,STUDYING:.14,EXPLORING:.10}};
 function normalizeAction(v){return String(v||"").trim().toUpperCase();}
@@ -1340,6 +1341,7 @@ async function makeDecision({
     );
   });
 
+  observability.increment(simulationId,"decisions_created_total");
   return {
     decisionId,
     actionType: chosen,
