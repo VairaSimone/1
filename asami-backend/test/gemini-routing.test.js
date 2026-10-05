@@ -112,7 +112,7 @@ test("Dialogue retries with the compact schema after truncated output",()=>{
 });
 
 test("Chat isolates Gemini failures so deterministic delivery can still complete",()=>{
-  assert.match(chatSource,/generated=await gemini\.dialogue\(context\)/);
+  assert.match(chatSource,/generated=await gemini\.dialogue\(context,\{simulationId,entityId:asamiEntityId,simulationTime\}\)/);
   assert.match(chatSource,/Gemini dialogue failed; deterministic reply will be used/);
   assert.match(chatSource,/const reply=generated\?\.reply\|\|deterministicReply\(context,content\)/);
 });
