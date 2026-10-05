@@ -265,6 +265,7 @@ const POLICY = Object.freeze({
   intervalMs: positiveInt(process.env.RETENTION_CHECK_INTERVAL_MS, 15 * 60 * 1000, 60 * 1000),
   simulationIntervalHours: positiveInt(process.env.RETENTION_CHECK_SIMULATION_HOURS, 1, 1),
   decisionContextDays: positiveInt(process.env.RETENTION_DECISION_CONTEXT_DAYS, 2, 1),
+  decisionContextArchiveDays: positiveInt(process.env.RETENTION_DECISION_CONTEXT_ARCHIVE_DAYS, 2, 2),
   decisionOptionsDays: positiveInt(process.env.RETENTION_DECISION_OPTIONS_DAYS, 3, 2),
   cognitiveArtifactDays: positiveInt(process.env.RETENTION_COGNITIVE_ARTIFACT_DAYS, 14, 7),
   needHistoryDays: positiveInt(process.env.RETENTION_NEED_HISTORY_DAYS, 3, 1),
@@ -592,32 +593,92 @@ async function deleteOldMemories(conn, simulationId, simulationTime) {
 
 async function compactOldDecisionContexts(conn, simulationId, simulationTime) {
   const cutoff = cutoffDateTime(simulationTime, POLICY.decisionContextDays);
-  const sql =
-    "UPDATE decisions " +
-    "SET context=JSON_OBJECT(" +
-      "'schemaVersion',3," +
-      "'archived',true," +
-      "'status',status," +
-      "'selectedOptionId',IF(selected_option_id IS NULL,NULL,BIN_TO_UUID(selected_option_id))" +
-    ") " +
-    "WHERE simulation_id=UUID_TO_BIN(?) " +
-    "AND status IN ('EXECUTED','FAILED','CANCELLED') " +
-    "AND simulation_time < ? " +
-    "AND context IS NOT NULL " +
-    "AND (COALESCE(JSON_UNQUOTE(JSON_EXTRACT(context,'$.archived')),'false') <> 'true')";
+  const archiveCandidatesSql =
+    "SELECT BIN_TO_UUID(d.id) AS decisionId,d.entity_id AS entityId,d.simulation_id AS simulationId,d.simulation_time AS simulationTime,d.context " +
+    "FROM decisions d " +
+    "WHERE d.simulation_id=UUID_TO_BIN(?) " +
+    "AND d.status IN ('EXECUTED','FAILED','CANCELLED') " +
+    "AND d.simulation_time < ? " +
+    "AND d.context IS NOT NULL " +
+    "AND COALESCE(JSON_UNQUOTE(JSON_EXTRACT(d.context,'$.operational')),'false') <> 'true'";
+
   if (POLICY.dryRun) {
-    const countSql =
-      "SELECT COUNT(*) AS candidates FROM decisions " +
-      "WHERE simulation_id=UUID_TO_BIN(?) " +
-      "AND status IN ('EXECUTED','FAILED','CANCELLED') " +
-      "AND simulation_time < ? " +
-      "AND context IS NOT NULL " +
-      "AND (COALESCE(JSON_UNQUOTE(JSON_EXTRACT(context,'$.archived')),'false') <> 'true')";
-    const [rows] = await conn.query(countSql, [simulationId, cutoff]);
-    return { candidates: Number(rows[0]?.candidates || 0), updated: 0, dryRun: true };
+    const [rows] = await conn.query(
+      "SELECT COUNT(*) AS candidates FROM (" + archiveCandidatesSql + ") legacy_context",
+      [simulationId, cutoff]
+    );
+    return {candidates:Number(rows[0]?.candidates||0),archived:0,updated:0,dryRun:true};
   }
-  const [result] = await conn.query(sql, [simulationId, cutoff]);
-  return { candidates: Number(result.affectedRows || 0), updated: Number(result.affectedRows || 0) };
+
+  const [rows] = await conn.query(
+    archiveCandidatesSql + " ORDER BY d.simulation_time ASC LIMIT " + POLICY.batchSize,
+    [simulationId, cutoff]
+  );
+
+  let archived=0;
+  for(const row of rows){
+    if(!retentionBudgetAvailable(simulationId))break;
+    await conn.query(
+      `INSERT INTO decision_context_archive
+       (decision_id,simulation_id,entity_id,simulation_time,context)
+       VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?)
+       ON DUPLICATE KEY UPDATE context=VALUES(context),simulation_time=VALUES(simulation_time)`,
+      [row.decisionId,simulationId,row.entityId,row.simulationTime,row.context]
+    );
+    archived+=1;
+  }
+
+  const archivedIds=rows.slice(0,archived).map(row=>row.decisionId);
+  if(archivedIds.length){
+    const placeholders=archivedIds.map(()=> "UUID_TO_BIN(?)").join(",");
+    await conn.query(
+      "UPDATE decisions SET context=JSON_SET(" +
+        "COALESCE(context,JSON_OBJECT())," +
+        "'$.schemaVersion',4," +
+        "'$.operational',true," +
+        "'$.archived',true," +
+        "'$.chosenAction',JSON_EXTRACT(context,'$.chosenAction')," +
+        "'$.selectedOptionId',IF(selected_option_id IS NULL,NULL,BIN_TO_UUID(selected_option_id))" +
+      ") WHERE id IN ("+placeholders+")",
+      archivedIds
+    );
+  }
+
+  const [remaining] = await conn.query(
+    "SELECT COUNT(*) AS candidates FROM decisions d " +
+    "WHERE d.simulation_id=UUID_TO_BIN(?) " +
+    "AND d.status IN ('EXECUTED','FAILED','CANCELLED') " +
+    "AND d.simulation_time < ? " +
+    "AND d.context IS NOT NULL " +
+    "AND COALESCE(JSON_UNQUOTE(JSON_EXTRACT(d.context,'$.operational')),'false') <> 'true'",
+    [simulationId,cutoff]
+  );
+
+  return {
+    candidates:rows.length,
+    archived,
+    updated:archived,
+    remainingCandidates:Number(remaining[0]?.candidates||0)
+  };
+}
+
+async function deleteOldDecisionContextArchives(conn, simulationId, simulationTime) {
+  const cutoff=cutoffDateTime(simulationTime,POLICY.decisionContextArchiveDays);
+  const selectSql=
+    "SELECT BIN_TO_UUID(id) AS id FROM decision_context_archive " +
+    "WHERE simulation_id=UUID_TO_BIN(?) AND simulation_time < ? " +
+    "ORDER BY simulation_time ASC LIMIT "+POLICY.batchSize;
+  const countSql=
+    "SELECT COUNT(*) AS candidates FROM decision_context_archive " +
+    "WHERE simulation_id=UUID_TO_BIN(?) AND simulation_time < ?";
+  return deleteSelectedRows(conn,{
+    selectSql,
+    selectParams:[simulationId,cutoff],
+    countSql,
+    countParams:[simulationId,cutoff],
+    deleteTable:"decision_context_archive",
+    resultKey:"deleted"
+  });
 }
 
 async function deleteUnselectedDecisionOptions(conn, simulationId, simulationTime) {
@@ -1150,6 +1211,7 @@ async function runSafeRetention(simulationId, simulationTime) {
     const societyProduction = await aggregateAndDeleteOldEmergentProduction(lock.conn, simulationId, mysqlSimulationTime);
     const snapshots = await compactOldSnapshots(lock.conn, simulationId, mysqlSimulationTime);
     const context = await compactOldDecisionContexts(lock.conn, simulationId, mysqlSimulationTime);
+    const contextArchive = await deleteOldDecisionContextArchives(lock.conn, simulationId, mysqlSimulationTime);
     const options = await deleteUnselectedDecisionOptions(lock.conn, simulationId, mysqlSimulationTime);
     const memoryDedupeBackfilled = await backfillMemoryDedupeKeys(lock.conn, simulationId);
     const episodicMemoryCap = await archiveExcessEpisodicMemories(lock.conn, simulationId, mysqlSimulationTime);
@@ -1165,6 +1227,8 @@ async function runSafeRetention(simulationId, simulationTime) {
       simulationTime,
       dryRun: POLICY.dryRun,
       decisionContextsCompacted: Number(context.updated || 0),
+      decisionContextsArchived: Number(context.archived || 0),
+      decisionContextArchivesDeleted: Number(contextArchive.deleted || 0),
       decisionOptionsDeleted: Number(options.deleted || 0),
       eventsDeleted: Number(events.deleted || 0),
       actionDecisionSummariesUpdated: Number(actionSummaries.updated || 0),
@@ -1192,6 +1256,7 @@ async function runSafeRetention(simulationId, simulationTime) {
       counterfactualWorldsDeleted: Number(worlds.deleted || 0),
       decisionContextCandidates: Number(context.candidates || 0),
       decisionOptionCandidates: Number(options.candidates || 0),
+      decisionContextArchiveCandidates: Number(contextArchive.candidates || 0),
       eventCandidates: Number(events.candidates || 0),
       actionCandidates: Number(actions.candidates || 0),
       needHistoryCandidates: Number(needs.candidates || 0),
@@ -1224,7 +1289,8 @@ async function runSafeRetention(simulationId, simulationTime) {
         Number(relationshipHistory.remainingCandidates || 0) +
         Number(expectations.remainingCandidates || 0) +
         Number(counterfactuals.remainingCandidates || 0) +
-        Number(worlds.remainingCandidates || 0),
+        Number(worlds.remainingCandidates || 0) +
+        Number(contextArchive.remainingCandidates || 0),
       retentionBudgetMs: adaptiveProfile.timeBudgetMs,
       retentionBudgetRemainingMs: retentionBudgetRemainingMs(simulationId),
       adaptiveRetentionLevel: adaptiveProfile.level,
@@ -1242,7 +1308,8 @@ async function runSafeRetention(simulationId, simulationTime) {
       Number(memories.deleted || 0) +
       Number(expectations.deleted || 0) +
       Number(counterfactuals.deleted || 0) +
-      Number(worlds.deleted || 0);
+      Number(worlds.deleted || 0) +
+      Number(contextArchive.deleted || 0);
     const retentionTelemetry = await persistRetentionTelemetry(
       lock.conn,
       simulationId,
