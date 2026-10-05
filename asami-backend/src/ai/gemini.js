@@ -444,7 +444,7 @@ class GeminiService {
     this.lastAutonomyDecisionAt.set(entityId,new Date(simulationTime).getTime());
     return true;
   }
-  async generateJson(prompt,schema,{kind="autonomy",thinkingLevel="low",maxModels=null,timeoutMsOverride=null,outputTokenCeilingOverride=null,deadlineAt=null}={}){
+  async generateJson(prompt,schema,{kind="autonomy",thinkingLevel="low",maxModels=null,timeoutMsOverride=null,outputTokenCeilingOverride=null,deadlineAt=null,simulationId=null,entityId=null,simulationTime=null}={}){
     if(!this.client||this.shuttingDown){
       this.lastRequestStatus={status:"FALLBACK",source:"DETERMINISTIC_FALLBACK",reason:this.shuttingDown?"ENGINE_SHUTDOWN":"GEMINI_DISABLED",attempted:false,retryAfterMs:0,kind};
       return null;
@@ -519,7 +519,7 @@ class GeminiService {
         return null;
       }
       const model=models[modelIndex];
-      const reservation=await budget.reserve({prompt,outputTokenCeiling,kind});
+      const reservation=await budget.reserve({prompt,outputTokenCeiling,kind,simulationId,entityId,simulationTime});
       if(!reservation.allowed){
         this.lastRequestStatus={
           status:"FALLBACK",
@@ -833,7 +833,7 @@ class GeminiService {
     );
     return null;
   }
-  async chooseDecision(context){
+  async chooseDecision(context,{simulationId=null,entityId=null,simulationTime=null}={}){
     const trigger=context?.geminiTrigger?.reason||"ambiguous decision";
     const advanced=decisionNeedsAdvancedCognition(context);
     const schema=advanced?AdvancedDecisionSchema:DecisionSchema;
@@ -862,10 +862,13 @@ class GeminiService {
       kind:"autonomy",
       thinkingLevel,
       maxModels:advanced ? null : Number(env.GEMINI_AUTONOMY_MAX_MODELS),
-      outputTokenCeilingOverride:outputTokenCeiling
+      outputTokenCeilingOverride:outputTokenCeiling,
+      simulationId,
+      entityId,
+      simulationTime
     });
   }
-  async dialogue(context){
+  async dialogue(context,{simulationId=null,entityId=null,simulationTime=null}={}){
     const advanced=dialogueNeedsAdvancedCognition(context);
     const schema=advanced?AdvancedDialogueSchema:DialogueSchema;
     const compactOutputTokens=Math.max(1536,Number(env.GEMINI_DIALOGUE_COMPACT_OUTPUT_TOKEN_CEILING)||1536);
@@ -902,7 +905,10 @@ class GeminiService {
         maxModels:1,
         timeoutMsOverride:env.GEMINI_DIALOGUE_TIMEOUT_MS,
         outputTokenCeilingOverride:advanced?Number(env.GEMINI_DIALOGUE_OUTPUT_TOKEN_CEILING):compactOutputTokens,
-        deadlineAt:dialogueDeadlineAt
+        deadlineAt:dialogueDeadlineAt,
+        simulationId,
+        entityId,
+        simulationTime
       }
     );
     if(generated)return generated;
@@ -933,7 +939,10 @@ class GeminiService {
           maxModels:1,
           timeoutMsOverride:10000,
           outputTokenCeilingOverride:compactOutputTokens,
-          deadlineAt:retryDeadlineAt
+          deadlineAt:retryDeadlineAt,
+          simulationId,
+          entityId,
+          simulationTime
         }
       );
       if(retry)return retry;
@@ -952,7 +961,10 @@ class GeminiService {
           maxModels:env.GEMINI_DIALOGUE_MAX_MODELS,
           timeoutMsOverride:env.GEMINI_DIALOGUE_TIMEOUT_MS,
           outputTokenCeilingOverride:advanced?Number(env.GEMINI_DIALOGUE_OUTPUT_TOKEN_CEILING):compactOutputTokens,
-          deadlineAt:fallbackDeadlineAt
+          deadlineAt:fallbackDeadlineAt,
+          simulationId,
+          entityId,
+          simulationTime
         }
       );
     }
