@@ -76,6 +76,9 @@ test("Gemini never sends a provider deadline shorter than the 10-second minimum"
   assert.match(geminiSource,/remainingBudgetMs<MIN_PROVIDER_DEADLINE_MS/);
   assert.match(geminiSource,/Math\.max\(MIN_PROVIDER_DEADLINE_MS,Math\.min\(/);
   assert.doesNotMatch(geminiSource,/Math\.max\(1,Math\.min\(30000,configuredTimeoutMs,timeoutBudgetMs\)\)/);
+  const modelDeclaration=geminiSource.indexOf("const model=models[modelIndex];");
+  const deadlineGuard=geminiSource.indexOf('reason:"GEMINI_DEADLINE_TOO_SHORT"');
+  assert.ok(modelDeclaration>=0 && modelDeclaration<deadlineGuard);
 });
   
 
