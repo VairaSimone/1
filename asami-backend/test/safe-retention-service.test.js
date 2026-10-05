@@ -139,6 +139,19 @@ test("actor cognitive cap uses joined DELETE instead of LIMIT in IN subquery",()
   assert.doesNotMatch(block,/WHERE id IN \(SELECT id FROM \(SELECT id/);
 });
 
+test("decision context archive is bounded separately from the operational decision row",()=>{
+  const fs=require("node:fs");
+  const path=require("node:path");
+  const source=fs.readFileSync(path.join(__dirname,"../src/services/safe-retention-service.js"),"utf8");
+  const policy=retention.getRetentionPolicy();
+  assert.ok(policy.decisionContextArchiveDays>=2);
+  assert.match(source,/async function compactOldDecisionContexts/);
+  assert.match(source,/decision_context_archive/);
+  assert.match(source,/async function deleteOldDecisionContextArchives/);
+  assert.match(source,/decisionContextArchivesDeleted/);
+  assert.match(source,/JSON_EXTRACT\(d\.context,'\\$\.operational'\)/);
+});
+
 test("retention services continuous histories before slower cognitive cleanup",()=>{
   const fs=require("node:fs");
   const path=require("node:path");
