@@ -18,7 +18,7 @@ const Env = z.object({
   DB_STARTUP_RETRY_ATTEMPTS: z.coerce.number().int().min(1).max(60).default(12),
   DB_RETRY_BASE_MS: z.coerce.number().int().min(25).max(10000).default(250),
   DB_RETRY_MAX_MS: z.coerce.number().int().min(100).max(30000).default(5000),
-  DB_MAX_SIZE_MB: z.coerce.number().nonnegative().default(0),
+  DB_MAX_SIZE_MB: z.coerce.number().nonnegative().default(250),
   GEMINI_API_KEY: z.string().optional().default(""),
   GEMINI_MODEL: z.string().default("gemini-3.8-flash"),
   GEMINI_FALLBACK_MODELS: z.preprocess((value)=>{
