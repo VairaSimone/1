@@ -1,11 +1,29 @@
 const { pool } = require("../db/pool");
 const { uuid } = require("../lib/ids");
 const crypto = require("crypto");
+const observability = require("./simulation-observability");
 
 const DECAY_BATCH_SIZE = 250;
 const DECAY_CHECKPOINT_MINUTES = 360;
 const DECAY_PER_HOUR_FACTOR = 0.997;
 const lastDecayCheckBySimulation = new Map();
+
+async function recordMemoryStatusDistribution(simulationId){
+  if(!simulationId)return;
+  try{
+    const [rows]=await pool.query(
+      `SELECT status,COUNT(*) AS count
+       FROM memories
+       WHERE simulation_id=UUID_TO_BIN(?)
+       GROUP BY status`,
+      [simulationId]
+    );
+    const counts=Object.fromEntries(rows.map(row=>[String(row.status||"").toUpperCase(),Number(row.count||0)]));
+    for(const status of ["ACTIVE","FADING","FORGOTTEN","ARCHIVED"]){
+      observability.setGauge(simulationId,`memory_${status.toLowerCase()}_current`,counts[status]||0);
+    }
+  }catch{}
+}
 
 function compactMemoryMetadata(metadata) {
   if (!metadata || typeof metadata !== "object") return metadata || null;
@@ -239,12 +257,50 @@ async function createMemory({ simulationId, entityId, eventId = null, activityId
   const id = uuid(); await pool.query(`INSERT INTO memories (id,simulation_id,entity_id,memory_type,content,importance,strength,confidence,emotional_intensity,source_event_id,source_activity_id,location_id,created_simulation_at,status,metadata,memory_dedupe_key,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?, ?,?,?,?,UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,'ACTIVE',?,?,1)`, [id, simulationId, entityId, type, content, importance, strength, confidence, emotionalIntensity, eventId, activityId, locationId, simulationAt, metadata ? JSON.stringify(metadata) : null, dedupeKey]); return id;
 }
 
-async function decayMemories(simulationId, simulationTime) {
-  const nowMs = new Date(simulationTime).getTime(); const lastMs = lastDecayCheckBySimulation.get(simulationId); if (Number.isFinite(nowMs) && Number.isFinite(lastMs) && nowMs - lastMs < DECAY_CHECKPOINT_MINUTES * 60000) return; if (Number.isFinite(nowMs)) lastDecayCheckBySimulation.set(simulationId, nowMs);
-  const [rows] = await pool.query(`SELECT BIN_TO_UUID(id) AS id,strength,version,created_simulation_at AS createdSimulationAt,metadata FROM memories WHERE simulation_id=UUID_TO_BIN(?) AND status='ACTIVE' AND (forgotten_simulation_at IS NULL OR forgotten_simulation_at>?) AND TIMESTAMPDIFF(MINUTE,COALESCE(JSON_UNQUOTE(JSON_EXTRACT(metadata,'$.decayCheckpointAt')),created_simulation_at),?) >= ? ORDER BY importance DESC,strength ASC,created_simulation_at ASC LIMIT ?`, [simulationId, simulationTime, simulationTime, DECAY_CHECKPOINT_MINUTES, DECAY_BATCH_SIZE]);
-  for (const memory of rows) { const metadata = normalizeJson(memory.metadata) || {}, checkpoint = metadata.decayCheckpointAt || memory.createdSimulationAt; const elapsedMinutes = Math.max(0, (new Date(simulationTime).getTime() - new Date(checkpoint).getTime()) / 60000); if (!Number.isFinite(elapsedMinutes) || elapsedMinutes < DECAY_CHECKPOINT_MINUTES) continue; const next = Number(memory.strength) * Math.pow(DECAY_PER_HOUR_FACTOR, elapsedMinutes / 60); const nextMetadata = JSON.stringify({ ...metadata, decayCheckpointAt: simulationTime }); if (next < 0.05) await pool.query(`UPDATE memories SET strength=?,status='FORGOTTEN',forgotten_simulation_at=?,metadata=?,version=version+1 WHERE id=UUID_TO_BIN(?) AND version=?`, [next, simulationTime, nextMetadata, memory.id, memory.version]); else await pool.query(`UPDATE memories SET strength=?,metadata=?,version=version+1 WHERE id=UUID_TO_BIN(?) AND version=?`, [next, nextMetadata, memory.id, memory.version]); }
+async function decayMemories(simulationId,simulationTime){
+  const nowMs=new Date(simulationTime).getTime();
+  const lastMs=lastDecayCheckBySimulation.get(simulationId);
+  if(Number.isFinite(nowMs)&&Number.isFinite(lastMs)&&nowMs-lastMs<DECAY_CHECKPOINT_MINUTES*60000)return;
+  if(Number.isFinite(nowMs))lastDecayCheckBySimulation.set(simulationId,nowMs);
+  const [rows]=await pool.query(
+    `SELECT BIN_TO_UUID(id) AS id,strength,version,created_simulation_at AS createdSimulationAt,metadata
+     FROM memories
+     WHERE simulation_id=UUID_TO_BIN(?)
+       AND status='ACTIVE'
+       AND (forgotten_simulation_at IS NULL OR forgotten_simulation_at>?)
+       AND TIMESTAMPDIFF(MINUTE,COALESCE(JSON_UNQUOTE(JSON_EXTRACT(metadata,'$.decayCheckpointAt')),created_simulation_at),?)>=?
+     ORDER BY importance DESC,strength ASC,created_simulation_at ASC
+     LIMIT ?`,
+    [simulationId,simulationTime,simulationTime,DECAY_CHECKPOINT_MINUTES,DECAY_BATCH_SIZE]
+  );
+  for(const memory of rows){
+    const metadata=normalizeJson(memory.metadata)||{};
+    const checkpoint=metadata.decayCheckpointAt||memory.createdSimulationAt;
+    const elapsedMinutes=Math.max(0,(new Date(simulationTime).getTime()-new Date(checkpoint).getTime())/60000);
+    if(!Number.isFinite(elapsedMinutes)||elapsedMinutes<DECAY_CHECKPOINT_MINUTES)continue;
+    const previousStrength=Number(memory.strength)||0;
+    const next=previousStrength*Math.pow(DECAY_PER_HOUR_FACTOR,elapsedMinutes/60);
+    const nextMetadata=JSON.stringify({...metadata,decayCheckpointAt:simulationTime});
+    const forgotten=next<0.05;
+    if(forgotten){
+      await pool.query(
+        `UPDATE memories
+         SET strength=?,status='FORGOTTEN',forgotten_simulation_at=?,metadata=?,version=version+1
+         WHERE id=UUID_TO_BIN(?) AND version=?`,
+        [next,simulationTime,nextMetadata,memory.id,memory.version]
+      );
+    }else{
+      await pool.query(
+        `UPDATE memories SET strength=?,metadata=?,version=version+1
+         WHERE id=UUID_TO_BIN(?) AND version=?`,
+        [next,nextMetadata,memory.id,memory.version]
+      );
+    }
+    if(Math.abs(next-previousStrength)>0.000001)observability.increment(simulationId,"memory_strength_changed_total");
+    if(forgotten)observability.increment(simulationId,"memory_forgotten_total");
+  }
+  await recordMemoryStatusDistribution(simulationId);
 }
-
 function memoryRelevance(memory, context = {}) {
   const metadata = normalizeJson(memory.metadata) || {}, now = new Date(assertSimulationTime(context?.simulationTime)).getTime(), created = new Date(memory.simulationAt || memory.createdSimulationAt || 0).getTime();
   const ageHours = Number.isFinite(now) && Number.isFinite(created) && now >= created ? (now - created) / 3600000 : 0, halfLife = Math.max(1, Number(context.recencyHalfLifeHours || 36)), recency = Math.exp(-ageHours / halfLife);
@@ -289,7 +345,7 @@ async function recallContexts(simulationId,entityIds=[],limit=8,contextsByEntity
   const selectedIds=[];
   const grouped=new Map(ids.map(id=>[id,[]]));
   for(const row of rows){const list=grouped.get(row.entityId);if(list)list.push({...row,metadata:normalizeJson(row.metadata)});}
-  for(const id of ids){const base=contextsByEntity instanceof Map?contextsByEntity.get(id)||{}:(contextsByEntity&&contextsByEntity[id])||{},effectiveContext={...base,simulationTime:assertSimulationTime(base.simulationTime)};const memories=grouped.get(id)||[];memories.sort((a,b)=>memoryRelevance(b,effectiveContext)-memoryRelevance(a,effectiveContext)||Number(b.strength||0)-Number(a.strength||0)||new Date(b.simulationAt).getTime()-new Date(a.simulationAt).getTime());const selected=memories.slice(0,Math.min(Number(limit)||8,8));result.set(id,selected);for(const memory of selected)selectedIds.push(memory.id);}
+  for(const id of ids){const base=contextsByEntity instanceof Map?contextsByEntity.get(id)||{}:(contextsByEntity&&contextsByEntity[id])||{},effectiveContext={...base,simulationTime:assertSimulationTime(base.simulationTime)};const memories=grouped.get(id)||[];memories.sort((a,b)=>memoryRelevance(b,effectiveContext)-memoryRelevance(a,effectiveContext)||Number(b.strength||0)-Number(a.strength||0)||new Date(b.simulationAt).getTime()-new Date(a.simulationAt).getTime());const selected=memories.slice(0,Math.min(Number(limit)||8,8));result.set(id,selected);for(const memory of selected){selectedIds.push(memory.id);observability.increment(simulationId,"memory_recalled_total");}}
   if(selectedIds.length){const selectedPlaceholders=selectedIds.map(()=> 'UUID_TO_BIN(?)').join(',');await pool.query(`UPDATE memories SET last_recalled_simulation_at=?,version=version+1 WHERE simulation_id=UUID_TO_BIN(?) AND id IN (${selectedPlaceholders}) AND status='ACTIVE'`,[assertSimulationTime(contextsByEntity instanceof Map?contextsByEntity.values().next().value?.simulationTime:null),simulationId,...selectedIds]);}
   return result;
 }
@@ -312,4 +368,4 @@ async function recallContext(simulationId, entityId, limit = 8, context = {}) {
   return memories;
 }
 
-module.exports = { createMemory, decayMemories, listMemories, recallContext, recallContexts, buildMemoryContext, buildActionMemory, buildFailureMemory, memoryRelevance, deriveRecallContext, compactMemoryMetadata, isSalientActionOutcome, routineLocationKey, buildMemoryDedupeKey, upsertDeduplicatedActionMemory };
+module.exports = { createMemory, decayMemories, recordMemoryStatusDistribution, listMemories, recallContext, recallContexts, buildMemoryContext, buildActionMemory, buildFailureMemory, memoryRelevance, deriveRecallContext, compactMemoryMetadata, isSalientActionOutcome, routineLocationKey, buildMemoryDedupeKey, upsertDeduplicatedActionMemory };
