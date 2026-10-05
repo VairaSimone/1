@@ -672,7 +672,7 @@ async function compactOldDecisionContexts(conn, simulationId, simulationTime) {
 async function deleteOldDecisionContextArchives(conn, simulationId, simulationTime) {
   const cutoff=cutoffDateTime(simulationTime,POLICY.decisionContextArchiveDays);
   const selectSql=
-    "SELECT BIN_TO_UUID(id) AS id FROM decision_context_archive " +
+    "SELECT BIN_TO_UUID(decision_id) AS id FROM decision_context_archive " +
     "WHERE simulation_id=UUID_TO_BIN(?) AND simulation_time < ? " +
     "ORDER BY simulation_time ASC LIMIT "+POLICY.batchSize;
   const countSql=
