@@ -1,4 +1,6 @@
 const { z } = require("zod");
+
+const MIN_PROVIDER_DEADLINE_MS = 10000;
 const { env } = require("../config/env");
 const logger = require("../lib/logger");
 const budget = require("../services/gemini-budget-service");
@@ -527,7 +529,7 @@ class GeminiService {
       :Number(env.GEMINI_AUTONOMY_MAX_LATENCY_MS);
     const requestDeadlineAt=Number.isFinite(Number(deadlineAt))&&Number(deadlineAt)>Date.now()
       ?Number(deadlineAt)
-      :Date.now()+Math.max(5000,Number.isFinite(configuredMaxLatencyMs)?configuredMaxLatencyMs:12000);
+      :Date.now()+Math.max(MIN_PROVIDER_DEADLINE_MS,Number.isFinite(configuredMaxLatencyMs)?configuredMaxLatencyMs:12000);
 
     const configuredOutputTokenCeiling=Number(outputTokenCeilingOverride)||(
       kind==="dialogue"
@@ -586,6 +588,24 @@ class GeminiService {
     let lastTransientFailure=null;
     for(let modelIndex=0;modelIndex<models.length;modelIndex++){
       const remainingBudgetMs=requestDeadlineAt-Date.now();
+      if(remainingBudgetMs<MIN_PROVIDER_DEADLINE_MS){
+        this.lastRequestStatus={
+          status:"FALLBACK",
+          source:"DETERMINISTIC_FALLBACK",
+          reason:"GEMINI_DEADLINE_TOO_SHORT",
+          attempted:modelIndex>0,
+          retryAfterMs:0,
+          kind,
+          model
+        };
+        logger.debugThrottled(
+          `gemini:deadline-too-short:${kind}`,
+          60000,
+          {kind,model,remainingBudgetMs,minProviderDeadlineMs:MIN_PROVIDER_DEADLINE_MS},
+          "Gemini request skipped because less than the provider minimum deadline remained; deterministic fallback used"
+        );
+        return null;
+      }
       if(this.shuttingDown){
         this.lastRequestStatus={status:"FALLBACK",source:"DETERMINISTIC_FALLBACK",reason:"ENGINE_SHUTDOWN",attempted:modelIndex>0,retryAfterMs:0,kind};
         return null;
@@ -627,10 +647,22 @@ class GeminiService {
       }
 
       const configuredTimeoutMs=Number(timeoutMsOverride)||Number(env.GEMINI_TIMEOUT_MS)||30000;
-      const timeoutBudgetMs=Math.max(1,requestDeadlineAt-Date.now());
+      const timeoutBudgetMs=requestDeadlineAt-Date.now();
+      if(timeoutBudgetMs<MIN_PROVIDER_DEADLINE_MS){
+        this.lastRequestStatus={
+          status:"FALLBACK",
+          source:"DETERMINISTIC_FALLBACK",
+          reason:"GEMINI_DEADLINE_TOO_SHORT",
+          attempted:modelIndex>0,
+          retryAfterMs:0,
+          kind,
+          model
+        };
+        return null;
+      }
       const timeoutMs=kind==="dialogue"
-        ?Math.max(1,Math.min(30000,configuredTimeoutMs,timeoutBudgetMs))
-        :Math.max(1,Math.min(configuredTimeoutMs,timeoutBudgetMs));
+        ?Math.max(MIN_PROVIDER_DEADLINE_MS,Math.min(30000,configuredTimeoutMs,timeoutBudgetMs))
+        :Math.max(MIN_PROVIDER_DEADLINE_MS,Math.min(configuredTimeoutMs,timeoutBudgetMs));
       const startedAt=Date.now();
       const controller=new AbortController();
       this.activeControllers.add(controller);
