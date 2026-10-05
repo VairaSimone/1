@@ -122,6 +122,8 @@ function wallClockDailyPacedLimitUsd(now = new Date()) {
 const dailyPacedLimitUsd=wallClockDailyPacedLimitUsd;
 
 function simulationDayKey(value) {
+  const raw=String(value||"").trim();
+  if(/^\d{4}-\d{2}-\d{2}(?:[ T]|$)/.test(raw))return raw.slice(0,10);
   const date=new Date(value);
   return Number.isFinite(date.getTime())?date.toISOString().slice(0,10):null;
 }
