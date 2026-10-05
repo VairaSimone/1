@@ -68,13 +68,20 @@ function recordRecoveryFailed(simulationId) {
 function recordRetentionSummary(simulationId,summary={}) {
   const names=[
     ["retention_backlog_rows",summary.retentionBacklogTotal],
+    ["retention_backlog_before_rows",summary.retentionBacklogBefore],
     ["need_history_backlog_rows",summary.needHistoryBacklog],
     ["emotion_history_backlog_rows",summary.emotionHistoryBacklog],
     ["action_backlog_rows",summary.actionBacklog],
     ["event_backlog_rows",summary.eventBacklog],
-    ["action_decision_summary_backlog_rows",summary.actionDecisionSummaryBacklog]
+    ["action_decision_summary_backlog_rows",summary.actionDecisionSummaryBacklog],
+    ["retention_produced_rows_per_sim_day",summary.retentionProducedRowsPerSimDay],
+    ["retention_deleted_rows_per_sim_day",summary.retentionDeletedRowsPerSimDay],
+    ["retention_debt_age_hours",summary.retentionDebtAgeHours],
+    ["retention_overload_streak",summary.retentionOverloadStreak],
+    ["retention_adaptive_level",summary.adaptiveRetentionLevel]
   ];
   for(const [metric,value] of names)setGauge(simulationId,metric,value);
+  setGauge(simulationId,"retention_budget_ms",summary.retentionBudgetMs);
   setGauge(simulationId,"retention_budget_remaining_ms",summary.retentionBudgetRemainingMs);
 }
 
@@ -87,32 +94,64 @@ function actorKey(simulationId,entityId) {
   return String(simulationId)+":"+String(entityId);
 }
 
-function recordGoalProgress(simulationId,entityId,simulationTime,{goalId,progress=0,status="ACTIVE",actionType=null}={}){
+function getGoalObservabilityState(key,now,progress) {
+  return actorStates.get(key)||{
+    lastProgress:Number(progress)||0,
+    lastProgressAt:now,
+    lastActionAt:null,
+    activeTimeHours:0,
+    successfulActionsOnGoal:0,
+    failedActionsOnGoal:0,
+    actionCount:0,
+    countedActionKeys:new Set()
+  };
+}
+
+function goalProgressSnapshot(previous,simulationTime,numericProgress) {
+  const now=parseSimulationMs(simulationTime);
+  const timeSinceLastProgress=now===null?0:Math.max(0,(now-Number(previous.lastProgressAt||now))/3600000);
+  const timeSinceLastAction=now===null||previous.lastActionAt===null
+    ?null
+    :Math.max(0,(now-Number(previous.lastActionAt||now))/3600000);
+  return {
+    progress:numericProgress,
+    timeSinceLastProgress:Number(timeSinceLastProgress.toFixed(2)),
+    timeSinceLastAction:timeSinceLastAction===null?null:Number(timeSinceLastAction.toFixed(2)),
+    totalActiveTime:Number(Number(previous.activeTimeHours||0).toFixed(2)),
+    activeTimeOnCurrentGoal:Number(Number(previous.activeTimeHours||0).toFixed(2)),
+    successfulActionsOnGoal:Number(previous.successfulActionsOnGoal||0),
+    failedActionsOnGoal:Number(previous.failedActionsOnGoal||0),
+    actionCount:Number(previous.actionCount||0)
+  };
+}
+
+function recordGoalProgress(simulationId,entityId,simulationTime,{goalId,progress=0,status="ACTIVE",actionType=null}={}) {
   if(!simulationId||!entityId||!goalId)return null;
   const now=parseSimulationMs(simulationTime);
   if(now===null)return null;
   const key="goal:"+actorKey(simulationId,goalId);
-  const previous=actorStates.get(key)||{
-    lastProgress:Number(progress)||0,
-    lastProgressAt:now,
-    lastActivityAt:now
-  };
+  const previous=getGoalObservabilityState(key,now,progress);
   const numericProgress=Math.max(0,Math.min(1,Number(progress)||0));
   const previousProgress=Number(previous.lastProgress||0);
-  const previousActivityAt=Number(previous.lastActivityAt||now);
-  const stagnantHoursBefore=Math.max(0,(now-Number(previous.lastProgressAt||now))/3600000);
-  const activityHoursSinceLastAction=Math.max(0,(now-previousActivityAt)/3600000);
+  const timeSinceLastProgress=Math.max(0,(now-Number(previous.lastProgressAt||now))/3600000);
+  const timeSinceLastAction=previous.lastActionAt===null
+    ?null
+    :Math.max(0,(now-Number(previous.lastActionAt||now))/3600000);
   const progressed=numericProgress>previousProgress+0.0001;
   const active=!["COMPLETED","FAILED","CANCELLED","ABANDONED"].includes(String(status||"").toUpperCase());
+
   if(progressed){
     previous.lastProgress=numericProgress;
     previous.lastProgressAt=now;
   }
-  if(actionType)previous.lastActivityAt=now;
+  if(actionType){
+    previous.lastActionAt=now;
+    previous.actionCount=Number(previous.actionCount||0)+1;
+  }
   actorStates.set(key,previous);
   if(!active)return null;
+
   const stagnantHours=Math.max(0,(now-Number(previous.lastProgressAt||now))/3600000);
-  const activityHours=Math.max(0,actionType?activityHoursSinceLastAction:stagnantHoursBefore);
   const threshold=Math.max(1,Number(env.GOAL_STAGNATION_ALERT_HOURS)||24);
   if(stagnantHours<threshold||!actionType)return null;
   const alertKey=key+":alert";
@@ -121,14 +160,53 @@ function recordGoalProgress(simulationId,entityId,simulationTime,{goalId,progres
   if(lastAlert&&now-lastAlert<repeat*3600000)return null;
   actorStates.set(alertKey,{lastAlertAt:now});
   increment(simulationId,"goal_stagnation_total");
+
   return {
     entityId,
     goalId,
     simulationTime,
-    progress:numericProgress,
+    ...goalProgressSnapshot(previous,simulationTime,numericProgress),
     stagnantHours:Number(stagnantHours.toFixed(2)),
-    activityHours:Number(activityHours.toFixed(2)),
-    actionType
+    actionType,
+    deprecatedActivityHours:timeSinceLastAction===null?null:Number(timeSinceLastAction.toFixed(2))
+  };
+}
+
+function recordGoalActionOutcome(simulationId,entityId,simulationTime,{goalId,actionId=null,actionType=null,outcome=null,durationMinutes=0}={}) {
+  if(!simulationId||!entityId||!goalId)return null;
+  const now=parseSimulationMs(simulationTime);
+  if(now===null)return null;
+  const key="goal:"+actorKey(simulationId,goalId);
+  const previous=getGoalObservabilityState(key,now,0);
+  const actionKey=String(actionId||("at:"+simulationTime+"|"+String(actionType||"")+"|"+String(outcome||"")));
+  previous.countedActionKeys=previous.countedActionKeys instanceof Set?previous.countedActionKeys:new Set();
+  if(previous.countedActionKeys.has(actionKey)){
+    return goalProgressSnapshot(previous,simulationTime,previous.lastProgress);
+  }
+
+  const normalizedOutcome=String(outcome||"").trim().toUpperCase();
+  const durationHours=Math.max(0,Number(durationMinutes)||0)/60;
+  previous.activeTimeHours=Math.max(0,Number(previous.activeTimeHours||0))+durationHours;
+  if(["SUCCESS","SUCCEEDED","COMPLETED"].includes(normalizedOutcome)){
+    previous.successfulActionsOnGoal=Number(previous.successfulActionsOnGoal||0)+1;
+  }else if(["FAILURE","FAILED","CANCELLED","INTERRUPTED"].includes(normalizedOutcome)){
+    previous.failedActionsOnGoal=Number(previous.failedActionsOnGoal||0)+1;
+  }
+  previous.countedActionKeys.add(actionKey);
+  if(previous.countedActionKeys.size>128){
+    const first=previous.countedActionKeys.values().next().value;
+    if(first)previous.countedActionKeys.delete(first);
+  }
+  actorStates.set(key,previous);
+  return {
+    entityId,
+    goalId,
+    simulationTime,
+    actionId,
+    actionType,
+    outcome:normalizedOutcome||null,
+    actionDurationHours:Number(durationHours.toFixed(2)),
+    ...goalProgressSnapshot(previous,simulationTime,previous.lastProgress)
   };
 }
 
@@ -243,6 +321,7 @@ module.exports={
   recordRecoveryFailed,
   recordRetentionSummary,
   recordGoalProgress,
+  recordGoalActionOutcome,
   recordActorTick,
   snapshot,
   compactSnapshot,
