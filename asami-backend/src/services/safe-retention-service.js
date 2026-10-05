@@ -1,5 +1,6 @@
 const { pool, normalizeSimulationTimestamp } = require("../db/pool");
 const observability = require("./simulation-observability");
+const { recordMemoryStatusDistribution } = require("./memory-service");
 const logger = require("../lib/logger");
 const { withEventWriteLock } = require("./event-service");
 function parseJson(value,fallback={}){if(value===null||value===undefined)return fallback;if(typeof value==="object")return value;try{return JSON.parse(value);}catch{return fallback;}}
@@ -1227,8 +1228,9 @@ async function runSafeRetention(simulationId, simulationTime) {
     const cognitiveActorCaps = await deleteActorCognitiveArtifacts(lock.conn, simulationId, mysqlSimulationTime);
     const counterfactuals = await deleteResolvedCounterfactuals(lock.conn, simulationId, mysqlSimulationTime);
     const worlds = await deleteResolvedCounterfactualWorlds(lock.conn, simulationId, mysqlSimulationTime);
-    observability.increment(simulationId,"memory_archived_total",Number(memoryArchive.archived||0));
+    observability.increment(simulationId,"memory_archived_total",Number(memoryArchive.archived||0)+Number(episodicMemoryCap.archived||0));
     observability.increment(simulationId,"memory_deduplicated_total",Number(duplicateMemories.deleted||0));
+    await recordMemoryStatusDistribution(simulationId);
     const summary = {
       simulationId,
       simulationTime,
