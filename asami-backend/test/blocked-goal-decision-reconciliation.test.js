@@ -89,6 +89,28 @@ test("stale evaluated decisions use a simulated-time grace window and only fail 
   assert.match(section,/status='FAILED'/);
 });
 
+test("stale evaluated decisions enforce a hard lifetime and expose invariant telemetry",()=>{
+  const source=read("services/action-reconciliation-service.js");
+  const env=read("config/env.js");
+  const observability=read("services/simulation-observability.js");
+  const start=source.indexOf("async function reconcileStaleEvaluatedDecisions");
+  const end=source.indexOf("\nasync function reconcileCompletedActions",start);
+  const section=source.slice(start,end);
+  assert.ok(start>=0&&end>start);
+  assert.match(section,/DECISION_RECONCILIATION_MAX_EVALUATED_MINUTES/);
+  assert.match(section,/ACTIVE_ACTION_COMPLETION_DEADLINE_EXCEEDED/);
+  assert.match(section,/EVALUATED_DECISION_MAX_AGE_EXCEEDED/);
+  assert.match(section,/UPDATE actions/);
+  assert.match(section,/status='FAILED'/);
+  assert.match(section,/stale_evaluated_decisions_total/);
+  assert.match(section,/stale_evaluated_decision_invariant_violations_total/);
+  assert.match(section,/stale_evaluated_decisions_current/);
+  assert.match(env,/DECISION_RECONCILIATION_MAX_EVALUATED_MINUTES/);
+  assert.match(env,/\.default\(720\)/);
+  assert.match(observability,/staleEvaluatedDecisions/);
+  assert.match(observability,/staleEvaluatedInvariantViolations/);
+});
+
 test("engine executes stale decision reconciliation in the same maintenance phase as action reconciliation",()=>{
   const source=read("simulation/engine.js");
   const action=source.indexOf("reconcileCompletedActions");
