@@ -166,7 +166,7 @@ async function getOldestRetentionDebtAt(conn, simulationId, simulationTime) {
   return rows[0]?.oldest_at || null;
 }
 
-async function persistRetentionTelemetry(simulationId, simulationTime, summary, resolvedRows, previousState, adaptiveProfile) {
+async function persistRetentionTelemetry(conn, simulationId, simulationTime, summary, resolvedRows, previousState, adaptiveProfile) {
   try {
     await ensureRetentionTelemetryTable();
     const currentMs = simulationTimestampMs(simulationTime);
@@ -187,7 +187,7 @@ async function persistRetentionTelemetry(simulationId, simulationTime, summary, 
       : 0;
     const oldestAt = Number(summary.retentionBacklogTotal || 0) > 0
       ? await getOldestRetentionDebtAt(
-          pool,
+          conn,
           simulationId,
           simulationTime
         )
@@ -1244,6 +1244,7 @@ async function runSafeRetention(simulationId, simulationTime) {
       Number(counterfactuals.deleted || 0) +
       Number(worlds.deleted || 0);
     const retentionTelemetry = await persistRetentionTelemetry(
+      lock.conn,
       simulationId,
       simulationTime,
       summary,
