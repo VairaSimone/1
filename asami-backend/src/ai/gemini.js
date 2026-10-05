@@ -972,10 +972,11 @@ class GeminiService {
       "Reason for this Gemini consultation: "+trigger+".",
       JSON.stringify(context)
     ].join("\n");
+    const autonomyMaxModels=Math.max(1,Math.min(2,Number(env.GEMINI_AUTONOMY_MAX_MODELS)||2));
     return this.generateJson(prompt,schema,{
       kind:"autonomy",
       thinkingLevel,
-      maxModels:advanced ? null : Number(env.GEMINI_AUTONOMY_MAX_MODELS),
+      maxModels:autonomyMaxModels,
       outputTokenCeilingOverride:outputTokenCeiling,
       simulationId,
       entityId,
