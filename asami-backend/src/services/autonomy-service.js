@@ -13,6 +13,7 @@ const observability = require("./simulation-observability");
 const { readNeeds } = require("./state-service");
 
 const lastAutonomyDecisionAt=new Map();
+const lastGeminiTriggerKeyByEntity=new Map();
 const EXPLORATION_LOCATION_INTEREST={HOME:{},PARK:{FUN:.45,SOCIAL_NEED:.25,CURIOSITY:.30},CAFE:{SOCIAL_NEED:.55,BELONGING:.30,FUN:.20,CURIOSITY:.15},SHOP:{HUNGER:.25,THIRST:.25,CURIOSITY:.10},LIBRARY:{CURIOSITY:.70,ACHIEVEMENT:.55},SCHOOL:{ACHIEVEMENT:.60,CURIOSITY:.40},COMMUNITY:{SOCIAL_NEED:.50,BELONGING:.55,FUN:.25},GYM:{FUN:.45,ACHIEVEMENT:.20},CLINIC:{SAFETY:.60,COMFORT:.20},NATURE:{CURIOSITY:.80,FUN:.35},WORKSHOP:{ACHIEVEMENT:.55,CURIOSITY:.45}};
 const RESOURCE_NEED_CODES={water:"THIRST",food:"HUNGER"};
 const GOAL_PRESSURE_CODES=new Set(["HUNGER","THIRST","SLEEPINESS","SOCIAL_NEED","FUN","CURIOSITY","ACHIEVEMENT","BELONGING"]);
@@ -190,7 +191,7 @@ async function prepareTickAutonomyContext({simulationId,entityIds=[],simulationT
     const base=decisionContexts.get(id);if(!base)continue;
     const entity=entities.get(id);if(!entity)continue;
     const socialContext=socialContexts.get(id)||{partner:null,candidates:[],traits:[]};
-    base.social={partner:socialContext.partner,candidates:(socialContext.candidates||[]).map(candidate=>({id:candidate.id,name:candidate.name,relationshipType:candidate.relationshipType,compatibility:Number(Number(candidate.compatibility||0).toFixed(3)),romanticScore:Number(Number(candidate.romanticScore||0).toFixed(3)),familiarity:Number(candidate.relationship?.familiarity||0),closeness:Number(candidate.relationship?.closeness||0),affection:Number(candidate.relationship?.affection||0),trust:Number(candidate.relationship?.trust||0)}))};
+    base.social={partner:socialContext.partner,candidates:(socialContext.candidates||[]).map(candidate=>({id:candidate.id,name:candidate.name,relationshipType:candidate.relationshipType,compatibility:Number(Number(candidate.compatibility||0).toFixed(3)),romanticScore:Number(Number(candidate.romanticScore||0).toFixed(3)),familiarity:Number(candidate.relationship?.familiarity||0),closeness:Number(candidate.relationship?.closeness||0),affection:Number(candidate.relationship?.affection||0),trust:Number(candidate.relationship?.trust||0),conflict:Number(candidate.relationship?.conflict||0),irritation:Number(candidate.relationship?.irritation||0)}))};
     const currentLocationId=base.location?.locationId||null,visited=visitedByEntity.get(id)||new Map(),recentLocations=recentLocationsByEntity.get(id)||{};
     base.previousLocationId=recentLocations.previousLocationId||null;
     if(entity.entityType==='PERSON'&&currentLocationId){const target=await chooseSocialTarget(socialContext,simulationId,id,currentLocationId);if(target)base.social.travelTarget={entityId:target.entityId,name:target.name,locationId:target.locationId,remote:Boolean(target.remote),travelMinutes:Number(target.travelMinutes||0)};const destination=await chooseExplorationDestination(simulationId,id,currentLocationId,base.needs,simulationTime,worldLocations,visited,recentLocations.previousLocationId);if(destination)base.explorationDestination=destination;}
@@ -201,9 +202,153 @@ async function prepareTickAutonomyContext({simulationId,entityIds=[],simulationT
 }
 async function findAutonomousActors(simulationId,limit=100){const[rows]=await pool.query(`SELECT BIN_TO_UUID(e.id) AS id FROM entities e JOIN entity_types et ON et.id=e.entity_type_id WHERE e.simulation_id=UUID_TO_BIN(?) AND et.category='ACTOR' AND e.status NOT IN ('INACTIVE','DEAD') AND NOT EXISTS(SELECT 1 FROM autonomy_policies ap WHERE ap.simulation_id=e.simulation_id AND ap.policy_type='AUTONOMY' AND ap.enabled=0 AND(ap.entity_id=e.id OR ap.entity_id IS NULL)) ORDER BY e.created_simulation_at LIMIT ?`,[simulationId,limit]);return rows.map(row=>row.id);}
 function serializeReason(reason){if(reason===null||reason===undefined)return null;if(typeof reason==='string')return JSON.stringify({text:reason});return JSON.stringify(reason);}
-function getGeminiTrigger(entity,context,memories=[]){if(!entity||entity.entityType!=="PERSON")return null;const candidates=context.candidates||[],top=Number(candidates[0]?.score||0),second=Number(candidates[1]?.score||0),recentOutcomes=context.recentOutcomes||[],recentFailure=recentOutcomes.slice(0,4).find(item=>["FAILURE","PARTIAL"].includes(String(item.outcome||"").toUpperCase()));if(recentFailure)return{type:"FAILURE_REFLECTION",reason:"recent action failure or partial outcome",priority:"HIGH",action:recentFailure.actionType,outcome:recentFailure.outcome};const failureMemory=memories.find(memory=>{const metadata=parseJson(memory.metadata,null);return metadata?.outcome==="FAILURE"||metadata?.kind==="resource_failure"||metadata?.kind==="action_interruption";});if(failureMemory)return{type:"FAILURE_REFLECTION",reason:"recent failure/interruption memory requires reflection",priority:"HIGH",memoryId:failureMemory.id||null};if(!candidates.length)return{type:"NO_CANDIDATE",reason:"deterministic engine has no viable candidate",priority:"HIGH"};if(top-second<.12)return{type:"AMBIGUITY",reason:"decision is ambiguous",priority:"HIGH",margin:top-second};const activeGoal=(context.goals||[]).find(goal=>Number(goal.priority||0)>=.8&&Number(goal.progress||0)<1);if(activeGoal&&context.activePlanStep&&(Number(context.activePlanStep.sequence)>1||context.activePlanStep.status==="ACTIVE"))return{type:"PLAN_DELIBERATION",reason:"active multi-step goal benefits from strategic planning",priority:"HIGH",goalId:activeGoal.id,planStepId:context.activePlanStep.id};const mentalState=context.cognitiveProfile?.mentalState||{};if(Number(mentalState.rumination||0)>=.65||Number(mentalState.certainty||1)<=.3)return{type:"UNCERTAINTY",reason:"high rumination or low certainty warrants reflection",priority:"HIGH"};const now=new Date(context.simulationTime||Date.now()).getTime(),previous=lastAutonomyDecisionAt.get(entity.id),configured=Number(env.GEMINI_AUTONOMY_MIN_INTERVAL_MINUTES),periodicInterval=Math.max(60,Number.isFinite(configured)?configured:60);if(previous===undefined||Number.isFinite(now)&&now-previous>=periodicInterval*60000)return{type:"PERIODIC_DELIBERATION",reason:"periodic strategic review of goals, needs, conflicts and alternatives",priority:"MEDIUM"};return null;}
+function getGeminiTrigger(entity,context,memories=[]){
+  if(!entity||entity.entityType!=="PERSON")return null;
+
+  const candidates=Array.isArray(context.candidates)?context.candidates:[];
+  const top=Number(candidates[0]?.score||0);
+  const second=Number(candidates[1]?.score||0);
+
+  const interruptions=Array.isArray(context.recentInterruptions)?context.recentInterruptions:[];
+  const recentInterruption=interruptions.find(item=>{
+    const outcome=String(item?.result?.outcome||"").toUpperCase();
+    const status=String(item?.result?.status||"").toUpperCase();
+    return ["FAILURE","PARTIAL","INTERRUPTED","CANCELLED"].includes(outcome) ||
+      ["FAILED","INTERRUPTED","CANCELLED"].includes(status);
+  });
+  if(recentInterruption){
+    return{
+      type:"FAILURE_REFLECTION",
+      reason:"recent action interruption/failure requires reflection",
+      priority:"HIGH",
+      action:recentInterruption.actionType||null,
+      outcome:recentInterruption.result?.outcome||"INTERRUPTED",
+      key:"FAILURE_REFLECTION:"+(recentInterruption.id||recentInterruption.at||recentInterruption.actionType||"RECENT")
+    };
+  }
+
+  const failureMemory=memories.find(memory=>{
+    const metadata=parseJson(memory.metadata,null);
+    return metadata?.outcome==="FAILURE" ||
+      metadata?.outcome==="PARTIAL" ||
+      metadata?.kind==="resource_failure" ||
+      metadata?.kind==="action_interruption";
+  });
+  if(failureMemory){
+    return{
+      type:"FAILURE_REFLECTION",
+      reason:"recent failure/interruption memory requires reflection",
+      priority:"HIGH",
+      memoryId:failureMemory.id||null,
+      key:"FAILURE_MEMORY:"+(failureMemory.id||failureMemory.simulationAt||"RECENT")
+    };
+  }
+
+  const conflictCandidate=(context.social?.candidates||[]).find(candidate =>
+    Number(candidate.conflict||0)>=.65 ||
+    Number(candidate.irritation||0)>=.65
+  );
+  if(conflictCandidate){
+    return{
+      type:"SOCIAL_CONFLICT",
+      reason:"relationship conflict or irritation is high enough to require deliberation",
+      priority:"HIGH",
+      targetEntityId:conflictCandidate.id||null,
+      key:"SOCIAL_CONFLICT:"+
+        (conflictCandidate.id||"UNKNOWN")+":"+
+        Number(conflictCandidate.conflict||0).toFixed(2)+":"+
+        Number(conflictCandidate.irritation||0).toFixed(2)
+    };
+  }
+
+  if(!candidates.length){
+    return{
+      type:"NO_CANDIDATE",
+      reason:"deterministic engine has no viable candidate",
+      priority:"HIGH",
+      key:"NO_CANDIDATE"
+    };
+  }
+
+  if(candidates.length>1&&top-second<.12){
+    return{
+      type:"AMBIGUITY",
+      reason:"decision is ambiguous",
+      priority:"HIGH",
+      margin:top-second,
+      key:"AMBIGUITY:"+
+        normalizeAction(candidates[0]?.action)+":"+
+        normalizeAction(candidates[1]?.action)+":"+
+        Number(top-second).toFixed(3)
+    };
+  }
+
+  const activeGoal=(context.goals||[]).find(goal =>
+    Number(goal.priority||0)>=.8 &&
+    Number(goal.progress||0)<1
+  );
+  if(activeGoal&&context.activePlanStep&&
+    (Number(context.activePlanStep.sequence)>1||context.activePlanStep.status==="ACTIVE")){
+    return{
+      type:"PLAN_DELIBERATION",
+      reason:"active multi-step goal benefits from strategic planning",
+      priority:"HIGH",
+      goalId:activeGoal.id,
+      planStepId:context.activePlanStep.id,
+      key:"PLAN:"+activeGoal.id+":"+
+        (context.activePlanStep.id||context.activePlanStep.sequence||"ACTIVE")
+    };
+  }
+
+  const mentalState=context.cognitiveProfile?.mentalState||{};
+  if(Number(mentalState.rumination||0)>=.65||Number(mentalState.certainty||1)<=.3){
+    return{
+      type:"UNCERTAINTY",
+      reason:"high rumination or low certainty warrants reflection",
+      priority:"HIGH",
+      key:"UNCERTAINTY:"+
+        Number(mentalState.rumination||0).toFixed(2)+":"+
+        Number(mentalState.certainty||0).toFixed(2)
+    };
+  }
+
+  const now=new Date(context.simulationTime||Date.now()).getTime();
+  const periodicKey=Number.isFinite(now)
+    ?new Date(now).toISOString().slice(0,10)
+    :"UNKNOWN_DAY";
+  return{
+    type:"PERIODIC_DELIBERATION",
+    reason:"periodic strategic review of goals, needs, conflicts and alternatives",
+    priority:"MEDIUM",
+    key:"PERIODIC:"+periodicKey
+  };
+}
+
 function shouldAskGemini(entity,context,memories=[]){return Boolean(getGeminiTrigger(entity,context,memories));}
-function canUseGeminiDecision(entityId,simulationTime,{highValue=false,periodic=false}={}){if(geminiBudget.providerBlockRemainingMs()>0)return false;const now=new Date(simulationTime).getTime();if(!Number.isFinite(now))return false;const previous=lastAutonomyDecisionAt.get(entityId);if(previous===undefined)return true;const configured=Number(env.GEMINI_AUTONOMY_MIN_INTERVAL_MINUTES),normalInterval=Math.max(60,Number.isFinite(configured)?configured:60),intervalMinutes=highValue?Math.min(30,normalInterval):periodic?Math.min(60,normalInterval):normalInterval;return now-previous>=intervalMinutes*60000;}
+function canUseGeminiDecision(entityId,simulationTime,{highValue=false,periodic=false,triggerKey=null}={}){
+  if(geminiBudget.providerBlockRemainingMs()>0)return false;
+  if(geminiBudget.isLocallyBlocked("AUTONOMY"))return false;
+
+  const now=new Date(simulationTime).getTime();
+  if(!Number.isFinite(now))return false;
+
+  if(triggerKey&&lastGeminiTriggerKeyByEntity.get(entityId)===triggerKey)return false;
+
+  const previous=lastAutonomyDecisionAt.get(entityId);
+  if(previous===undefined)return true;
+
+  const configured=Number(env.GEMINI_AUTONOMY_MIN_INTERVAL_MINUTES);
+  const normalInterval=Math.max(60,Number.isFinite(configured)?configured:1440);
+  const highValueInterval=Math.max(
+    30,
+    Number.isFinite(Number(env.GEMINI_AUTONOMY_HIGH_VALUE_MIN_INTERVAL_MINUTES))
+      ?Number(env.GEMINI_AUTONOMY_HIGH_VALUE_MIN_INTERVAL_MINUTES)
+      :120
+  );
+
+  const intervalMinutes=highValue?highValueInterval:normalInterval;
+  return now-previous>=intervalMinutes*60000;
+}
 function markGeminiDecisionUsed(entityId,simulationTime){const now=new Date(simulationTime).getTime();if(Number.isFinite(now))lastAutonomyDecisionAt.set(entityId,now);}
 async function loadWorldLocations(simulationId){const[rows]=await pool.query(`SELECT BIN_TO_UUID(e.id) AS locationId,l.location_type AS locationType,l.latitude,l.longitude,l.address_data AS addressData,e.attributes FROM locations l JOIN entities e ON e.id=l.entity_id WHERE l.simulation_id=UUID_TO_BIN(?) AND e.simulation_id=UUID_TO_BIN(?) AND e.status='ACTIVE'`,[simulationId,simulationId]);return rows.map(row=>{const attributes=parseJson(row.attributes,{});return{locationId:row.locationId,locationType:row.locationType,latitude:Number(row.latitude),longitude:Number(row.longitude),data:parseJson(row.addressData,{}),resources:attributes.resources&&typeof attributes.resources==='object'?attributes.resources:{}};});}
 async function loadVisitedLocations(simulationId,entityId){const[rows]=await pool.query(`SELECT BIN_TO_UUID(location_id) AS locationId,MAX(entered_simulation_at) AS lastVisitedAt FROM entity_location_history WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) GROUP BY location_id`,[simulationId,entityId]);return new Map(rows.map(row=>[row.locationId,row.lastVisitedAt]));}
@@ -414,33 +559,66 @@ async function actForEntity({simulationId,entityId,simulationTime,gemini,tickId=
     };
   }
 
-  const memories=batchContext?.contexts?.has(entityId)?(context.memories||[]):await recallContext(simulationId,entityId,8,{simulationTime,goalIds:(context.goals||[]).map(goal=>goal.id).filter(Boolean),locationId:context.location?.locationId||null,locationType:context.location?.locationType||null,candidateActionTypes:(context.candidates||[]).map(candidate=>candidate.action).filter(Boolean)}),geminiTrigger=getGeminiTrigger(entity,context,memories);context.geminiTrigger=geminiTrigger;let aiChoice=null;
-let geminiDecision={status:"NOT_CONSULTED",source:"DETERMINISTIC",reason:"NO_GEMINI_TRIGGER",attempted:false,retryAfterMs:0};
-if(geminiTrigger){
-  if(!gemini?.client){
-    geminiDecision={status:"FALLBACK",source:"DETERMINISTIC_FALLBACK",reason:"GEMINI_UNAVAILABLE",attempted:false,retryAfterMs:0};
-  }else if(!canUseGeminiDecision(entity.id,simulationTime,{highValue:geminiTrigger.priority==="HIGH",periodic:geminiTrigger.type==="PERIODIC_DELIBERATION"})){
-    geminiDecision={status:"FALLBACK",source:"DETERMINISTIC_FALLBACK",reason:"LOCAL_INTERVAL",attempted:false,retryAfterMs:0};
+  const memories=batchContext?.contexts?.has(entityId)?(context.memories||[]):await recallContext(simulationId,entityId,8,{simulationTime,goalIds:(context.goals||[]).map(goal=>goal.id).filter(Boolean),locationId:context.location?.locationId||null,locationType:context.location?.locationType||null,candidateActionTypes:(context.candidates||[]).map(candidate=>candidate.action).filter(Boolean)});
+  const localBudgetBlocked=geminiBudget.isLocallyBlocked("AUTONOMY");
+  const geminiTrigger=localBudgetBlocked?null:getGeminiTrigger(entity,context,memories);
+
+  if(geminiTrigger&&geminiTrigger.key===lastGeminiTriggerKeyByEntity.get(entity.id)){
+    context.geminiTrigger=null;
   }else{
-    const worldLocations=worldLocationsCache||await loadWorldLocations(simulationId);
-    const geminiContext=buildGeminiDecisionContext({entity,context,memories});
-    const generated=await gemini.chooseDecision(geminiContext,{simulationId,entityId,simulationTime});
-    const requestStatus=gemini.lastRequestStatus&&typeof gemini.lastRequestStatus==="object"?{...gemini.lastRequestStatus}:{status:"FALLBACK",source:"DETERMINISTIC_FALLBACK",reason:"UNKNOWN",attempted:true,retryAfterMs:0};
-    if(requestStatus.attempted)markGeminiDecisionUsed(entity.id,simulationTime);
-    aiChoice=sanitizeGeminiChoice(generated,context,{socialContext,currentLocationId,worldLocations});
-    geminiDecision=aiChoice
-      ? {...requestStatus,status:"SUCCESS",source:"GEMINI",reason:"GEMINI_DECISION_ACCEPTED"}
-      : {...requestStatus,status:"FALLBACK",source:"DETERMINISTIC_FALLBACK",reason:generated?"INVALID_GEMINI_OUTPUT":requestStatus.reason||"GEMINI_FALLBACK"};
-    if(aiChoice?.planProposal&&goalState.goal)aiChoice.planProposal.goalId=goalState.goal.id;
+    context.geminiTrigger=geminiTrigger;
   }
-}
+
+  let aiChoice=null;
+  let geminiDecision={
+    status:"NOT_CONSULTED",
+    source:"DETERMINISTIC",
+    reason:localBudgetBlocked?"LOCAL_BUDGET_COOLDOWN":"NO_GEMINI_TRIGGER",
+    attempted:false,
+    retryAfterMs:0
+  };
+
+  const effectiveGeminiTrigger=context.geminiTrigger;
+  if(effectiveGeminiTrigger){
+    if(!gemini?.client){
+      geminiDecision={status:"FALLBACK",source:"DETERMINISTIC_FALLBACK",reason:"GEMINI_UNAVAILABLE",attempted:false,retryAfterMs:0};
+    }else if(!canUseGeminiDecision(
+      entity.id,
+      simulationTime,
+      {
+        highValue:effectiveGeminiTrigger.priority==="HIGH",
+        periodic:effectiveGeminiTrigger.type==="PERIODIC_DELIBERATION",
+        triggerKey:effectiveGeminiTrigger.key||null
+      }
+    )){
+      geminiDecision={status:"FALLBACK",source:"DETERMINISTIC_FALLBACK",reason:"LOCAL_INTERVAL",attempted:false,retryAfterMs:0};
+    }else{
+      const worldLocations=worldLocationsCache||await loadWorldLocations(simulationId);
+      const geminiContext=buildGeminiDecisionContext({entity,context,memories});
+      const generated=await gemini.chooseDecision(geminiContext,{simulationId,entityId,simulationTime});
+      const requestStatus=gemini.lastRequestStatus&&typeof gemini.lastRequestStatus==="object"
+        ?{...gemini.lastRequestStatus}
+        :{status:"FALLBACK",source:"DETERMINISTIC_FALLBACK",reason:"UNKNOWN",attempted:true,retryAfterMs:0};
+
+      if(requestStatus.attempted){
+        markGeminiDecisionUsed(entity.id,simulationTime,effectiveGeminiTrigger.key||null);
+      }
+
+      aiChoice=sanitizeGeminiChoice(generated,context,{socialContext,currentLocationId,worldLocations});
+      geminiDecision=aiChoice
+        ?{...requestStatus,status:"SUCCESS",source:"GEMINI",reason:"GEMINI_DECISION_ACCEPTED"}
+        :{...requestStatus,status:"FALLBACK",source:"DETERMINISTIC_FALLBACK",reason:generated?"INVALID_GEMINI_OUTPUT":requestStatus.reason||"GEMINI_FALLBACK"};
+
+      if(aiChoice?.planProposal&&goalState.goal)aiChoice.planProposal.goalId=goalState.goal.id;
+    }
+  }
 context.geminiDecision=geminiDecision;
 const decision=await decisionService.makeDecision({simulationId,entityId,simulationTime,triggerType:geminiTrigger?.type||null,triggerEventId:null,context,aiChoice});
   try{
     const reason=String(geminiDecision.reason||"");
     const telemetryOutcome=aiChoice
       ?"AI_DECISION"
-      :(!geminiTrigger||reason==="NO_GEMINI_TRIGGER"||reason==="LOCAL_INTERVAL"
+      :(!effectiveGeminiTrigger||reason==="NO_GEMINI_TRIGGER"||reason==="LOCAL_INTERVAL"||reason==="LOCAL_BUDGET_COOLDOWN"
         ?"DETERMINISTIC_DECISION"
         :(!geminiDecision.attempted||["GEMINI_DISABLED","ALL_GEMINI_MODELS_BLOCKED","DAILY_BUDGET","MONTHLY_BUDGET"].includes(reason)
           ?"AI_UNAVAILABLE"
