@@ -144,6 +144,36 @@ async function createSimulation({ name, startedSimulationAt, asami }) {
   });
 }
 
+async function pauseRunningSimulationsForDatabaseSizeLimit() {
+  return withTransaction(async conn => {
+    const [rows] = await conn.query(
+      `SELECT BIN_TO_UUID(id) AS id
+       FROM simulations
+       WHERE status='RUNNING'
+       FOR UPDATE`
+    );
+    if (!rows.length) return [];
+
+    await conn.query(
+      `UPDATE simulation_clock_segments s
+       JOIN simulations sim ON sim.id=s.simulation_id
+       SET s.status='CLOSED',
+           s.ended_real_at=UTC_TIMESTAMP(3),
+           s.ended_simulation_at=sim.current_simulation_at
+       WHERE sim.status='RUNNING'
+         AND s.status='ACTIVE'`
+    );
+
+    await conn.query(
+      `UPDATE simulations
+       SET status='PAUSED', version=version+1
+       WHERE status='RUNNING'`
+    );
+
+    return rows.map(row => row.id);
+  });
+}
+
 async function setStatus(id, status) {
   return withTransaction(async conn => {
     const [sims] = await conn.query(`
@@ -356,7 +386,7 @@ async function createSnapshot(id, simulationTime, state, snapshotVersion = 2) {
   await pool.query("INSERT INTO simulation_snapshots (id,simulation_id,simulation_time,snapshot_version,state) VALUES (UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?)",[uuid(),id,simulationTime,snapshotVersion,JSON.stringify(snapshotState)]);
 }
 module.exports = {
-  listSimulations, getSimulation, createSimulation, setStatus, changeSpeed,
+  listSimulations, getSimulation, createSimulation, setStatus, pauseRunningSimulationsForDatabaseSizeLimit, changeSpeed,
   getActiveClock, updateCurrentTimeOptimistic, advanceAndCreateTick, createTick, finishTick,
   completeTick: finishTick, reconcileStaleRunningTicks, buildSimulationSnapshotState, createSnapshot
 };
