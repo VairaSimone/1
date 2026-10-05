@@ -357,14 +357,39 @@ async function replenishResource({simulationId,locationId,resource,amount,simula
 async function resolveActionResource({simulationId,locationId,actionType,simulationTime,conn=null}){
   const usage={DRINKING:{resource:"water",amount:1},EATING:{resource:"food",amount:1}}[actionType];
   if(!usage)return{ok:true,consumed:0,remaining:null,resource:null};
-  return consumeResource({
+
+  const db=conn||pool;
+  const first=await consumeResource({
     simulationId,
     locationId,
     resource:usage.resource,
     amount:usage.amount,
     simulationTime,
-    db:conn||pool
+    db
   });
+  if(first.ok||first.remaining===null)return first;
+
+  const emergency=await ensureResourceReserveAtLocation({
+    simulationId,
+    locationId,
+    resource:usage.resource,
+    simulationTime,
+    reason:"ACTION_RESOURCE_RACE",
+    db
+  });
+  if(!emergency.recovered)return first;
+
+  const recovered=await consumeResource({
+    simulationId,
+    locationId,
+    resource:usage.resource,
+    amount:usage.amount,
+    simulationTime,
+    db
+  });
+  return recovered.ok
+    ?{...recovered,emergencyRecovered:true,emergencyReason:emergency.reason,replenishedBy:emergency.replenished}
+    :first;
 }
 
 module.exports={
