@@ -13,6 +13,8 @@ const observability = require("./simulation-observability");
 const { readNeeds } = require("./state-service");
 
 const lastAutonomyDecisionAt=new Map();
+const lastHighValueGeminiDecisionAt=new Map();
+const lastPeriodicGeminiDecisionAt=new Map();
 const lastGeminiTriggerKeyByEntity=new Map();
 const EXPLORATION_LOCATION_INTEREST={HOME:{},PARK:{FUN:.45,SOCIAL_NEED:.25,CURIOSITY:.30},CAFE:{SOCIAL_NEED:.55,BELONGING:.30,FUN:.20,CURIOSITY:.15},SHOP:{HUNGER:.25,THIRST:.25,CURIOSITY:.10},LIBRARY:{CURIOSITY:.70,ACHIEVEMENT:.55},SCHOOL:{ACHIEVEMENT:.60,CURIOSITY:.40},COMMUNITY:{SOCIAL_NEED:.50,BELONGING:.55,FUN:.25},GYM:{FUN:.45,ACHIEVEMENT:.20},CLINIC:{SAFETY:.60,COMFORT:.20},NATURE:{CURIOSITY:.80,FUN:.35},WORKSHOP:{ACHIEVEMENT:.55,CURIOSITY:.45}};
 const RESOURCE_NEED_CODES={water:"THIRST",food:"HUNGER"};
@@ -248,6 +250,25 @@ function getGeminiTrigger(entity,context,memories=[]){
     Number(candidate.conflict||0)>=.65 ||
     Number(candidate.irritation||0)>=.65
   );
+
+  const recentSocialTargets=Array.isArray(context.recentSocialTargets)
+    ?context.recentSocialTargets
+    :[];
+  const recentSocialTarget=recentSocialTargets[0]||null;
+  const newRelationshipCandidate=(context.social?.candidates||[]).find(candidate =>
+    String(candidate.id||"")===String(recentSocialTarget||"") &&
+    String(candidate.relationshipType||"").toUpperCase()==="ACQUAINTANCE" &&
+    Number(candidate.familiarity||0)<=.18
+  );
+  if(newRelationshipCandidate){
+    return{
+      type:"NEW_RELATIONSHIP",
+      reason:"a new social bond is forming and merits deliberation",
+      priority:"HIGH",
+      targetEntityId:newRelationshipCandidate.id||null,
+      key:"NEW_RELATIONSHIP:"+(newRelationshipCandidate.id||"UNKNOWN")
+    };
+  }
   if(conflictCandidate){
     return{
       type:"SOCIAL_CONFLICT",
@@ -334,9 +355,6 @@ function canUseGeminiDecision(entityId,simulationTime,{highValue=false,periodic=
 
   if(triggerKey&&lastGeminiTriggerKeyByEntity.get(entityId)===triggerKey)return false;
 
-  const previous=lastAutonomyDecisionAt.get(entityId);
-  if(previous===undefined)return true;
-
   const configured=Number(env.GEMINI_AUTONOMY_MIN_INTERVAL_MINUTES);
   const normalInterval=Math.max(60,Number.isFinite(configured)?configured:1440);
   const highValueInterval=Math.max(
@@ -346,10 +364,21 @@ function canUseGeminiDecision(entityId,simulationTime,{highValue=false,periodic=
       :120
   );
 
+  const clock=highValue
+    ?lastHighValueGeminiDecisionAt.get(entityId)
+    :lastPeriodicGeminiDecisionAt.get(entityId);
   const intervalMinutes=highValue?highValueInterval:normalInterval;
-  return now-previous>=intervalMinutes*60000;
+  if(clock===undefined)return true;
+  return now-clock>=intervalMinutes*60000;
 }
-function markGeminiDecisionUsed(entityId,simulationTime){const now=new Date(simulationTime).getTime();if(Number.isFinite(now))lastAutonomyDecisionAt.set(entityId,now);}
+function markGeminiDecisionUsed(entityId,simulationTime,{highValue=false,triggerKey=null}={}){
+  const now=new Date(simulationTime).getTime();
+  if(!Number.isFinite(now))return;
+  lastAutonomyDecisionAt.set(entityId,now);
+  if(highValue)lastHighValueGeminiDecisionAt.set(entityId,now);
+  else lastPeriodicGeminiDecisionAt.set(entityId,now);
+  if(triggerKey)lastGeminiTriggerKeyByEntity.set(entityId,triggerKey);
+}
 async function loadWorldLocations(simulationId){const[rows]=await pool.query(`SELECT BIN_TO_UUID(e.id) AS locationId,l.location_type AS locationType,l.latitude,l.longitude,l.address_data AS addressData,e.attributes FROM locations l JOIN entities e ON e.id=l.entity_id WHERE l.simulation_id=UUID_TO_BIN(?) AND e.simulation_id=UUID_TO_BIN(?) AND e.status='ACTIVE'`,[simulationId,simulationId]);return rows.map(row=>{const attributes=parseJson(row.attributes,{});return{locationId:row.locationId,locationType:row.locationType,latitude:Number(row.latitude),longitude:Number(row.longitude),data:parseJson(row.addressData,{}),resources:attributes.resources&&typeof attributes.resources==='object'?attributes.resources:{}};});}
 async function loadVisitedLocations(simulationId,entityId){const[rows]=await pool.query(`SELECT BIN_TO_UUID(location_id) AS locationId,MAX(entered_simulation_at) AS lastVisitedAt FROM entity_location_history WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) GROUP BY location_id`,[simulationId,entityId]);return new Map(rows.map(row=>[row.locationId,row.lastVisitedAt]));}
 function locationInterestScore(location,needs){const weights=EXPLORATION_LOCATION_INTEREST[location.locationType]||{};return Object.entries(weights).reduce((sum,[needCode,weight])=>sum+clamp(needs.find(item=>item.code===needCode)?.value||0)*weight,0);}
@@ -601,7 +630,7 @@ async function actForEntity({simulationId,entityId,simulationTime,gemini,tickId=
         :{status:"FALLBACK",source:"DETERMINISTIC_FALLBACK",reason:"UNKNOWN",attempted:true,retryAfterMs:0};
 
       if(requestStatus.attempted){
-        markGeminiDecisionUsed(entity.id,simulationTime,effectiveGeminiTrigger.key||null);
+        markGeminiDecisionUsed(entity.id,simulationTime,{highValue:effectiveGeminiTrigger.priority==="HIGH",triggerKey:effectiveGeminiTrigger.key||null});
       }
 
       aiChoice=sanitizeGeminiChoice(generated,context,{socialContext,currentLocationId,worldLocations});
