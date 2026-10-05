@@ -61,6 +61,28 @@ test("cognitive memory recall requires an explicit simulation timestamp", async 
   );
 });
 
+test("memory lifecycle exposes transition counters and current state gauges",()=>{
+  const fs=require("node:fs");
+  const path=require("node:path");
+  const memory=fs.readFileSync(path.join(__dirname,"../src/services/memory-service.js"),"utf8");
+  const retention=fs.readFileSync(path.join(__dirname,"../src/services/safe-retention-service.js"),"utf8");
+  const observability=fs.readFileSync(path.join(__dirname,"../src/services/simulation-observability.js"),"utf8");
+  for(const name of [
+    "memory_created_total",
+    "memory_recalled_total",
+    "memory_strength_changed_total",
+    "memory_forgotten_total",
+    "memory_deduplicated_total",
+    "memory_archived_total"
+  ]) assert.match(memory+retention,new RegExp(name));
+  assert.match(memory,/recordMemoryStatusDistribution/);
+  assert.match(memory,/memory_active_current/);
+  assert.match(memory,/memory_fading_current/);
+  assert.match(memory,/memory_forgotten_current/);
+  assert.match(memory,/memory_archived_current/);
+  assert.match(observability,/memory.*Current|memory_active_current/);
+});
+
 test("memory relevance never falls back to wall-clock time", () => {
   assert.throws(
     () =>
