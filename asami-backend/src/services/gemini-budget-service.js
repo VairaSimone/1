@@ -131,6 +131,14 @@ function simulationDayKey(value) {
 function rowKey(type, key) {
   return `${type}:${key}`;
 }
+function localBudgetBlockStatus(kind="AUTONOMY"){
+  const budgetKind=String(kind||"").toUpperCase()==="DIALOGUE"?"DIALOGUE":"AUTONOMY";
+  const remainingMs=Math.max(0,Number(budgetBlockedUntil.get(budgetKind)||0)-Date.now());
+  return {blocked:remainingMs>0,remainingMs};
+}
+function isLocallyBlocked(kind="AUTONOMY"){
+  return localBudgetBlockStatus(kind).blocked;
+}
 
 function blockProvider(delayMs = 60_000, reason = "PROVIDER_RATE_LIMIT") {
   const safeDelay = Math.max(10_000, Number(delayMs) || 60_000);
@@ -433,4 +441,4 @@ async function getSimulationDecisionCoverage(simulationId){
   };
 }
 
-module.exports = { ensureGeminiUsageTable, reserve, finalize, release, restoreRejectedRequest, recordDecisionOutcome, getSimulationDecisionCoverage, getUsage, blockProvider, providerBlockRemainingMs, providerBlockStatus, estimateInputTokens, estimateCostUsd, dailyPacedLimitUsd, wallClockDailyPacedLimitUsd, simulationDayKey };
+module.exports = { ensureGeminiUsageTable, reserve, finalize, release, restoreRejectedRequest, recordDecisionOutcome, getSimulationDecisionCoverage, getUsage, blockProvider, providerBlockRemainingMs, providerBlockStatus, localBudgetBlockStatus, isLocallyBlocked, estimateInputTokens, estimateCostUsd, dailyPacedLimitUsd, wallClockDailyPacedLimitUsd, simulationDayKey };
