@@ -424,7 +424,7 @@ if(geminiTrigger){
   }else{
     const worldLocations=worldLocationsCache||await loadWorldLocations(simulationId);
     const geminiContext=buildGeminiDecisionContext({entity,context,memories});
-    const generated=await gemini.chooseDecision(geminiContext);
+    const generated=await gemini.chooseDecision(geminiContext,{simulationId,entityId,simulationTime});
     const requestStatus=gemini.lastRequestStatus&&typeof gemini.lastRequestStatus==="object"?{...gemini.lastRequestStatus}:{status:"FALLBACK",source:"DETERMINISTIC_FALLBACK",reason:"UNKNOWN",attempted:true,retryAfterMs:0};
     if(requestStatus.attempted)markGeminiDecisionUsed(entity.id,simulationTime);
     aiChoice=sanitizeGeminiChoice(generated,context,{socialContext,currentLocationId,worldLocations});
@@ -436,6 +436,33 @@ if(geminiTrigger){
 }
 context.geminiDecision=geminiDecision;
 const decision=await decisionService.makeDecision({simulationId,entityId,simulationTime,triggerType:geminiTrigger?.type||null,triggerEventId:null,context,aiChoice});
+  try{
+    const reason=String(geminiDecision.reason||"");
+    const telemetryOutcome=aiChoice
+      ?"AI_DECISION"
+      :(!geminiTrigger||reason==="NO_GEMINI_TRIGGER"||reason==="LOCAL_INTERVAL"
+        ?"DETERMINISTIC_DECISION"
+        :(!geminiDecision.attempted||["GEMINI_DISABLED","ALL_GEMINI_MODELS_BLOCKED","DAILY_BUDGET","MONTHLY_BUDGET"].includes(reason)
+          ?"AI_UNAVAILABLE"
+          :"AI_FALLBACK"));
+    await geminiBudget.recordDecisionOutcome({
+      simulationId,
+      entityId,
+      decisionId:decision.decisionId,
+      kind:"AUTONOMY",
+      outcome:telemetryOutcome,
+      reason,
+      model:geminiDecision.model||null,
+      simulationTime
+    });
+  }catch(telemetryError){
+    logger.warn({
+      simulationId,
+      entityId,
+      decisionId:decision.decisionId,
+      error:String(telemetryError?.message||telemetryError)
+    },"Gemini decision telemetry write failed");
+  }
   const sourceType=aiChoice?"AI_ASSISTED":"AUTONOMOUS";
   let intentionId=null;
   let started=null;
