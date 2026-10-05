@@ -572,6 +572,24 @@ async function completeGoalForAction(goalId,actionType,simulationTime,outcome,ac
 
   if (!simulationId || !entityId) return null;
 
+  try{
+    observability.recordGoalActionOutcome(simulationId,entityId,simulationTime,{
+      goalId:resolvedGoalId,
+      actionId,
+      actionType,
+      outcome,
+      durationMinutes:Number(actionResult?.durationMinutes||0)
+    });
+  }catch(observabilityError){
+    logger.warn({
+      simulationId,
+      entityId,
+      goalId:resolvedGoalId,
+      actionId,
+      error:String(observabilityError?.message||observabilityError)
+    },"goal action observability update failed");
+  }
+
   const primary=await advancePlanForAction({
     simulationId,
     entityId,
