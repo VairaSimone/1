@@ -165,6 +165,38 @@ test("Conversation context is grounded in authoritative identity and durable tim
   assert.match(chatSource,/rn<=3 OR rn>GREATEST\(3,total-12\)/);
 });
 
+test("Autonomy uses a slower periodic review and a separate high-value cooldown",()=>{
+  assert.match(envSource,/GEMINI_AUTONOMY_MIN_INTERVAL_MINUTES/);
+  assert.match(envSource,/GEMINI_AUTONOMY_HIGH_VALUE_MIN_INTERVAL_MINUTES/);
+  assert.match(envSource,/return 1440/);
+  assert.match(envSource,/return 120/);
+  assert.match(autonomySource,/highValueInterval/);
+});
+
+test("Repeated identical Gemini triggers are deduplicated per entity",()=>{
+  assert.match(autonomySource,/lastGeminiTriggerKeyByEntity/);
+  assert.match(autonomySource,/triggerKey===lastGeminiTriggerKeyByEntity\.get/);
+  assert.match(autonomySource,/key:"PERIODIC:/);
+});
+
+test("Autonomy failure reflection consumes real interruptions instead of an unused recentOutcomes field",()=>{
+  assert.match(autonomySource,/context\.recentInterruptions/);
+  assert.match(autonomySource,/FAILURE_REFLECTION/);
+  assert.match(autonomySource,/SOCIAL_CONFLICT/);
+});
+
+test("Autonomy stops re-entering Gemini while the local budget cooldown is active",()=>{
+  const budgetSource=fs.readFileSync(path.join(__dirname,"../src/services/gemini-budget-service.js"),"utf8");
+  assert.match(budgetSource,/function isLocallyBlocked\(kind="AUTONOMY"\)/);
+  assert.match(autonomySource,/geminiBudget\.isLocallyBlocked\("AUTONOMY"\)/);
+  assert.match(autonomySource,/LOCAL_BUDGET_COOLDOWN/);
+});
+
+test("Autonomy caps provider fallback fanout to two models",()=>{
+  assert.match(geminiSource,/autonomyMaxModels=Math\.max\(1,Math\.min\(2/);
+  assert.match(geminiSource,/maxModels:autonomyMaxModels/);
+});
+
 test("Routine dialogue uses minimal thinking and compact structured output",()=>{
   assert.match(geminiSource,/thinkingLevel:advanced\?"low":"minimal"/);
   assert.match(geminiSource,/GEMINI_AUTONOMY_COMPACT_OUTPUT_TOKEN_CEILING/);
