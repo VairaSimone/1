@@ -19,6 +19,7 @@ test("retention policy protects against aggressive windows", () => {
   assert.ok(policy.eventImportanceKeepThreshold >= 0 && policy.eventImportanceKeepThreshold <= 1);
   assert.ok(policy.batchSize >= 50);
   assert.ok(policy.maxDeletesPerTable >= 100);
+  assert.ok(policy.timeBudgetMs >= 250);
 });
 
 test("only terminal decisions are eligible for retention", () => {
@@ -152,9 +153,10 @@ test("retention scheduling is based on simulation time during accelerated runs",
   const path=require("node:path");
   const source=fs.readFileSync(path.join(__dirname,"../src/services/safe-retention-service.js"),"utf8");
   assert.match(source,/simulationIntervalHours/);
-  assert.match(source,/const simulationMs = new Date\(simulationTime\)\.getTime\(\)/);
+  assert.match(source,/simulationTimestampMs\(simulationTime\)/);
   assert.match(source,/simulationMs - lastSimulationMs/);
   assert.match(source,/RETENTION_CHECK_SIMULATION_HOURS/);
+  assert.match(source,/adaptiveProfile\.simulationIntervalHours/);
 });
 
 test("retention keeps dedicated need and emotion history workers wired",()=>{
@@ -261,4 +263,44 @@ test("normal Gemini autonomy uses low reasoning and escalates only high-priority
     /const thinkingLevel=advanced\s*\n\s*\?\(context\?\.geminiTrigger\?\.priority==="HIGH"\?"medium":"low"\)\s*\n\s*:"low";/
   );
   assert.match(source,/return this\.generateJson\(prompt,schema,\{[\s\S]*kind:"autonomy"[\s\S]*thinkingLevel/);
+});
+
+test("retention escalates worker capacity after sustained debt",()=>{
+  const base=retention.getAdaptiveRetentionProfile(0);
+  const level1=retention.getAdaptiveRetentionProfile(3);
+  const level2=retention.getAdaptiveRetentionProfile(6);
+  const level3=retention.getAdaptiveRetentionProfile(9);
+  assert.equal(base.level,0);
+  assert.ok(level1.timeBudgetMs>base.timeBudgetMs);
+  assert.ok(level2.timeBudgetMs>=level1.timeBudgetMs);
+  assert.ok(level3.timeBudgetMs>=level2.timeBudgetMs);
+  assert.ok(level1.simulationIntervalHours<base.simulationIntervalHours);
+  assert.ok(level2.simulationIntervalHours<=level1.simulationIntervalHours);
+  assert.ok(level3.simulationIntervalHours<=level2.simulationIntervalHours);
+  assert.ok(level3.timeBudgetMs<=30000);
+  assert.ok(level3.simulationIntervalHours>=0.25);
+});
+
+test("retention records production rate, deletion rate, debt and overload history",()=>{
+  const fs=require("node:fs");
+  const path=require("node:path");
+  const source=fs.readFileSync(path.join(__dirname,"../src/services/safe-retention-service.js"),"utf8");
+  assert.match(source,/CREATE TABLE IF NOT EXISTS retention_cycle_metrics/);
+  assert.match(source,/produced_rows_per_sim_day/);
+  assert.match(source,/deleted_rows_per_sim_day/);
+  assert.match(source,/retention_debt_age_hours/);
+  assert.match(source,/overload_streak/);
+  assert.match(source,/persistRetentionTelemetry/);
+  assert.match(source,/adaptiveRetentionLevel/);
+  assert.match(source,/adaptiveProfile\.timeBudgetMs/);
+});
+
+test("retention prioritizes high-growth event/action cleanup before slower compaction",()=>{
+  const fs=require("node:fs");
+  const path=require("node:path");
+  const source=fs.readFileSync(path.join(__dirname,"../src/services/safe-retention-service.js"),"utf8");
+  const run=source.slice(source.indexOf("async function runSafeRetention"),source.indexOf("async function maybeRunSafeRetention"));
+  assert.ok(run.indexOf("deleteOldEvents(lock.conn, simulationId, mysqlSimulationTime)")<run.indexOf("compactOldCognitiveStates(lock.conn, simulationId, mysqlSimulationTime)"));
+  assert.ok(run.indexOf("deleteOldActions(lock.conn, simulationId, mysqlSimulationTime)")<run.indexOf("compactOldCognitiveStates(lock.conn, simulationId, mysqlSimulationTime)"));
+  assert.ok(run.indexOf("deleteOldRelationshipHistory(lock.conn, simulationId, mysqlSimulationTime)")<run.indexOf("compactOldCognitiveStates(lock.conn, simulationId, mysqlSimulationTime)"));
 });
