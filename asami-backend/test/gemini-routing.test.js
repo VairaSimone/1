@@ -186,3 +186,10 @@ test("Memory recall updates are performed in one query",()=>{
   assert.match(memorySource,/UPDATE memories[\s\S]*id IN \(\$\{placeholders\}\)/);
   assert.doesNotMatch(memorySource,/for \(const memory of memories\.slice\(0, Math\.min\(8, memories\.length\)\)\) await pool\.query/);
 });
+
+test("simulation identity reaches Gemini budget reservation",()=>{
+  assert.match(geminiSource,/async generateJson\(prompt,schema,[\s\S]*simulationId=null,entityId=null,simulationTime=null/);
+  assert.match(geminiSource,/budget\.reserve\(\{prompt,outputTokenCeiling,kind,simulationId,entityId,simulationTime\}\)/);
+  assert.match(geminiSource,/async chooseDecision\(context,\{simulationId=null,entityId=null,simulationTime=null\}/);
+  assert.match(geminiSource,/async dialogue\(context,\{simulationId=null,entityId=null,simulationTime=null\}/);
+});
