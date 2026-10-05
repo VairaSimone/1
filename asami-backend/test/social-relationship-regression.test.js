@@ -2,7 +2,7 @@ const test=require("node:test");
 const assert=require("node:assert/strict");
 const fs=require("node:fs");
 const path=require("node:path");
-const { conversationOutcomeDeltas,mergeRelationshipDeltas,relationshipFormationAccepted,socialInteractionOutcome,shouldEndRelationshipAfterInteraction }=require("../src/services/social-relationship-service");
+const { conversationOutcomeDeltas,mergeRelationshipDeltas,relationshipFormationAccepted,socialInteractionOutcome,shouldEndRelationshipAfterInteraction,relationshipContinuityScore }=require("../src/services/social-relationship-service");
 
 test("conversation outcome is merged with baseline into one relationship transition",()=>{
   const merged=mergeRelationshipDeltas({familiarity:.06,trust:.02,respect:.01},{familiarity:.04,trust:.025,affection:.03});
@@ -10,6 +10,35 @@ test("conversation outcome is merged with baseline into one relationship transit
   assert.equal(merged.trust,.045);
   assert.equal(merged.respect,.01);
   assert.equal(merged.affection,.03);
+});
+
+test("historical social bonds decay gradually instead of resetting to zero",()=>{
+  const recent={
+    type:"FRIEND",
+    familiarity:.62,
+    trust:.42,
+    affection:.38,
+    closeness:.34,
+    attraction:.20,
+    endedSimulationAt:"2026-10-20T00:00:00.000Z"
+  };
+  const continuity=relationshipContinuityScore(recent,"2026-10-25T00:00:00.000Z");
+  const farContinuity=relationshipContinuityScore(recent,"2027-01-23T00:00:00.000Z");
+  assert.ok(continuity>0);
+  assert.ok(continuity>farContinuity);
+});
+
+test("social continuity reactivates ended non-partner relationships and uses last interaction for decay",()=>{
+  const relationshipService=fs.readFileSync(path.join(__dirname,"../src/services/relationship-service.js"),"utf8");
+  const socialService=fs.readFileSync(path.join(__dirname,"../src/services/social-relationship-service.js"),"utf8");
+  assert.match(relationshipService,/withTransaction\(async conn=>/);
+  assert.match(relationshipService,/status='ENDED'/);
+  assert.match(relationshipService,/rt\.code IN \('ACQUAINTANCE','FRIEND'\)/);
+  assert.match(relationshipService,/status='ACTIVE'/);
+  assert.match(socialService,/endedRelationship/);
+  assert.match(socialService,/relationshipContinuityScore/);
+  assert.match(socialService,/lastInteractionSimulationAt/);
+  assert.match(socialService,/relationshipIntent==="RECONCILE"/);
 });
 
 test("social interaction no longer applies a second conversation score update",()=>{
