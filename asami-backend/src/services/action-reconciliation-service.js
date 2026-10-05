@@ -1,7 +1,9 @@
 const { pool, normalizeSimulationTimestamp } = require("../db/pool");
 const { env } = require("../config/env");
 const { advancePlanForAction } = require("./planning-service");
-const { markActionPostProcessingComplete } = require("./action-service");
+const { markActionPostProcessingComplete, getActionDurationMinutes } = require("./action-service");
+const observability = require("./simulation-observability");
+function parseJson(value,fallback={}){if(value===null||value===undefined)return fallback;if(typeof value==="object")return value;try{return JSON.parse(value);}catch{return fallback;}}
 const logger = require("../lib/logger");
 
 async function reconcileStaleEvaluatedDecisions(simulationId,simulationTime,{limit=null}={}){
