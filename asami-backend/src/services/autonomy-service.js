@@ -212,12 +212,9 @@ function getGeminiTrigger(entity,context,memories=[]){
   const second=Number(candidates[1]?.score||0);
 
   const interruptions=Array.isArray(context.recentInterruptions)?context.recentInterruptions:[];
-  const recentInterruption=interruptions.find(item=>{
-    const outcome=String(item?.result?.outcome||"").toUpperCase();
-    const status=String(item?.result?.status||"").toUpperCase();
-    return ["FAILURE","PARTIAL","INTERRUPTED","CANCELLED"].includes(outcome) ||
-      ["FAILED","INTERRUPTED","CANCELLED"].includes(status);
-  });
+  // buildDecisionContexts already selects only action rows with status=INTERRUPTED.
+  // Do not require optional fields inside result to recognize the interruption.
+  const recentInterruption=interruptions[0]||null;
   if(recentInterruption){
     return{
       type:"FAILURE_REFLECTION",
