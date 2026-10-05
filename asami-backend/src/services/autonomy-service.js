@@ -7,7 +7,7 @@ const { getEntity } = require("../repositories/entity-repo");
 const { recallContext } = require("./memory-service");
 const { buildSocialContext, buildSocialContexts, buildRemoteSocialContexts, deriveSocialIntent } = require("./social-relationship-service");
 const actionService = require("./action-service");
-const { ensureGoalPlan, advancePlanForAction, advancePersistentGoalFromAnyAutonomousAction, selectActiveStep, MAX_GOAL_AGE_HOURS } = require("./planning-service");
+const { ensureGoalPlan, advancePlanForAction, advancePersistentGoalFromAnyAutonomousAction, selectActiveStep, handleGoalStagnation, MAX_GOAL_AGE_HOURS } = require("./planning-service");
 const { refreshMentalStateFromSimulation } = require("./personality-service");
 const observability = require("./simulation-observability");
 const { readNeeds } = require("./state-service");
@@ -345,7 +345,7 @@ async function actForEntity({simulationId,entityId,simulationTime,gemini,tickId=
   }
   const knownGoal=context.goals?.[0]||null;
   const knownPlan=(context.cognitiveProfile?.plans||[]).find(item=>String(item.goalId||"")===String(knownGoal?.id||""))||null;
-  const goalState=goalNeedsValidation(knownGoal,knownPlan,context.needs,simulationTime)
+  let goalState=goalNeedsValidation(knownGoal,knownPlan,context.needs,simulationTime)
     ?await ensureGoalPlan({simulationId,entityId,simulationTime,needs:context.needs})
     :{goal:knownGoal,plan:knownPlan,created:false,blocked:false};
   if(goalState.created&&goalState.goal){
@@ -382,7 +382,36 @@ async function actForEntity({simulationId,entityId,simulationTime,gemini,tickId=
   }
   const worldLocationsCache=batchContext?.worldLocations||((entity.entityType==="PERSON"&&currentLocationId)?await loadWorldLocations(simulationId):null);
   let socialTarget=null;if(entity.entityType==="PERSON"&&currentLocationId){socialTarget=chooseSocialTarget({ ...socialContext, candidates:validLocalCandidates, remoteCandidates:validRemoteCandidates },simulationId,entityId,currentLocationId);if(socialTarget)context.social.travelTarget={entityId:socialTarget.entityId,name:socialTarget.name,locationId:socialTarget.locationId,remote:Boolean(socialTarget.remote),travelMinutes:Number(socialTarget.travelMinutes||0)};}
-  const explorationDestination=entity.entityType==="PERSON"&&currentLocationId?(batchContext?.contexts?.has(entityId)?context.explorationDestination:await chooseExplorationDestination(simulationId,entityId,currentLocationId,context.needs,simulationTime,worldLocationsCache)):null;if(explorationDestination)context.explorationDestination=explorationDestination;const plan=goalState.goal?goalState.plan||(await ensureGoalPlan({simulationId,entityId,simulationTime,needs:context.needs})).plan:null,activePlanStep=selectActiveStep(plan);if(activePlanStep)context.activePlanStep=activePlanStep;const memories=batchContext?.contexts?.has(entityId)?(context.memories||[]):await recallContext(simulationId,entityId,8,{simulationTime,goalIds:(context.goals||[]).map(goal=>goal.id).filter(Boolean),locationId:context.location?.locationId||null,locationType:context.location?.locationType||null,candidateActionTypes:(context.candidates||[]).map(candidate=>candidate.action).filter(Boolean)}),geminiTrigger=getGeminiTrigger(entity,context,memories);context.geminiTrigger=geminiTrigger;let aiChoice=null;
+  const explorationDestination=entity.entityType==="PERSON"&&currentLocationId?(batchContext?.contexts?.has(entityId)?context.explorationDestination:await chooseExplorationDestination(simulationId,entityId,currentLocationId,context.needs,simulationTime,worldLocationsCache)):null;if(explorationDestination)context.explorationDestination=explorationDestination;const plan=goalState.goal?goalState.plan||(await ensureGoalPlan({simulationId,entityId,simulationTime,needs:context.needs})).plan:null;
+  let activePlanStep=selectActiveStep(plan);
+  if(activePlanStep)context.activePlanStep=activePlanStep;
+
+  const stagnationRecovery=goalState.goal&&goalState.plan
+    ?await handleGoalStagnation({
+      simulationId,
+      entityId,
+      simulationTime,
+      goalState,
+      currentLocationId
+    })
+    :null;
+
+  if(stagnationRecovery?.replanned||stagnationRecovery?.abandoned){
+    goalState=await ensureGoalPlan({simulationId,entityId,simulationTime,needs:context.needs});
+    const refreshedGoals=goalState.goal
+      ?[goalState.goal,...(context.goals||[]).filter(goal=>String(goal.id)!==String(goalState.goal.id))]
+      :(context.goals||[]);
+    const refreshedPlans=goalState.plan
+      ?[goalState.plan,...(context.cognitiveProfile?.plans||[]).filter(planItem=>String(planItem.id)!==String(goalState.plan.id))]
+      :(context.cognitiveProfile?.plans||[]);
+    activePlanStep=selectActiveStep(goalState.plan);
+    context={
+      ...context,
+      goals:refreshedGoals,
+      cognitiveProfile:{...context.cognitiveProfile,plans:refreshedPlans},
+      activePlanStep:activePlanStep||null,
+      simulationTime
+    };const memories=batchContext?.contexts?.has(entityId)?(context.memories||[]):await recallContext(simulationId,entityId,8,{simulationTime,goalIds:(context.goals||[]).map(goal=>goal.id).filter(Boolean),locationId:context.location?.locationId||null,locationType:context.location?.locationType||null,candidateActionTypes:(context.candidates||[]).map(candidate=>candidate.action).filter(Boolean)}),geminiTrigger=getGeminiTrigger(entity,context,memories);context.geminiTrigger=geminiTrigger;let aiChoice=null;
 let geminiDecision={status:"NOT_CONSULTED",source:"DETERMINISTIC",reason:"NO_GEMINI_TRIGGER",attempted:false,retryAfterMs:0};
 if(geminiTrigger){
   if(!gemini?.client){
