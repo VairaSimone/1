@@ -1,7 +1,9 @@
-const { pool } = require("../db/pool");
+const { pool, withTransaction } = require("../db/pool");
 const { uuid } = require("../lib/ids");
 const { ensureEntityState } = require("./state-service");
 const { personalizeExistingNeedDefaults } = require("./need-individualization-service");
+const cognitiveV2 = require("./cognitive-v2-service");
+const logger = require("../lib/logger");
 
 const MIN_WORLD_PEOPLE = 6;
 const MAX_WORLD_PEOPLE = 30;
@@ -84,19 +86,87 @@ async function assignLocation(simulationId,entityId,locationId,simulationTime,re
 }
 async function findAsami(simulationId){ const [rows]=await pool.query(`SELECT BIN_TO_UUID(id) AS id FROM entities WHERE simulation_id=UUID_TO_BIN(?) AND entity_type_id=UUID_TO_BIN(?) AND LOWER(display_name)='asami' AND status<>'DEAD' LIMIT 1`,[simulationId,PERSON_ENTITY_TYPE_ID]); return rows[0]?.id||null; }
 async function createPerson(simulationId,simulationTime,profile,randomSpawn=false){
-  const firstName=profile?.firstName||pick(RANDOM_FIRST),lastName=profile?.lastName||pick(RANDOM_LAST); let displayName=`${firstName} ${lastName}`;
-  for(let i=0;i<4;i++){ const [same]=await pool.query(`SELECT id FROM entities WHERE simulation_id=UUID_TO_BIN(?) AND display_name=? LIMIT 1`,[simulationId,displayName]); if(!same.length)break; displayName=`${firstName} ${lastName} ${Math.floor(randomBetween(2,99))}`; }
-  const entityId=uuid(); const attributes={worldResident:true,npc:true,role:"NEIGHBOR",profile:profile?.description||"A person living in the neighborhood.",interests:profile?.preferred?[profile.preferred]:[],personalitySeed:profile?.traits||{}};
-  await pool.query(`INSERT INTO entities(id,simulation_id,entity_type_id,display_name,description,status,attributes,created_simulation_at,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?, 'ACTIVE', ?, ?,1)`,[entityId,simulationId,PERSON_ENTITY_TYPE_ID,displayName,attributes.profile,JSON.stringify(attributes),simulationTime]);
-  const ageDays=Math.floor(randomBetween(20*365,45*365)),birthAt=new Date(new Date(simulationTime).getTime()-ageDays*86400000);
-  await pool.query(`INSERT INTO persons(entity_id,first_name,last_name,birth_simulation_at,sex,gender,education_level) VALUES(UUID_TO_BIN(?),?,?,?,?,?,?)`,[entityId,firstName,lastName,birthAt,null,null,null]);
-  await pool.query(`INSERT INTO autonomy_policies(id,simulation_id,entity_id,policy_type,enabled,configuration,scope_entity_id,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),'AUTONOMY',1,?,UUID_TO_BIN(?),1)`,[uuid(),simulationId,entityId,JSON.stringify({deterministicFallback:true,decisionMode:"deterministic_npc"}),entityId]);
-  await ensureEntityState(entityId,simulationTime);
-  if(profile?.traits){ for(const [code,value] of Object.entries(profile.traits)){ const [trait]=await pool.query(`SELECT BIN_TO_UUID(id) AS id FROM trait_definitions WHERE code=? AND active=1 LIMIT 1`,[code]); if(trait.length)await pool.query(`UPDATE entity_traits_current SET value=?,updated_simulation_at=?,version=version+1 WHERE entity_id=UUID_TO_BIN(?) AND trait_id=UUID_TO_BIN(?)`,[Math.max(0,Math.min(1,Number(value))),simulationTime,entityId,trait[0].id]); } }
-  await personalizeExistingNeedDefaults(entityId,simulationTime);
-  await pool.query(`INSERT INTO entity_development(entity_id,development_stage_id,physical_score,cognitive_score,social_score,emotional_score,education_score,updated_simulation_at,version) VALUES(UUID_TO_BIN(?),NULL,?,?,?,?,?, ?,1)`,[entityId,.5,.5,.5,.5,.5,simulationTime]);
-  return {id:entityId,displayName};
+  const firstName=profile?.firstName||pick(RANDOM_FIRST);
+  const lastName=profile?.lastName||pick(RANDOM_LAST);
+  let displayName=firstName+" "+lastName;
+  for(let i=0;i<4;i++){
+    const [same]=await pool.query(`SELECT id FROM entities WHERE simulation_id=UUID_TO_BIN(?) AND display_name=? LIMIT 1`,[simulationId,displayName]);
+    if(!same.length)break;
+    displayName=firstName+" "+lastName+" "+Math.floor(randomBetween(2,99));
+  }
+
+  const entityId=uuid();
+  const attributes={
+    worldResident:true,
+    npc:true,
+    role:"NEIGHBOR",
+    profile:profile?.description||"A person living in the neighborhood.",
+    interests:profile?.preferred?[profile.preferred]:[],
+    personalitySeed:profile?.traits||{}
+  };
+
+  return withTransaction(async conn=>{
+    try{
+      await conn.query(
+        `INSERT INTO entities(id,simulation_id,entity_type_id,display_name,description,status,attributes,created_simulation_at,version)
+         VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?, 'ACTIVE', ?, ?,1)`,
+        [entityId,simulationId,PERSON_ENTITY_TYPE_ID,displayName,attributes.profile,JSON.stringify(attributes),simulationTime]
+      );
+
+      const ageDays=Math.floor(randomBetween(20*365,45*365));
+      const birthAt=new Date(new Date(simulationTime).getTime()-ageDays*86400000);
+      await conn.query(
+        `INSERT INTO persons(entity_id,first_name,last_name,birth_simulation_at,sex,gender,education_level)
+         VALUES(UUID_TO_BIN(?),?,?,?,?,?,?)`,
+        [entityId,firstName,lastName,birthAt,null,null,null]
+      );
+
+      await conn.query(
+        `INSERT INTO autonomy_policies(id,simulation_id,entity_id,policy_type,enabled,configuration,scope_entity_id,version)
+         VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),'AUTONOMY',1,?,UUID_TO_BIN(?),1)`,
+        [uuid(),simulationId,entityId,JSON.stringify({deterministicFallback:true,decisionMode:"deterministic_npc"}),entityId]
+      );
+
+      await ensureEntityState(entityId,simulationTime,conn,{force:true,cache:false});
+
+      if(profile?.traits){
+        for(const [code,value] of Object.entries(profile.traits)){
+          const [trait]=await conn.query(
+            `SELECT BIN_TO_UUID(id) AS id FROM trait_definitions WHERE code=? AND active=1 LIMIT 1`,
+            [code]
+          );
+          if(trait.length){
+            await conn.query(
+              `UPDATE entity_traits_current
+               SET value=?,updated_simulation_at=?,version=version+1
+               WHERE entity_id=UUID_TO_BIN(?) AND trait_id=UUID_TO_BIN(?)`,
+              [Math.max(0,Math.min(1,Number(value))),simulationTime,entityId,trait[0].id]
+            );
+          }
+        }
+      }
+
+      await personalizeExistingNeedDefaults(entityId,simulationTime,conn);
+
+      await conn.query(
+        `INSERT INTO entity_development(entity_id,development_stage_id,physical_score,cognitive_score,social_score,emotional_score,education_score,updated_simulation_at,version)
+         VALUES(UUID_TO_BIN(?),NULL,?,?,?,?,?, ?,1)`,
+        [entityId,.5,.5,.5,.5,.5,simulationTime]
+      );
+
+      // Cognitive v2 is installed before the simulation engine starts. Keep
+      // identity creation in the same transaction so a failed NPC setup cannot
+      // leave a person without a self model.
+      await cognitiveV2.ensureIdentity(simulationId,entityId,simulationTime,conn,{force:true,cache:false});
+
+      return {id:entityId,displayName};
+    }catch(error){
+      logger.error({simulationId,entityId,displayName,error:String(error?.message||error),event:"NPC_CREATION_ROLLBACK"},"NPC creation transaction failed");
+      throw error;
+    }
+  });
 }
+
 async function ensurePopulation(simulationId,simulationTime){
   const [rows]=await pool.query(`SELECT COUNT(*) AS count FROM entities WHERE simulation_id=UUID_TO_BIN(?) AND entity_type_id=UUID_TO_BIN(?) AND status='ACTIVE' AND display_name<>'Observer'`,[simulationId,PERSON_ENTITY_TYPE_ID]);
   let count=Number(rows[0]?.count||0),created=[];
@@ -104,11 +174,72 @@ async function ensurePopulation(simulationId,simulationTime){
   while(count<MIN_WORLD_PEOPLE){created.push(await createPerson(simulationId,simulationTime,null,true));count++;}
   if(count<MAX_WORLD_PEOPLE && Math.random()<0.04)created.push(await createPerson(simulationId,simulationTime,null,true));
   return created;
+}async function repairIncompletePeople(simulationId,simulationTime){
+  const [rows]=await pool.query(`
+    SELECT BIN_TO_UUID(p.entity_id) AS entityId
+    FROM persons p
+    JOIN entities e ON e.id=p.entity_id
+      AND e.simulation_id=UUID_TO_BIN(?)
+      AND e.status='ACTIVE'
+    LEFT JOIN (
+      SELECT entity_id,COUNT(*) AS total
+      FROM entity_needs_current
+      GROUP BY entity_id
+    ) needs ON needs.entity_id=p.entity_id
+    LEFT JOIN (
+      SELECT entity_id,COUNT(*) AS total
+      FROM entity_emotions_current
+      GROUP BY entity_id
+    ) emotions ON emotions.entity_id=p.entity_id
+    LEFT JOIN (
+      SELECT entity_id,COUNT(*) AS total
+      FROM entity_traits_current
+      GROUP BY entity_id
+    ) traits ON traits.entity_id=p.entity_id
+    LEFT JOIN (
+      SELECT entity_id,COUNT(*) AS total
+      FROM entity_skills
+      GROUP BY entity_id
+    ) skills ON skills.entity_id=p.entity_id
+    LEFT JOIN self_models selfModel ON selfModel.simulation_id=e.simulation_id
+      AND selfModel.entity_id=p.entity_id
+    WHERE COALESCE(needs.total,0) < (SELECT COUNT(*) FROM need_definitions WHERE active=1)
+       OR COALESCE(emotions.total,0) < (SELECT COUNT(*) FROM emotion_definitions WHERE active=1)
+       OR COALESCE(traits.total,0) < (SELECT COUNT(*) FROM trait_definitions WHERE active=1)
+       OR COALESCE(skills.total,0) < (SELECT COUNT(*) FROM skill_definitions WHERE active=1)
+       OR selfModel.entity_id IS NULL
+    LIMIT 100
+  `,[simulationId]);
+
+  let repaired=0;
+  for(const row of rows){
+    try{
+      await withTransaction(async conn=>{
+        await ensureEntityState(row.entityId,simulationTime,conn,{force:true,cache:false});
+        await personalizeExistingNeedDefaults(row.entityId,simulationTime,conn);
+        await cognitiveV2.ensureIdentity(simulationId,row.entityId,simulationTime,conn,{force:true,cache:false});
+      });
+      repaired+=1;
+    }catch(error){
+      logger.error({
+        simulationId,
+        entityId:row.entityId,
+        simulationTime,
+        error:String(error?.message||error),
+        event:"INCOMPLETE_NPC_REPAIR_FAILED"
+      },"incomplete NPC repair failed");
+    }
+  }
+  if(repaired)logger.info({simulationId,simulationTime,repaired,event:"INCOMPLETE_NPC_REPAIR"},"incomplete NPC state repaired");
+  return {checked:rows.length,repaired};
 }
+
 async function ensureWorld(simulationId,simulationTime){
   await ensurePartnerType(); const locations=await seedLocations(simulationId,simulationTime); const asamiId=await findAsami(simulationId);
   if(asamiId){ const home=locations.find(l=>parseJson(l.addressData).worldCode==='HOME'); if(home){ const [current]=await pool.query(`SELECT location_id FROM entity_locations_current WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) LIMIT 1`,[simulationId,asamiId]); if(!current.length)await assignLocation(simulationId,asamiId,home.locationId,simulationTime,"WORLD_INITIALIZATION"); } }
-  const created=await ensurePopulation(simulationId,simulationTime),refreshed=await getLocationRows(simulationId);
+  const created=await ensurePopulation(simulationId,simulationTime);
+  await repairIncompletePeople(simulationId,simulationTime);
+  const refreshed=await getLocationRows(simulationId);
   for(const person of created){ const preferred=NPC_PROFILES.find(p=>`${p.firstName} ${p.lastName}`===person.displayName)?.preferred; const loc=refreshed.find(l=>parseJson(l.addressData).worldCode===preferred)||pick(refreshed); if(loc)await assignLocation(simulationId,person.id,loc.locationId,simulationTime,"WORLD_SPAWN"); }
   const [unplaced]=await pool.query(`SELECT BIN_TO_UUID(e.id) AS id FROM entities e WHERE e.simulation_id=UUID_TO_BIN(?) AND e.entity_type_id=UUID_TO_BIN(?) AND e.status='ACTIVE' AND NOT EXISTS(SELECT 1 FROM entity_locations_current elc WHERE elc.simulation_id=e.simulation_id AND elc.entity_id=e.id) LIMIT 50`,[simulationId,PERSON_ENTITY_TYPE_ID]);
   for(const row of unplaced){const loc=pick(refreshed);if(loc)await assignLocation(simulationId,row.id,loc.locationId,simulationTime,"WORLD_REPAIR");}
@@ -116,4 +247,4 @@ async function ensureWorld(simulationId,simulationTime){
 }
 async function evolveRelationships(simulationId,simulationTime){ const {maintainRelationships}=require("./social-relationship-service"); return maintainRelationships(simulationId,simulationTime); }
 async function endRelationship(relationshipId,simulationTime,reason){ const {endRelationship:endSocialRelationship}=require("./social-relationship-service"); return endSocialRelationship(relationshipId,simulationTime,reason); }
-module.exports={ensureWorld,evolveRelationships,endRelationship,seedLocations,ensurePopulation,MIN_WORLD_PEOPLE,MAX_WORLD_PEOPLE,WORLD_LOCATIONS};
+module.exports={ensureWorld,evolveRelationships,endRelationship,seedLocations,ensurePopulation,repairIncompletePeople,MIN_WORLD_PEOPLE,MAX_WORLD_PEOPLE,WORLD_LOCATIONS};
