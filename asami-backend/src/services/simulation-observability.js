@@ -284,6 +284,18 @@ function compactSnapshot(metrics={}) {
       needs:Number(gauges.need_history_backlog_rows||0),
       emotions:Number(gauges.emotion_history_backlog_rows||0)
     },
+    memory:{
+      active:Number(gauges.memory_active_current||0),
+      fading:Number(gauges.memory_fading_current||0),
+      forgotten:Number(gauges.memory_forgotten_current||0),
+      archived:Number(gauges.memory_archived_current||0),
+      created:Number(counters.memory_created_total||0),
+      recalled:Number(counters.memory_recalled_total||0),
+      strengthChanged:Number(counters.memory_strength_changed_total||0),
+      forgottenTransitions:Number(counters.memory_forgotten_total||0),
+      archivedTransitions:Number(counters.memory_archived_total||0),
+      deduplicated:Number(counters.memory_deduplicated_total||0)
+    },
     alerts:{
       resourceEmergency:Number(counters.resource_emergency_total||0),
       recoveryFailed:Number(counters.recovery_failed_total||0),
