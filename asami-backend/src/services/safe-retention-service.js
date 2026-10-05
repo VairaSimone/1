@@ -359,7 +359,8 @@ async function deleteSelectedRows(conn, {
   countSql,
   countParams = selectParams,
   deleteTable,
-  resultKey
+  resultKey,
+  deleteKeyColumn="id"
 }) {
   if (POLICY.dryRun) {
     const [rows] = await conn.query(countSql, countParams);
@@ -380,7 +381,7 @@ async function deleteSelectedRows(conn, {
     if (!ids.length) break;
     const placeholders = ids.map(() => "UUID_TO_BIN(?)").join(",");
     const [result] = await conn.query(
-      "DELETE FROM " + deleteTable + " WHERE id IN (" + placeholders + ")",
+      "DELETE FROM " + deleteTable + " WHERE " + deleteKeyColumn + " IN (" + placeholders + ")",
       ids
     );
     const affected = Number(result.affectedRows || 0);
@@ -683,7 +684,8 @@ async function deleteOldDecisionContextArchives(conn, simulationId, simulationTi
     countSql,
     countParams:[simulationId,cutoff],
     deleteTable:"decision_context_archive",
-    resultKey:"deleted"
+    resultKey:"deleted",
+    deleteKeyColumn:"decision_id"
   });
 }
 
