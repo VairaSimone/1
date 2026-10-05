@@ -2,7 +2,7 @@ const test=require("node:test");
 const assert=require("node:assert/strict");
 const fs=require("node:fs");
 const path=require("node:path");
-const { conversationOutcomeDeltas,mergeRelationshipDeltas,relationshipFormationAccepted,socialInteractionOutcome }=require("../src/services/social-relationship-service");
+const { conversationOutcomeDeltas,mergeRelationshipDeltas,relationshipFormationAccepted,socialInteractionOutcome,shouldEndRelationshipAfterInteraction }=require("../src/services/social-relationship-service");
 
 test("conversation outcome is merged with baseline into one relationship transition",()=>{
   const merged=mergeRelationshipDeltas({familiarity:.06,trust:.02,respect:.01},{familiarity:.04,trust:.025,affection:.03});
@@ -33,6 +33,31 @@ test("social relationship formation is selective",()=>{
   assert.equal(strong,true);
 });
 
+test("newly formed relationships are not ended just because trust starts below the termination threshold",()=>{
+  assert.equal(shouldEndRelationshipAfterInteraction({
+    previousRelationship:null,
+    updatedRelationship:{trust:.04,conflict:.04},
+    interactionOutcome:"POSITIVE"
+  }),false);
+  assert.equal(shouldEndRelationshipAfterInteraction({
+    previousRelationship:null,
+    updatedRelationship:{trust:0,conflict:.05},
+    interactionOutcome:"NEGATIVE"
+  }),false);
+});
+
+test("established relationships can still end when trust crosses downward or conflict becomes severe",()=>{
+  assert.equal(shouldEndRelationshipAfterInteraction({
+    previousRelationship:{trust:.16},
+    updatedRelationship:{trust:.11,conflict:.20},
+    interactionOutcome:"NEGATIVE"
+  }),true);
+  assert.equal(shouldEndRelationshipAfterInteraction({
+    previousRelationship:{trust:.04},
+    updatedRelationship:{trust:.04,conflict:.79},
+    interactionOutcome:"NEUTRAL"
+  }),true);
+});
 test("social interaction can produce deterioration instead of only positive outcomes",()=>{
   const outcomes=new Set();
   for(let hour=0;hour<24;hour++)outcomes.add(socialInteractionOutcome({
