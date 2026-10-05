@@ -11,6 +11,8 @@ const lastRunAt = new Map();
 const lastRunSimulationAt = new Map();
 const running = new Set();
 const retentionDeadlineAt = new Map();
+const adaptiveStateBySimulation = new Map();
+let retentionTelemetryReady = null;
 
 function positiveInt(value, fallback, minimum) {
   const n = Number(value);
@@ -20,6 +22,242 @@ function positiveInt(value, fallback, minimum) {
 function boundedNumber(value, fallback, minimum, maximum) {
   const n = Number(value);
   return Number.isFinite(n) ? Math.min(maximum, Math.max(minimum, n)) : fallback;
+}
+
+function simulationTimestampMs(value) {
+  const normalized = normalizeSimulationTimestamp(value);
+  if (typeof normalized !== "string") return NaN;
+  const date = new Date(normalized.replace(" ", "T") + "Z");
+  return Number.isFinite(date.getTime()) ? date.getTime() : NaN;
+}
+
+function getAdaptiveRetentionProfile(overloadStreak = 0) {
+  const streak = Math.max(0, Math.floor(Number(overloadStreak) || 0));
+  const baseBudget = POLICY.timeBudgetMs;
+  const baseInterval = POLICY.simulationIntervalHours;
+  if (streak >= 9) {
+    return {
+      level: 3,
+      timeBudgetMs: Math.min(30000, Math.max(baseBudget, 30000)),
+      simulationIntervalHours: Math.max(0.25, baseInterval / 4)
+    };
+  }
+  if (streak >= 6) {
+    return {
+      level: 2,
+      timeBudgetMs: Math.min(30000, Math.max(baseBudget, 20000)),
+      simulationIntervalHours: Math.max(0.25, baseInterval / 3)
+    };
+  }
+  if (streak >= 3) {
+    return {
+      level: 1,
+      timeBudgetMs: Math.min(30000, Math.max(baseBudget, 12000)),
+      simulationIntervalHours: Math.max(0.5, baseInterval / 2)
+    };
+  }
+  return {
+    level: 0,
+    timeBudgetMs: baseBudget,
+    simulationIntervalHours: baseInterval
+  };
+}
+
+async function ensureRetentionTelemetryTable() {
+  if (retentionTelemetryReady) return retentionTelemetryReady;
+  retentionTelemetryReady = pool.query(
+    "CREATE TABLE IF NOT EXISTS retention_cycle_metrics (" +
+    "id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT," +
+    "simulation_id BINARY(16) NOT NULL," +
+    "simulation_at DATETIME(3) NOT NULL," +
+    "observed_real_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3)," +
+    "backlog_before BIGINT UNSIGNED NOT NULL DEFAULT 0," +
+    "backlog_after BIGINT UNSIGNED NOT NULL DEFAULT 0," +
+    "produced_rows BIGINT UNSIGNED NOT NULL DEFAULT 0," +
+    "deleted_rows BIGINT UNSIGNED NOT NULL DEFAULT 0," +
+    "produced_rows_per_sim_day DECIMAL(18,3) NOT NULL DEFAULT 0," +
+    "deleted_rows_per_sim_day DECIMAL(18,3) NOT NULL DEFAULT 0," +
+    "retention_debt_age_hours DECIMAL(18,3) NOT NULL DEFAULT 0," +
+    "overload_streak INT UNSIGNED NOT NULL DEFAULT 0," +
+    "adaptive_level TINYINT UNSIGNED NOT NULL DEFAULT 0," +
+    "adaptive_time_budget_ms INT UNSIGNED NOT NULL DEFAULT 0," +
+    "adaptive_simulation_interval_hours DECIMAL(10,3) NOT NULL DEFAULT 1," +
+    "PRIMARY KEY (id)," +
+    "UNIQUE KEY uq_retention_cycle (simulation_id,simulation_at)," +
+    "KEY idx_retention_cycle_sim_real (simulation_id,observed_real_at)" +
+    ") ENGINE=InnoDB"
+  ).catch(error => {
+    retentionTelemetryReady = null;
+    throw error;
+  });
+  return retentionTelemetryReady;
+}
+
+async function loadRetentionTelemetryState(simulationId) {
+  try {
+    await ensureRetentionTelemetryTable();
+    const [rows] = await pool.query(
+      "SELECT id,simulation_at AS simulationAt,backlog_after AS backlogAfter,overload_streak AS overloadStreak " +
+      "FROM retention_cycle_metrics WHERE simulation_id=UUID_TO_BIN(?) ORDER BY id DESC LIMIT 1",
+      [simulationId]
+    );
+    const row = rows[0];
+    if (!row) return null;
+    return {
+      simulationAt: row.simulationAt,
+      simulationMs: simulationTimestampMs(row.simulationAt),
+      backlogAfter: Number(row.backlogAfter || 0),
+      overloadStreak: Number(row.overloadStreak || 0)
+    };
+  } catch (error) {
+    logger.warnThrottled(
+      "retention:telemetry:read",
+      300000,
+      { simulationId, error: String(error?.message || error) },
+      "retention telemetry state unavailable; using base worker profile"
+    );
+    return null;
+  }
+}
+
+async function getOldestRetentionDebtAt(conn, simulationId, simulationTime) {
+  const needCutoff = cutoffDateTime(simulationTime, POLICY.needHistoryDays);
+  const emotionCutoff = cutoffDateTime(simulationTime, POLICY.emotionHistoryDays);
+  const relationshipCutoff = cutoffDateTime(simulationTime, POLICY.relationshipHistoryDays);
+  const actionCutoff = cutoffDateTime(simulationTime, POLICY.actionDays);
+  const eventCutoff = cutoffDateTime(simulationTime, POLICY.eventDays);
+  const importantEventCutoff = cutoffDateTime(simulationTime, POLICY.importantEventDays);
+  const importantThreshold = POLICY.eventImportanceKeepThreshold;
+  const [rows] = await conn.query(
+    "SELECT MIN(candidate_at) AS oldest_at FROM (" +
+    "SELECT h.simulation_time AS candidate_at FROM entity_need_history h JOIN entities e ON e.id=h.entity_id " +
+    "WHERE e.simulation_id=UUID_TO_BIN(?) AND h.simulation_time < ? " +
+    "UNION ALL " +
+    "SELECT h.simulation_time FROM entity_emotion_history h JOIN entities e ON e.id=h.entity_id " +
+    "WHERE e.simulation_id=UUID_TO_BIN(?) AND h.simulation_time < ? " +
+    "UNION ALL " +
+    "SELECT rh.simulation_time FROM relationship_history rh JOIN relationships r ON r.id=rh.relationship_id " +
+    "WHERE rh.simulation_id=UUID_TO_BIN(?) AND rh.simulation_time < ? AND r.status IN ('ACTIVE','ENDED') " +
+    "UNION ALL " +
+    "SELECT e.simulation_at FROM events e " +
+    "WHERE e.simulation_id=UUID_TO_BIN(?) AND ((e.importance < ? AND e.simulation_at < ?) OR e.simulation_at < ?) " +
+    "UNION ALL " +
+    "SELECT a.completed_simulation_at FROM actions a " +
+    "WHERE a.simulation_id=UUID_TO_BIN(?) AND a.status IN ('COMPLETED','CANCELLED','INTERRUPTED','FAILED') " +
+    "AND a.completed_simulation_at IS NOT NULL AND a.completed_simulation_at < ? " +
+    "AND (a.decision_id IS NULL OR EXISTS (SELECT 1 FROM decisions d WHERE d.id=a.decision_id AND JSON_EXTRACT(d.actual_outcome,'$.actionSummary') IS NOT NULL)) " +
+    "AND NOT EXISTS (SELECT 1 FROM event_effects ee WHERE ee.target_action_id=a.id) " +
+    "UNION ALL " +
+    "SELECT a.completed_simulation_at FROM actions a JOIN decisions d ON d.id=a.decision_id " +
+    "WHERE a.simulation_id=UUID_TO_BIN(?) AND a.decision_id IS NOT NULL " +
+    "AND a.status IN ('COMPLETED','CANCELLED','INTERRUPTED','FAILED') " +
+    "AND a.completed_simulation_at IS NOT NULL AND a.completed_simulation_at < ? " +
+    "AND JSON_EXTRACT(d.actual_outcome,'$.actionSummary') IS NULL" +
+    ") debt",
+    [
+      simulationId, needCutoff,
+      simulationId, emotionCutoff,
+      simulationId, relationshipCutoff,
+      simulationId, importantThreshold, eventCutoff, importantEventCutoff,
+      simulationId, actionCutoff,
+      simulationId, actionCutoff
+    ]
+  );
+  return rows[0]?.oldest_at || null;
+}
+
+async function persistRetentionTelemetry(simulationId, simulationTime, summary, resolvedRows, previousState, adaptiveProfile) {
+  try {
+    await ensureRetentionTelemetryTable();
+    const currentMs = simulationTimestampMs(simulationTime);
+    const previousMs = Number(previousState?.simulationMs);
+    const deltaDays = Number.isFinite(currentMs) && Number.isFinite(previousMs) && currentMs > previousMs
+      ? (currentMs - previousMs) / 86400000
+      : 0;
+    const backlogBefore = Math.max(0, Number(summary.retentionBacklogTotal || 0) + Math.max(0, Number(resolvedRows || 0)));
+    const previousBacklog = Math.max(0, Number(previousState?.backlogAfter || 0));
+    const producedRows = previousState
+      ? Math.max(0, backlogBefore - previousBacklog)
+      : 0;
+    const deletedRows = Math.max(0, Number(resolvedRows || 0));
+    const producedPerSimDay = deltaDays > 0 ? producedRows / deltaDays : 0;
+    const deletedPerSimDay = deltaDays > 0 ? deletedRows / deltaDays : 0;
+    const overloadStreak = previousState && producedRows > deletedRows
+      ? Number(previousState.overloadStreak || 0) + 1
+      : 0;
+    const oldestAt = Number(summary.retentionBacklogTotal || 0) > 0
+      ? await getOldestRetentionDebtAt(
+          pool,
+          simulationId,
+          simulationTime
+        )
+      : null;
+    const oldestMs = oldestAt ? simulationTimestampMs(oldestAt) : NaN;
+    const debtAgeHours = Number.isFinite(currentMs) && Number.isFinite(oldestMs) && currentMs >= oldestMs
+      ? (currentMs - oldestMs) / 3600000
+      : 0;
+    await pool.query(
+      "INSERT INTO retention_cycle_metrics " +
+      "(simulation_id,simulation_at,backlog_before,backlog_after,produced_rows,deleted_rows,produced_rows_per_sim_day,deleted_rows_per_sim_day,retention_debt_age_hours,overload_streak,adaptive_level,adaptive_time_budget_ms,adaptive_simulation_interval_hours) " +
+      "VALUES(UUID_TO_BIN(?),?,?,?,?,?,?,?,?,?,?,?,?) " +
+      "ON DUPLICATE KEY UPDATE " +
+      "backlog_before=VALUES(backlog_before),backlog_after=VALUES(backlog_after),produced_rows=VALUES(produced_rows),deleted_rows=VALUES(deleted_rows)," +
+      "produced_rows_per_sim_day=VALUES(produced_rows_per_sim_day),deleted_rows_per_sim_day=VALUES(deleted_rows_per_sim_day)," +
+      "retention_debt_age_hours=VALUES(retention_debt_age_hours),overload_streak=VALUES(overload_streak),adaptive_level=VALUES(adaptive_level)," +
+      "adaptive_time_budget_ms=VALUES(adaptive_time_budget_ms),adaptive_simulation_interval_hours=VALUES(adaptive_simulation_interval_hours),observed_real_at=CURRENT_TIMESTAMP(3)",
+      [
+        simulationId,
+        simulationTime,
+        backlogBefore,
+        Number(summary.retentionBacklogTotal || 0),
+        producedRows,
+        deletedRows,
+        producedPerSimDay,
+        deletedPerSimDay,
+        debtAgeHours,
+        overloadStreak,
+        adaptiveProfile.level,
+        adaptiveProfile.timeBudgetMs,
+        adaptiveProfile.simulationIntervalHours
+      ]
+    );
+    adaptiveStateBySimulation.set(simulationId, { overloadStreak, simulationMs: currentMs, backlogAfter: Number(summary.retentionBacklogTotal || 0) });
+    return {
+      backlogBefore,
+      producedRows,
+      deletedRows,
+      producedRowsPerSimDay: producedPerSimDay,
+      deletedRowsPerSimDay: deletedPerSimDay,
+      retentionDebtAgeHours: debtAgeHours,
+      overloadStreak,
+      adaptiveLevel: adaptiveProfile.level,
+      adaptiveTimeBudgetMs: adaptiveProfile.timeBudgetMs,
+      adaptiveSimulationIntervalHours: adaptiveProfile.simulationIntervalHours,
+      retentionDebt: Number(summary.retentionBacklogTotal || 0),
+      oldestRetentionDebtSimulationAt: oldestAt
+    };
+  } catch (error) {
+    logger.warnThrottled(
+      "retention:telemetry:write",
+      300000,
+      { simulationId, error: String(error?.message || error) },
+      "retention telemetry write failed; cleanup continues"
+    );
+    return {
+      backlogBefore: Math.max(0, Number(summary.retentionBacklogTotal || 0) + Math.max(0, Number(resolvedRows || 0))),
+      producedRows: 0,
+      deletedRows: Math.max(0, Number(resolvedRows || 0)),
+      producedRowsPerSimDay: 0,
+      deletedRowsPerSimDay: 0,
+      retentionDebtAgeHours: 0,
+      overloadStreak: Number(previousState?.overloadStreak || 0),
+      adaptiveLevel: adaptiveProfile.level,
+      adaptiveTimeBudgetMs: adaptiveProfile.timeBudgetMs,
+      adaptiveSimulationIntervalHours: adaptiveProfile.simulationIntervalHours,
+      retentionDebt: Number(summary.retentionBacklogTotal || 0),
+      oldestRetentionDebtSimulationAt: null
+    };
+  }
 }
 
 const POLICY = Object.freeze({
@@ -889,20 +1127,15 @@ async function runSafeRetention(simulationId, simulationTime) {
   const mysqlSimulationTime = normalizeSimulationTimestamp(simulationTime);
   const lock = await acquireLock(simulationId);
   if (!lock) return { skipped: true, reason: "lock_busy" };
-  retentionDeadlineAt.set(simulationId, Date.now() + POLICY.timeBudgetMs);
+  const previousState = adaptiveStateBySimulation.get(simulationId) || await loadRetentionTelemetryState(simulationId);
+  const adaptiveProfile = getAdaptiveRetentionProfile(previousState?.overloadStreak || 0);
+  retentionDeadlineAt.set(simulationId, Date.now() + adaptiveProfile.timeBudgetMs);
   try {
     // Prioritize the two unbounded histories first. Their producers are continuous,
     // so leaving them to the end of the cycle lets slower cognitive cleanup consume
     // the whole retention budget and the backlog never catches up.
     const needs = await deleteOldNeedHistory(lock.conn, simulationId, mysqlSimulationTime);
     const emotions = await deleteOldEmotionHistory(lock.conn, simulationId, mysqlSimulationTime);
-    const cognitiveStates = await compactOldCognitiveStates(lock.conn, simulationId, mysqlSimulationTime);
-    const societyWealth = await compactOldEmergentWealthHistory(lock.conn, simulationId, mysqlSimulationTime);
-    const societyTrades = await aggregateAndDeleteOldEmergentTrades(lock.conn, simulationId, mysqlSimulationTime);
-    const societyProduction = await aggregateAndDeleteOldEmergentProduction(lock.conn, simulationId, mysqlSimulationTime);
-    const snapshots = await compactOldSnapshots(lock.conn, simulationId, mysqlSimulationTime);
-    const context = await compactOldDecisionContexts(lock.conn, simulationId, mysqlSimulationTime);
-    const options = await deleteUnselectedDecisionOptions(lock.conn, simulationId, mysqlSimulationTime);
     const events = await withEventWriteLock(
       simulationId,
       conn => deleteOldEvents(conn, simulationId, mysqlSimulationTime),
@@ -910,6 +1143,14 @@ async function runSafeRetention(simulationId, simulationTime) {
     );
     const actionSummaries = await compactOldActionDecisionSummaries(lock.conn, simulationId, mysqlSimulationTime);
     const actions = await deleteOldActions(lock.conn, simulationId, mysqlSimulationTime);
+    const relationshipHistory = await deleteOldRelationshipHistory(lock.conn, simulationId, mysqlSimulationTime);
+    const cognitiveStates = await compactOldCognitiveStates(lock.conn, simulationId, mysqlSimulationTime);
+    const societyWealth = await compactOldEmergentWealthHistory(lock.conn, simulationId, mysqlSimulationTime);
+    const societyTrades = await aggregateAndDeleteOldEmergentTrades(lock.conn, simulationId, mysqlSimulationTime);
+    const societyProduction = await aggregateAndDeleteOldEmergentProduction(lock.conn, simulationId, mysqlSimulationTime);
+    const snapshots = await compactOldSnapshots(lock.conn, simulationId, mysqlSimulationTime);
+    const context = await compactOldDecisionContexts(lock.conn, simulationId, mysqlSimulationTime);
+    const options = await deleteUnselectedDecisionOptions(lock.conn, simulationId, mysqlSimulationTime);
     const memoryDedupeBackfilled = await backfillMemoryDedupeKeys(lock.conn, simulationId);
     const episodicMemoryCap = await archiveExcessEpisodicMemories(lock.conn, simulationId, mysqlSimulationTime);
     const duplicateMemories = await compactDuplicateMemories(lock.conn, simulationId, mysqlSimulationTime);
@@ -919,7 +1160,6 @@ async function runSafeRetention(simulationId, simulationTime) {
     const cognitiveActorCaps = await deleteActorCognitiveArtifacts(lock.conn, simulationId, mysqlSimulationTime);
     const counterfactuals = await deleteResolvedCounterfactuals(lock.conn, simulationId, mysqlSimulationTime);
     const worlds = await deleteResolvedCounterfactualWorlds(lock.conn, simulationId, mysqlSimulationTime);
-    const relationshipHistory = await deleteOldRelationshipHistory(lock.conn, simulationId, mysqlSimulationTime);
     const summary = {
       simulationId,
       simulationTime,
@@ -985,9 +1225,48 @@ async function runSafeRetention(simulationId, simulationTime) {
         Number(expectations.remainingCandidates || 0) +
         Number(counterfactuals.remainingCandidates || 0) +
         Number(worlds.remainingCandidates || 0),
-      retentionBudgetMs: POLICY.timeBudgetMs,
-      retentionBudgetRemainingMs: retentionBudgetRemainingMs(simulationId)
+      retentionBudgetMs: adaptiveProfile.timeBudgetMs,
+      retentionBudgetRemainingMs: retentionBudgetRemainingMs(simulationId),
+      adaptiveRetentionLevel: adaptiveProfile.level,
+      adaptiveSimulationIntervalHours: adaptiveProfile.simulationIntervalHours
     };
+    const resolvedRows =
+      Number(needs.deleted || 0) +
+      Number(emotions.deleted || 0) +
+      Number(events.deleted || 0) +
+      Number(actionSummaries.updated || 0) +
+      Number(actions.deleted || 0) +
+      Number(relationshipHistory.deleted || 0) +
+      Number(memoryArchive.archived || 0) +
+      Number(duplicateMemories.deleted || 0) +
+      Number(memories.deleted || 0) +
+      Number(expectations.deleted || 0) +
+      Number(counterfactuals.deleted || 0) +
+      Number(worlds.deleted || 0);
+    const retentionTelemetry = await persistRetentionTelemetry(
+      simulationId,
+      simulationTime,
+      summary,
+      resolvedRows,
+      previousState,
+      adaptiveProfile
+    );
+    Object.assign(summary, {
+      retentionBacklogBefore: retentionTelemetry.backlogBefore,
+      retentionProducedRows: retentionTelemetry.producedRows,
+      retentionDeletedRows: retentionTelemetry.deletedRows,
+      retentionProducedRowsPerSimDay: retentionTelemetry.producedRowsPerSimDay,
+      retentionDeletedRowsPerSimDay: retentionTelemetry.deletedRowsPerSimDay,
+      retentionDebt: retentionTelemetry.retentionDebt,
+      retentionDebtAgeHours: retentionTelemetry.retentionDebtAgeHours,
+      oldestRetentionDebtSimulationAt: retentionTelemetry.oldestRetentionDebtSimulationAt,
+      retentionOverloadStreak: retentionTelemetry.overloadStreak
+    });
+    adaptiveStateBySimulation.set(simulationId, {
+      overloadStreak: retentionTelemetry.overloadStreak,
+      simulationMs: simulationTimestampMs(simulationTime),
+      backlogAfter: summary.retentionBacklogTotal
+    });
     observability.recordRetentionSummary(simulationId,summary);
     if (summary.retentionBacklogTotal > 0) {
       logger.warnThrottled(
@@ -1003,6 +1282,11 @@ async function runSafeRetention(simulationId, simulationTime) {
           relationshipHistoryBacklog:summary.relationshipHistoryBacklog,
           actionBacklog:summary.actionBacklog,
           actionDecisionSummaryBacklog:summary.actionDecisionSummaryBacklog,
+          retentionDebt:summary.retentionDebt,
+          retentionDebtAgeHours:summary.retentionDebtAgeHours,
+          retentionProducedRowsPerSimDay:summary.retentionProducedRowsPerSimDay,
+          retentionDeletedRowsPerSimDay:summary.retentionDeletedRowsPerSimDay,
+          retentionOverloadStreak:summary.retentionOverloadStreak,
           retentionBudgetMs:summary.retentionBudgetMs
         },
         "retention backlog remains after bounded cleanup"
@@ -1077,9 +1361,11 @@ async function maybeRunSafeRetention(simulationId, simulationTime) {
   const lastWall = lastRunAt.get(simulationId);
   if (lastWall !== undefined && now - lastWall < Math.min(POLICY.intervalMs, 5000)) return { skipped: true, reason: "wall_interval" };
   if (running.has(simulationId)) return { skipped: true, reason: "running" };
-  const simulationMs = new Date(simulationTime).getTime();
+  const simulationMs = simulationTimestampMs(simulationTime);
   const lastSimulationMs = lastRunSimulationAt.get(simulationId);
-  if (Number.isFinite(simulationMs) && lastSimulationMs !== undefined && simulationMs - lastSimulationMs < POLICY.simulationIntervalHours * 3600000) {
+  const overloadStreak = adaptiveStateBySimulation.get(simulationId)?.overloadStreak || 0;
+  const adaptiveProfile = getAdaptiveRetentionProfile(overloadStreak);
+  if (Number.isFinite(simulationMs) && lastSimulationMs !== undefined && simulationMs - lastSimulationMs < adaptiveProfile.simulationIntervalHours * 3600000) {
     return { skipped: true, reason: "simulation_interval" };
   }
   running.add(simulationId);
@@ -1119,5 +1405,8 @@ module.exports = {
   isTerminalDecisionStatus,
   isTerminalActionStatus,
   runSafeRetention,
-  maybeRunSafeRetention
+  maybeRunSafeRetention,
+  getAdaptiveRetentionProfile,
+  ensureRetentionTelemetryTable,
+  getOldestRetentionDebtAt
 };
