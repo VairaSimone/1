@@ -241,7 +241,7 @@ async function sendMessage({
   if(gemini?.client){
     const aiStartedAt=Date.now();
     try{
-      generated=await gemini.dialogue(context);
+      generated=await gemini.dialogue(context,{simulationId,entityId:asamiEntityId,simulationTime});
     }catch(err){
       logger.warn({
         simulationId,
@@ -681,24 +681,31 @@ async function initiateConversation({simulationId,asamiEntityId,simulationTime,g
   context.conversationTopic=topic;
   context.conversationInnerState=innerState;
 
-  const generated=gemini?.client?await gemini.dialogue(context):null;
+  const generated=gemini?.client?await gemini.dialogue(context,{simulationId,entityId:asamiEntityId,simulationTime}):null;
   const sanitizedEffects=sanitizeDialogueEffects(generated,"",intent);
   if(generated)generated.stateEffects=sanitizedEffects;
   const reply=generated?.reply||proactiveFallback(context,social,belonging,curiosity);
   const significance=scoreMessageSignificance(reply,{intent,topic,generated});
+  const turnSequence=await reserveConversationTurn(simulationId,cid);
+  let intentId=null;
+  let attemptId=null;
+  let eventId=null;
+  let actionId=null;
+  const assistantId=uuid();
 
-  const intentId=uuid();
+  try{
+  intentId=uuid();
   await pool.query(
     "INSERT INTO communication_intents(id,simulation_id,entity_id,target_entity_id,channel,reason_type,priority,status,created_simulation_at,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),'CHAT','AUTONOMOUS_INITIATED',?, 'ATTEMPTING',?,1)",
     [intentId,simulationId,asamiEntityId,observer.id,Math.max(.2,Math.min(1,innerState.desireToContinue)),simulationTime]
   );
-  const attemptId=uuid();
+  attemptId=uuid();
   await pool.query(
     "INSERT INTO communication_attempts(id,simulation_id,intent_id,attempted_simulation_at,status,result) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,'STARTED',NULL)",
     [attemptId,simulationId,intentId,simulationTime]
   );
 
-  const eventId=await createEvent({
+  eventId=await createEvent({
     simulationId,
     eventTypeCode:"COMMUNICATION",
     title:context.entity.displayName+" initiated a conversation",
@@ -719,7 +726,7 @@ async function initiateConversation({simulationId,asamiEntityId,simulationTime,g
     }
   });
 
-  const actionId=await persistAction({
+  actionId=await persistAction({
     simulationId,
     entityId:asamiEntityId,
     targetEntityId:observer.id,
@@ -738,6 +745,21 @@ async function initiateConversation({simulationId,asamiEntityId,simulationTime,g
     magnitude:1,
     createdSimulationAt:simulationTime
   });
+
+  await pool.query(
+    "INSERT INTO messages(id,simulation_id,conversation_id,sender_entity_id,message_type,content,simulation_created_at,status,metadata,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),'ASSISTANT',?,?,'DELIVERED',?,1)",
+    [assistantId,simulationId,cid,asamiEntityId,reply,simulationTime,JSON.stringify({
+      proactive:true,
+      responseSource:generated?"GEMINI":"DETERMINISTIC",
+      eventId,
+      actionId,
+      conversationIntent:intent,
+      conversationTopic:topic,
+      turnSequence,
+      messageOrder:1,
+      conversationCommitStatus:"PENDING"
+    })]
+  );
 
   const needChanges=await updateNeeds(asamiEntityId,simulationTime,.08,eventId,actionId,"TALKING");
   const emotionChanges=await applyEmotions(asamiEntityId,simulationTime,needChanges,eventId,actionId);
@@ -804,7 +826,6 @@ async function initiateConversation({simulationId,asamiEntityId,simulationTime,g
     });
   }
 
-  const assistantId=uuid();
   const metadata={
     proactive:true,
     responseSource:generated?"GEMINI":"DETERMINISTIC",
@@ -821,8 +842,8 @@ async function initiateConversation({simulationId,asamiEntityId,simulationTime,g
     memoryCreated:Boolean(memoryId)
   };
   await pool.query(
-    "INSERT INTO messages(id,simulation_id,conversation_id,sender_entity_id,message_type,content,simulation_created_at,status,metadata,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),'ASSISTANT',?,?,'DELIVERED',?,1)",
-    [assistantId,simulationId,cid,asamiEntityId,reply,simulationTime,JSON.stringify({...metadata,turnSequence,messageOrder:1})]
+    "UPDATE messages SET metadata=?,version=version+1 WHERE id=UUID_TO_BIN(?) AND conversation_id=UUID_TO_BIN(?) AND status='DELIVERED'",
+    [JSON.stringify({...metadata,turnSequence,messageOrder:1,conversationCommitStatus:"COMPLETED"}),assistantId,cid]
   );
   const updatedSpeechProfile=await updateSpeechProfileSafely({
     simulationId,
@@ -881,8 +902,41 @@ async function initiateConversation({simulationId,asamiEntityId,simulationTime,g
     conversationInnerState:updatedInnerState,
     memoryCreated:Boolean(memoryId)
   };
-}
-
+  }catch(err){
+    try{
+      if(assistantId){
+        await pool.query(
+          "UPDATE messages SET metadata=JSON_SET(COALESCE(metadata,JSON_OBJECT()),'$.conversationCommitStatus','FAILED','$.conversationError',?),version=version+1 WHERE id=UUID_TO_BIN(?) AND conversation_id=UUID_TO_BIN(?) AND status='DELIVERED'",
+          [String(err?.message||"Conversation processing failed").slice(0,500),assistantId,cid]
+        );
+      }
+      if(attemptId){
+        await pool.query(
+          `UPDATE communication_attempts
+           SET status='FAILED',result=?
+           WHERE id=UUID_TO_BIN(?) AND status IN ('STARTED','DELIVERED')`,
+          [JSON.stringify({error:String(err?.message||"Conversation processing failed"),actionId,eventId,assistantMessageId:assistantId,turnSequence}),attemptId]
+        );
+      }
+      if(intentId){
+        await pool.query(
+          `UPDATE communication_intents
+           SET status='FAILED',version=version+1
+           WHERE id=UUID_TO_BIN(?) AND status='ATTEMPTING'`,
+          [intentId]
+        );
+      }
+    }catch(reconcileError){
+      logger.error({
+        simulationId,
+        asamiEntityId,
+        conversationId:cid,
+        error:String(reconcileError?.message||reconcileError)
+      },"proactive conversation failure reconciliation failed");
+    }
+    throw err;
+  }
+} 
 async function persistAction({simulationId,entityId,targetEntityId,eventId,conversationId,simulationTime,sourceType}){const actionId=uuid();await pool.query(`INSERT INTO actions(id,simulation_id,entity_id,decision_id,action_type,source_type,source_event_id,started_simulation_at,completed_simulation_at,status,target,parameters,result,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),NULL,'TALKING',?,UUID_TO_BIN(?),?,?, 'COMPLETED',NULL,?,?,1)`,[actionId,simulationId,entityId,sourceType,eventId,simulationTime,simulationTime,JSON.stringify({targetEntityId,conversationId}),JSON.stringify({eventId,actionType:"TALKING",sourceType})]);return actionId;}
 function proactiveFallback(context,social,belonging,curiosity){if(social>.8)return"Avevo voglia di parlarti. Mi andava di raccontarti un po' cosa mi passa per la testa.";if(belonging>.8)return"Mi sei venuto in mente e ho sentito il bisogno di scriverti. Come stai?";if(curiosity>.85)return"Mi è venuta una curiosità e volevo parlarne con te. Ho la sensazione che tu possa aiutarmi a ragionarci.";return"Ehi. Mi andava di sentirti un po'.";}
 function deterministicReply(context,content){
