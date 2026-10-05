@@ -375,21 +375,21 @@ const ACTION_EMOTION_EFFECTS={TALKING:{CALM:0.012,EXCITEMENT:0.008,ANXIETY:-0.00
 const NEED_EMOTION_CURVES={HUNGER:{threshold:0.40,frustration:0.10,anger:0.055},THIRST:{threshold:0.40,frustration:0.15,anxiety:0.06},SLEEPINESS:{threshold:0.40,frustration:0.10,sadness:0.065},SOCIAL_NEED:{threshold:0.40,sadness:0.08,anxiety:0.045,frustration:0.055},BELONGING:{threshold:0.40,sadness:0.10,anxiety:0.06},FUN:{threshold:0.40,sadness:0.065,frustration:0.045},CURIOSITY:{threshold:0.40,excitement:0.075},ACHIEVEMENT:{threshold:0.40,frustration:0.07}};
 const TRAIT_BEHAVIOR_LINKS={TALKING:{EXTRAVERSION:.60,SOCIABILITY:.70,EMPATHY:.25},EXPLORING:{OPENNESS:.55,CURIOSITY:.60,CONFIDENCE:.20},STUDYING:{CONSCIENTIOUSNESS:.60,DISCIPLINE:.70,PATIENCE:.25},WORKING:{CONSCIENTIOUSNESS:.55,DISCIPLINE:.55},PLAYING:{OPENNESS:.35,IMPULSIVITY:.25},READING:{OPENNESS:.35,CURIOSITY:.55},WALKING:{OPENNESS:.20},SLEEPING:{PATIENCE:.12,SELF_CARE:.15},RESTING:{PATIENCE:.12,SELF_CARE:.15},EATING:{SELF_CARE:.20},DRINKING:{SELF_CARE:.20},WATCHING:{OPENNESS:.12}};
 function pressureCurve(value,threshold=0.4){const v=clamp(value);if(v<=threshold)return 0;const normalized=(v-threshold)/(1-threshold);return normalized*normalized;}
-async function ensureEntityState(entityId,simulationTime){
+async function ensureEntityState(entityId,simulationTime,db=pool,{force=false,cache=true}={}){
   const key=String(entityId||"");
   if(!key)return;
-  if(initializedEntityState.has(key))return;
+  if(!force&&cache&&initializedEntityState.has(key))return;
   await Promise.all([
-    pool.query(`INSERT IGNORE INTO entity_needs_current(entity_id,need_id,value,updated_simulation_at,version)
+    db.query(`INSERT IGNORE INTO entity_needs_current(entity_id,need_id,value,updated_simulation_at,version)
       SELECT UUID_TO_BIN(?),id,default_value,?,1 FROM need_definitions WHERE active=1`,[key,simulationTime]),
-    pool.query(`INSERT IGNORE INTO entity_emotions_current(entity_id,emotion_id,intensity,updated_simulation_at,version)
+    db.query(`INSERT IGNORE INTO entity_emotions_current(entity_id,emotion_id,intensity,updated_simulation_at,version)
       SELECT UUID_TO_BIN(?),id,default_value,?,1 FROM emotion_definitions WHERE active=1`,[key,simulationTime]),
-    pool.query(`INSERT IGNORE INTO entity_traits_current(entity_id,trait_id,value,updated_simulation_at,version)
+    db.query(`INSERT IGNORE INTO entity_traits_current(entity_id,trait_id,value,updated_simulation_at,version)
       SELECT UUID_TO_BIN(?),id,default_value,?,1 FROM trait_definitions WHERE active=1`,[key,simulationTime]),
-    pool.query(`INSERT IGNORE INTO entity_skills(entity_id,skill_id,updated_simulation_at,version)
+    db.query(`INSERT IGNORE INTO entity_skills(entity_id,skill_id,updated_simulation_at,version)
       SELECT UUID_TO_BIN(?),id,?,1 FROM skill_definitions WHERE active=1`,[key,simulationTime])
   ]);
-  initializedEntityState.add(key);
+  if(cache)initializedEntityState.add(key);
 }
 async function readNeeds(entityId,db){
   const [rows]=await db.query(`SELECT BIN_TO_UUID(enc.need_id) AS needId,nd.code,nd.name,enc.value,enc.version,nd.decay_rate AS decayRate,nd.recovery_rate AS recoveryRate,nd.priority_weight AS priorityWeight,nd.parameters FROM entity_needs_current enc JOIN need_definitions nd ON nd.id=enc.need_id WHERE enc.entity_id=UUID_TO_BIN(?) AND nd.active=1`,[entityId]);
