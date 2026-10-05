@@ -302,6 +302,80 @@ async function ensureDecisionOptionIntegrityMigration(db) {
   return true;
 }
 
+async function ensureDecisionActionAuditMigration(db=pool){
+  const columns=[
+    ["action_created","TINYINT(1) NOT NULL DEFAULT 0 AFTER status"],
+    ["action_id","BINARY(16) NULL AFTER action_created"],
+    ["action_outcome","VARCHAR(32) NULL AFTER action_id"]
+  ];
+  for(const [name,definition] of columns){
+    const [rows]=await db.query(
+      `SELECT COUNT(*) AS count
+       FROM INFORMATION_SCHEMA.COLUMNS
+       WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='decisions' AND COLUMN_NAME=?`,
+      [name]
+    );
+    if(Number(rows[0]?.count||0)===0){
+      await db.query(`ALTER TABLE decisions ADD COLUMN ${name} ${definition}`);
+    }
+  }
+
+  const [indexes]=await db.query(
+    `SELECT COUNT(*) AS count
+     FROM INFORMATION_SCHEMA.STATISTICS
+     WHERE TABLE_SCHEMA=DATABASE()
+       AND TABLE_NAME='decisions'
+       AND INDEX_NAME='idx_decisions_action_audit'`
+  );
+  if(Number(indexes[0]?.count||0)===0){
+    await db.query(
+      `ALTER TABLE decisions
+       ADD KEY idx_decisions_action_audit (simulation_id,action_created,simulation_time)`
+    );
+  }
+
+  // Backfill surviving action links first.
+  await db.query(
+    `UPDATE decisions d
+     JOIN actions a
+       ON a.decision_id=d.id
+      AND a.simulation_id=d.simulation_id
+     SET d.action_created=1,
+         d.action_id=a.id
+     WHERE d.action_created=0
+       AND d.action_id IS NULL`
+  );
+
+  // Recover causal evidence from retained decision outcomes for actions that
+  // have already been deleted by retention.
+  await db.query(
+    `UPDATE decisions
+     SET action_created=1,
+         action_id=UUID_TO_BIN(JSON_UNQUOTE(JSON_EXTRACT(actual_outcome,'$.actionId')))
+     WHERE action_created=0
+       AND action_id IS NULL
+       AND actual_outcome IS NOT NULL
+       AND JSON_UNQUOTE(JSON_EXTRACT(actual_outcome,'$.actionId')) IS NOT NULL`
+  );
+
+  await db.query(
+    `UPDATE decisions
+     SET action_outcome=UPPER(COALESCE(
+       JSON_UNQUOTE(JSON_EXTRACT(actual_outcome,'$.outcome')),
+       JSON_UNQUOTE(JSON_EXTRACT(actual_outcome,'$.actionSummary.outcome'))
+     ))
+     WHERE action_created=1
+       AND action_outcome IS NULL
+       AND actual_outcome IS NOT NULL
+       AND COALESCE(
+         JSON_UNQUOTE(JSON_EXTRACT(actual_outcome,'$.outcome')),
+         JSON_UNQUOTE(JSON_EXTRACT(actual_outcome,'$.actionSummary.outcome'))
+       ) IS NOT NULL`
+  );
+
+  return true;
+}
+
 async function ensureDecisionContextArchiveMigration(db=pool){
   await db.query(`
     CREATE TABLE IF NOT EXISTS decision_context_archive (
@@ -334,9 +408,10 @@ async function ensurePlanningStatusMigrations() {
     await ensureDecisionOptionIntegrityMigration(conn);
     await ensureIntentionDecisionLinkMigration(conn);
     await ensureActionLifecycleMigration(conn);
+    const decisionActionAudit=await ensureDecisionActionAuditMigration(conn);
     const decisionContextArchive=await ensureDecisionContextArchiveMigration(conn);
     const memoryRetention=await ensureMemoryRetentionMigration(conn);
-    return { changed, actionIdempotency: true, actionLifecycle: true, decisionContextArchive, memoryRetention };
+    return { changed, actionIdempotency: true, actionLifecycle: true, decisionActionAudit, decisionContextArchive, memoryRetention };
   } finally {
     if (acquired) {
       try { await conn.query("SELECT RELEASE_LOCK(?)", [lockName]); } catch {}
