@@ -76,7 +76,7 @@ const AdvancedDialogueSchema=DialogueSchema.extend({
 
 function decisionNeedsAdvancedCognition(context){
   const type=String(context?.geminiTrigger?.type||"");
-  return ["PLAN_DELIBERATION","AMBIGUITY","FAILURE_REFLECTION","UNCERTAINTY"].includes(type);
+  return ["PLAN_DELIBERATION","AMBIGUITY","FAILURE_REFLECTION","UNCERTAINTY","SOCIAL_CONFLICT","NEW_RELATIONSHIP"].includes(type);
 }
 
 function normalizeProviderSchemaNode(node, root, resolving = new Set()) {
