@@ -70,6 +70,26 @@ async function reconcileStaleEvaluatedDecisions(simulationId,simulationTime,{lim
     const intentionStatus=String(row.intentionStatus||"").toUpperCase();
     const actionResult=parseJson(row.actionResult,{})||{};
     const actionParameters=parseJson(row.actionParameters,{})||{};
+    if(row.actionId&&row.decisionId){
+      await markDecisionActionCreated({
+        decisionId:row.decisionId,
+        simulationId,
+        entityId:row.entityId,
+        actionId:row.actionId
+      });
+      if(["COMPLETED","INTERRUPTED","FAILED","CANCELLED"].includes(actionStatus)){
+        const outcome=actionStatus==="COMPLETED"
+          ?String(actionResult.outcome||"SUCCESS").toUpperCase()
+          :String(actionResult.outcome||actionStatus).toUpperCase();
+        await markDecisionActionOutcome({
+          decisionId:row.decisionId,
+          simulationId,
+          entityId:row.entityId,
+          actionId:row.actionId,
+          outcome
+        });
+      }
+    }
 
     if(actionStatus==="COMPLETED"){
       const [updated]=await pool.query(
