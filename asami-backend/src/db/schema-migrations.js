@@ -302,6 +302,22 @@ async function ensureDecisionOptionIntegrityMigration(db) {
   return true;
 }
 
+async function ensureDecisionContextArchiveMigration(db=pool){
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS decision_context_archive (
+      decision_id BINARY(16) NOT NULL PRIMARY KEY,
+      simulation_id BINARY(16) NOT NULL,
+      entity_id BINARY(16) NOT NULL,
+      simulation_time DATETIME(3) NOT NULL,
+      context JSON NOT NULL,
+      created_real_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+      KEY idx_decision_context_archive_sim_time (simulation_id,simulation_time),
+      KEY idx_decision_context_archive_entity_time (simulation_id,entity_id,simulation_time)
+    ) ENGINE=InnoDB
+  `);
+  return true;
+}
+
 async function ensurePlanningStatusMigrations() {
   const conn = await pool.getConnection();
   const lockName = "asami:schema-planning-status";
@@ -318,8 +334,9 @@ async function ensurePlanningStatusMigrations() {
     await ensureDecisionOptionIntegrityMigration(conn);
     await ensureIntentionDecisionLinkMigration(conn);
     await ensureActionLifecycleMigration(conn);
+    const decisionContextArchive=await ensureDecisionContextArchiveMigration(conn);
     const memoryRetention=await ensureMemoryRetentionMigration(conn);
-    return { changed, actionIdempotency: true, actionLifecycle: true, memoryRetention };
+    return { changed, actionIdempotency: true, actionLifecycle: true, decisionContextArchive, memoryRetention };
   } finally {
     if (acquired) {
       try { await conn.query("SELECT RELEASE_LOCK(?)", [lockName]); } catch {}
@@ -328,5 +345,5 @@ async function ensurePlanningStatusMigrations() {
   }
 }
 
-module.exports = { ensurePlanningStatusMigrations, ensureMemoryRetentionMigration };
+module.exports = { ensurePlanningStatusMigrations, ensureMemoryRetentionMigration, ensureDecisionContextArchiveMigration };
 
