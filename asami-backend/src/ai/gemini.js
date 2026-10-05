@@ -587,6 +587,7 @@ class GeminiService {
 
     let lastTransientFailure=null;
     for(let modelIndex=0;modelIndex<models.length;modelIndex++){
+      const model=models[modelIndex];
       const remainingBudgetMs=requestDeadlineAt-Date.now();
       if(remainingBudgetMs<MIN_PROVIDER_DEADLINE_MS){
         this.lastRequestStatus={
@@ -620,7 +621,6 @@ class GeminiService {
         );
         return null;
       }
-      const model=models[modelIndex];
       const reservation=await budget.reserve({prompt,outputTokenCeiling,kind,simulationId,entityId,simulationTime});
       if(!reservation.allowed){
         this.lastRequestStatus={
