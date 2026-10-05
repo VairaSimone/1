@@ -242,6 +242,78 @@ async function buildRemoteSocialContexts(simulationId,entityIds=[],options={}){
   }
   return remote;
 }
+const RELATIONSHIP_END_TRUST_THRESHOLD=0.12;
+const RELATIONSHIP_END_CONFLICT_THRESHOLD=0.78;
+
+function shouldEndRelationshipAfterInteraction({previousRelationship=null,updatedRelationship=null,interactionOutcome="NEUTRAL"}={}){
+  if(!updatedRelationship)return false;
+
+  const conflict=Number(updatedRelationship.conflict);
+  if(Number.isFinite(conflict)&&conflict>=RELATIONSHIP_END_CONFLICT_THRESHOLD)return true;
+
+  // A newborn acquaintance starts with trust=0. Low absolute trust is therefore
+  // not evidence of a failed relationship. Only terminate for trust when an
+  // established bond crosses the threshold during a negative interaction.
+  if(String(interactionOutcome).toUpperCase()==="NEGATIVE"&&previousRelationship){
+    const previousTrust=Number(previousRelationship.trust);
+    const nextTrust=Number(updatedRelationship.trust);
+    if(Number.isFinite(previousTrust)&&Number.isFinite(nextTrust)&&
+       previousTrust>RELATIONSHIP_END_TRUST_THRESHOLD&&
+       nextTrust<=RELATIONSHIP_END_TRUST_THRESHOLD){
+      return true;
+    }
+  }
+
+  return false;
+}
+
+async function repairPrematureRelationshipEndings(simulationId,simulationAt,{limit=500}={}){
+  const safeLimit=Math.max(1,Math.min(1000,Number(limit)||500));
+  const [rows]=await pool.query(`
+    SELECT BIN_TO_UUID(r.id) AS id,
+           r.version,
+           r.source_entity_id AS sourceEntityId,
+           r.target_entity_id AS targetEntityId
+    FROM relationships r
+    JOIN relationship_types rt ON rt.id=r.relationship_type_id
+    WHERE r.simulation_id=UUID_TO_BIN(?)
+      AND rt.code='ACQUAINTANCE'
+      AND r.status='ENDED'
+      AND r.started_simulation_at=r.ended_simulation_at
+      AND r.version=3
+      AND r.conflict_score<0.78
+      AND r.irritation_score<0.65
+      AND r.started_simulation_at<=?
+    ORDER BY r.started_simulation_at DESC
+    LIMIT ${safeLimit}
+  `,[simulationId,simulationAt]);
+
+  let repaired=0;
+  for(const row of rows){
+    const [activeRows]=await pool.query(`
+      SELECT id
+      FROM relationships
+      WHERE simulation_id=UUID_TO_BIN(?)
+        AND status='ACTIVE'
+        AND ((source_entity_id=? AND target_entity_id=?)
+          OR (source_entity_id=? AND target_entity_id=?))
+      LIMIT 1
+    `,[simulationId,row.sourceEntityId,row.targetEntityId,row.targetEntityId,row.sourceEntityId]);
+    if(activeRows.length)continue;
+
+    const [updated]=await pool.query(`
+      UPDATE relationships
+      SET status='ACTIVE',ended_simulation_at=NULL,version=version+1
+      WHERE id=UUID_TO_BIN(?)
+        AND simulation_id=UUID_TO_BIN(?)
+        AND status='ENDED'
+        AND version=?
+    `,[row.id,simulationId,row.version]);
+    if(updated.affectedRows)repaired+=1;
+  }
+
+  return {checked:rows.length,repaired};
+}
 function deriveSocialIntent({actionType,targetId,partner,candidates}){if(actionType!=="TALKING"||!targetId)return"NONE";const candidate=(candidates||[]).find(x=>x.id===targetId);if(!candidate)return"NONE";if(candidate.endedRelationship?.type==='PARTNER'&&!partner){const r=candidate.endedRelationship;if(Number(r.affection)>=.45&&Number(r.trust)>=.4&&Number(r.closeness)>=.4)return"RECONCILE";}if(partner?.partnerId===targetId)return"NONE";if(Number(candidate.romanticScore)>=.62&&Number(candidate.compatibility)>=.5)return"PURSUE_RELATIONSHIP";if(!partner&&Number(candidate.romanticScore)<.32)return"STAY_SINGLE";return"NONE";}
 async function writeRelationshipHistory(r,simulationAt,sourceEventId=null){await pool.query(`INSERT INTO relationship_history(id,simulation_id,relationship_id,simulation_time,affection,trust,respect,familiarity,attraction,conflict,fear,irritation,admiration,jealousy,dependence,closeness,source_event_id) VALUES(UUID_TO_BIN(?),?,UUID_TO_BIN(?),?,?,?,?,?,?,?,?,?,?,?,?,?,UUID_TO_BIN(?))`,[uuid(),r.simulation_id,r.id,simulationAt,r.affection_score,r.trust_score,r.respect_score,r.familiarity_score,r.attraction_score,r.conflict_score,r.fear_score,r.irritation_score,r.admiration_score,r.jealousy_score,r.dependence_score,r.closeness_score,sourceEventId]);}
 async function endRelationship(relationshipId,simulationAt,reason="ENDED"){const[rows]=await pool.query(`SELECT BIN_TO_UUID(id) AS id,simulation_id,status,version,affection_score,trust_score,respect_score,familiarity_score,attraction_score,admiration_score,jealousy_score,dependence_score,closeness_score,irritation_score,conflict_score,fear_score FROM relationships WHERE id=UUID_TO_BIN(?) AND status='ACTIVE' LIMIT 1`,[relationshipId]);if(!rows.length)return false;const r=rows[0];const[updated]=await pool.query(`UPDATE relationships SET status='ENDED',ended_simulation_at=?,version=version+1 WHERE id=UUID_TO_BIN(?) AND status='ACTIVE' AND version=?`,[simulationAt,relationshipId,r.version]);if(!updated.affectedRows)return false;await writeRelationshipHistory(r,simulationAt,null);return{id:r.id,reason};}
@@ -362,9 +434,11 @@ async function processSocialInteraction({simulationId,sourceEntityId,targetEntit
   if(!relationshipId)return{relationshipId:null,conversationId:null,interactionOutcome,compatibility,receptiveness,relationshipFormed:false};
 
   const updatedRelationship=await matureRelationship(simulationId,sourceEntityId,targetEntityId,simulationAt,eventId);
-  if(updatedRelationship && (Number(updatedRelationship.conflict||0)>=.78 || Number(updatedRelationship.trust||0)<=.12)){
-    await endRelationship(updatedRelationship.id,simulationAt,"SOCIAL_CONFLICT");
-  }
+  if(shouldEndRelationshipAfterInteraction({
+    previousRelationship:existingRelationship,
+    updatedRelationship,
+    interactionOutcome
+  })) await endRelationship(updatedRelationship.id,simulationAt,"SOCIAL_CONFLICT");
   const conversationId=await ensureSocialConversation(simulationId,sourceEntityId,targetEntityId,simulationAt);
   const [sourceRows,targetRows]=await Promise.all([
     pool.query(`SELECT display_name AS name FROM entities WHERE id=UUID_TO_BIN(?) LIMIT 1`,[sourceEntityId]),
@@ -384,6 +458,6 @@ async function processSocialInteraction({simulationId,sourceEntityId,targetEntit
   return{relationshipId:updatedRelationship?.id||relationshipId,conversationId,sourceMessageId,targetMessageId,interactionOutcome,compatibility,receptiveness,relationshipFormed:!existingRelationship,relationship:relationshipSnapshot(updatedRelationship)};
 }
 
-async function maintainRelationships(simulationId,simulationAt){const[candidates]=await pool.query(`SELECT BIN_TO_UUID(r.id) AS id,r.status,r.started_simulation_at AS startedSimulationAt,r.source_entity_id AS sourceEntityId,r.target_entity_id AS targetEntityId,rt.code AS type FROM relationships r JOIN relationship_types rt ON rt.id=r.relationship_type_id WHERE r.simulation_id=UUID_TO_BIN(?)`,[simulationId]);for(const r of candidates){const ageHours=Math.max(0,(new Date(simulationAt)-new Date(r.startedSimulationAt))/3600000);if(r.status==='ACTIVE'&&ageHours>24*45&&r.type==='ACQUAINTANCE')await endRelationship(r.id,simulationAt,"TIMEOUT");if(r.status==='ACTIVE'&&ageHours>24*120&&r.type==='FRIEND')await endRelationship(r.id,simulationAt,"FRIENDSHIP_DECAY");}}
+async function maintainRelationships(simulationId,simulationAt){await repairPrematureRelationshipEndings(simulationId,simulationAt);const[candidates]=await pool.query(`SELECT BIN_TO_UUID(r.id) AS id,r.status,r.started_simulation_at AS startedSimulationAt,r.source_entity_id AS sourceEntityId,r.target_entity_id AS targetEntityId,rt.code AS type FROM relationships r JOIN relationship_types rt ON rt.id=r.relationship_type_id WHERE r.simulation_id=UUID_TO_BIN(?)`,[simulationId]);for(const r of candidates){const ageHours=Math.max(0,(new Date(simulationAt)-new Date(r.startedSimulationAt))/3600000);if(r.status==='ACTIVE'&&ageHours>24*45&&r.type==='ACQUAINTANCE')await endRelationship(r.id,simulationAt,"TIMEOUT");if(r.status==='ACTIVE'&&ageHours>24*120&&r.type==='FRIEND')await endRelationship(r.id,simulationAt,"FRIENDSHIP_DECAY");}}
 
-module.exports={maintainRelationships,relationshipSnapshot,buildSocialContext,buildSocialContexts,buildRemoteSocialContexts,socialCandidates,relationshipBetween,currentPartner,deriveSocialIntent,updateRelationshipScores,setRelationshipType,reactivateRelationship,requestPartnership,reconcileRelationship,recordBetrayal,conversationOutcomeDeltas,mergeRelationshipDeltas,shouldPromoteToFriend,matureRelationship,applyConversationOutcome,recordSocialMemory,compatibilityFromTraits,processSocialInteraction,stableInteractionNoise,socialChemistry,relationshipFormationAccepted,socialInteractionOutcome};
+module.exports={maintainRelationships,repairPrematureRelationshipEndings,shouldEndRelationshipAfterInteraction,relationshipSnapshot,buildSocialContext,buildSocialContexts,buildRemoteSocialContexts,socialCandidates,relationshipBetween,currentPartner,deriveSocialIntent,updateRelationshipScores,setRelationshipType,reactivateRelationship,requestPartnership,reconcileRelationship,recordBetrayal,conversationOutcomeDeltas,mergeRelationshipDeltas,shouldPromoteToFriend,matureRelationship,applyConversationOutcome,recordSocialMemory,compatibilityFromTraits,processSocialInteraction,stableInteractionNoise,socialChemistry,relationshipFormationAccepted,socialInteractionOutcome};
