@@ -23,8 +23,8 @@ const DEFAULT_DESIRES = [
   ['MAINTAIN_AGENCY', 'Maintain independence', 'Keep the ability to choose, explore and act without unnecessary dependence.', 'AUTONOMY', 0.64],
 ];
 
-async function loadTraits(simulationId, entityId) {
-  const [rows] = await pool.query(`SELECT td.code,etc.value FROM entity_traits_current etc JOIN trait_definitions td ON td.id=etc.trait_id WHERE etc.entity_id=UUID_TO_BIN(?) AND td.active=1`, [entityId]);
+async function loadTraits(simulationId, entityId, db=pool) {
+  const [rows] = await db.query(`SELECT td.code,etc.value FROM entity_traits_current etc JOIN trait_definitions td ON td.id=etc.trait_id WHERE etc.entity_id=UUID_TO_BIN(?) AND td.active=1`, [entityId]);
   return rows.map(r => ({ code: normalize(r.code), value: clamp01(r.value) }));
 }
 function traitMap(traits) { return new Map((traits || []).map(t => [normalize(t.code), clamp01(t.value)])); }
@@ -38,20 +38,35 @@ function seededValue(code, traits) {
   return mapping[code] === undefined ? null : clamp01(0.35 + Number(mapping[code]) * 0.55, 0.5);
 }
 
-async function ensureIdentity(simulationId, entityId, simulationTime) {
-  const key = `${simulationId}:${entityId}`;
-  if (initializedIdentity.has(key)) return;
-  const [existing] = await pool.query(`SELECT id FROM self_models WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) LIMIT 1`, [simulationId, entityId]);
-  const traits = await loadTraits(simulationId, entityId);
-  await pool.query(`INSERT IGNORE INTO self_models(id,simulation_id,entity_id,identity_summary,self_concept,capabilities,aspirations,limitations,current_self_view,version,created_simulation_at,updated_simulation_at) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,?,?,?,1,?,?)`, [uuid(),simulationId,entityId,'A developing person with a persistent history, preferences, relationships and goals.','I am still learning who I am through what I choose, experience and remember.',JSON.stringify({adaptive:true,domains:['social','learning','navigation','self-care']}),JSON.stringify(DEFAULT_DESIRES.map(d=>d[0])),JSON.stringify([]),'I am still forming a stable understanding of myself.',simulationTime,simulationTime]);
+async function ensureIdentity(simulationId, entityId, simulationTime, db=pool, {force=false,cache=true}={}) {
+  const key = String(simulationId) + ":" + String(entityId);
+  if (!force && cache && initializedIdentity.has(key)) return;
+
+  const traits = await loadTraits(simulationId, entityId, db);
+
+  await db.query(
+    `INSERT IGNORE INTO self_models(id,simulation_id,entity_id,identity_summary,self_concept,capabilities,aspirations,limitations,current_self_view,version,created_simulation_at,updated_simulation_at)
+     VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,?,?,?,1,?,?)`,
+    [uuid(),simulationId,entityId,'A developing person with a persistent history, preferences, relationships and goals.','I am still learning who I am through what I choose, experience and remember.',JSON.stringify({adaptive:true,domains:['social','learning','navigation','self-care']}),JSON.stringify(DEFAULT_DESIRES.map(d=>d[0])),JSON.stringify([]),'I am still forming a stable understanding of myself.',simulationTime,simulationTime]
+  );
+
   for (const [code,label,fallbackImportance] of DEFAULT_VALUES) {
     const seeded = seededValue(code, traits);
-    await pool.query(`INSERT IGNORE INTO identity_values(id,simulation_id,entity_id,code,label,importance,confidence,origin,salience,version,created_simulation_at,updated_simulation_at) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,?,?,?,1,?,?)`, [uuid(),simulationId,entityId,code,label,seeded ?? fallbackImportance,0.45,seeded===null?'INITIAL':'TRAIT_DERIVED',0.5,simulationTime,simulationTime]);
+    await db.query(
+      `INSERT IGNORE INTO identity_values(id,simulation_id,entity_id,code,label,importance,confidence,origin,salience,version,created_simulation_at,updated_simulation_at)
+       VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,?,?,?,1,?,?)`,
+      [uuid(),simulationId,entityId,code,label,seeded ?? fallbackImportance,0.45,seeded===null?'INITIAL':'TRAIT_DERIVED',0.5,simulationTime,simulationTime]
+    );
   }
+
   for (const [keyName,title,description,desireType,priority] of DEFAULT_DESIRES) {
-    await pool.query(`INSERT IGNORE INTO long_term_desires(id,simulation_id,entity_id,desire_key,title,description,desire_type,priority,persistence,progress,status,origin,created_simulation_at,updated_simulation_at,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,?,?,?,0,'ACTIVE','INITIAL',?,?,1)`, [uuid(),simulationId,entityId,keyName,title,description,desireType,priority,0.86,simulationTime,simulationTime]);
+    await db.query(
+      `INSERT IGNORE INTO long_term_desires(id,simulation_id,entity_id,desire_key,title,description,desire_type,priority,persistence,progress,status,origin,created_simulation_at,updated_simulation_at,version)
+       VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,?,?,?,0,'ACTIVE','INITIAL',?,?,1)`,
+      [uuid(),simulationId,entityId,keyName,title,description,desireType,priority,0.86,simulationTime,simulationTime]
+    );
   }
-  const [beliefs] = await pool.query(`SELECT id FROM self_beliefs WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) LIMIT 1`, [simulationId,entityId]);
+
   {
     const t = traitMap(traits), defaults = [
       ['CURIOUS','I am a curious person.',clamp01(0.45+(t.get('CURIOSITY')??0.5)*0.45)],
@@ -59,13 +74,29 @@ async function ensureIdentity(simulationId, entityId, simulationTime) {
       ['SOCIAL_CAPABILITY','I can build connections with people.',clamp01(0.42+(t.get('SOCIABILITY')??0.5)*0.38)],
       ['AGENCY','My choices can change what happens next.',clamp01(0.48+(t.get('CONFIDENCE')??0.5)*0.35)],
     ];
-    for (const [beliefKey,statement,confidence] of defaults) await pool.query(`INSERT IGNORE INTO self_beliefs(id,simulation_id,entity_id,belief_key,statement,confidence,importance,source_type,source_ref,status,created_simulation_at,updated_simulation_at,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,?,?,NULL,'ACTIVE',?,?,1)`, [uuid(),simulationId,entityId,beliefKey,statement,confidence,0.65,'INITIAL',simulationTime,simulationTime]);
+    for (const [beliefKey,statement,confidence] of defaults) {
+      await db.query(
+        `INSERT IGNORE INTO self_beliefs(id,simulation_id,entity_id,belief_key,statement,confidence,importance,source_type,source_ref,status,created_simulation_at,updated_simulation_at,version)
+         VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,?,?,NULL,'ACTIVE',?,?,1)`,
+        [uuid(),simulationId,entityId,beliefKey,statement,confidence,0.65,'INITIAL',simulationTime,simulationTime]
+      );
+    }
   }
-  const [narrative] = await pool.query(`SELECT id FROM life_narratives WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) LIMIT 1`, [simulationId,entityId]);
-  if (!narrative.length) await pool.query(`INSERT INTO life_narratives(id,simulation_id,entity_id,chapter_index,title,summary,importance,event_id,created_simulation_at,updated_simulation_at,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),1,'Beginning','My story is only beginning. I learn who I am through what happens to me and what I choose to do next.',0.82,NULL,?,?,1)`, [uuid(),simulationId,entityId,simulationTime,simulationTime]);
-  initializedIdentity.add(key);
-}
 
+  const [narrative] = await db.query(
+    `SELECT id FROM life_narratives WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) LIMIT 1`,
+    [simulationId,entityId]
+  );
+  if (!narrative.length) {
+    await db.query(
+      `INSERT INTO life_narratives(id,simulation_id,entity_id,chapter_index,title,summary,importance,event_id,created_simulation_at,updated_simulation_at,version)
+       VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),1,'Beginning','My story is only beginning. I learn who I am through what happens to me and what I choose to do next.',0.82,NULL,?,?,1)`,
+      [uuid(),simulationId,entityId,simulationTime,simulationTime]
+    );
+  }
+
+  if (cache) initializedIdentity.add(key);
+}
 async function getIdentity(simulationId, entityId) {
   const [[selfRows],[values],[beliefs],[desires],[narrative]] = await Promise.all([
     pool.query(`SELECT BIN_TO_UUID(id) AS id,identity_summary AS identitySummary,self_concept AS selfConcept,capabilities,aspirations,limitations,current_self_view AS currentSelfView,version,updated_simulation_at AS updatedAt FROM self_models WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) LIMIT 1`, [simulationId,entityId]),
