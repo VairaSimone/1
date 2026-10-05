@@ -19,6 +19,7 @@ const { recordHabitEvidence } = require("../services/habit-service");
 const { refreshMentalStateFromSimulation } = require("../services/personality-service");
 const { recordSignificantExperience } = require("../services/experience-learning-service");
 const safeRetentionService = require("../services/safe-retention-service");
+const { checkDatabaseSizeLimit } = require("../services/database-size-guard");
 const maybeRunSafeRetention = typeof safeRetentionService.maybeRunSafeRetention === "function" ? safeRetentionService.maybeRunSafeRetention : null;
 const { reconcileCompletedActions, reconcileStaleEvaluatedDecisions } = require("../services/action-reconciliation-service");
 const { revalidateBlockedResourceGoals } = require("../services/planning-service");
@@ -328,6 +329,43 @@ async function interruptActiveAction({ simulationId, entityId, active, simulatio
   return true;
 }
 
+async function enforceDatabaseSizeLimit({ simulationId, hub, phase }) {
+  const limit = await checkDatabaseSizeLimit();
+  if (!limit.enabled) return false;
+
+  observability.setGauge(simulationId, "database_size_bytes", limit.sizeBytes);
+  observability.setGauge(simulationId, "database_size_limit_bytes", limit.limitBytes);
+  observability.setGauge("global", "database_size_bytes", limit.sizeBytes);
+  observability.setGauge("global", "database_size_limit_bytes", limit.limitBytes);
+
+  if (!limit.reached) return false;
+
+  const pausedIds = await simRepo.pauseRunningSimulationsForDatabaseSizeLimit();
+  for (const pausedId of pausedIds) {
+    hub.publish(pausedId, "simulation.status", {
+      status: "PAUSED",
+      reason: "DATABASE_SIZE_LIMIT",
+      databaseSizeMb: Number(limit.sizeMb.toFixed(3)),
+      databaseLimitMb: Number(limit.limitMb.toFixed(3))
+    });
+  }
+
+  if (pausedIds.length) {
+    logger.warn({
+      simulationId,
+      phase,
+      event: "DATABASE_SIZE_LIMIT_REACHED",
+      databaseSizeMb: Number(limit.sizeMb.toFixed(3)),
+      databaseLimitMb: Number(limit.limitMb.toFixed(3)),
+      databaseSizeBytes: limit.sizeBytes,
+      databaseLimitBytes: limit.limitBytes,
+      pausedSimulationIds: pausedIds
+    }, "database size limit reached; simulations paused");
+  }
+
+  return pausedIds.includes(simulationId);
+}
+
 class SimulationEngine {
   constructor({ gemini, hub }) { this.gemini = gemini; this.hub = hub; this.running = new Set(); this.runningTasks = new Map(); this.interval = null; this.tickCounter = new Map(); this.worldMaintenanceAt = new Map(); this.pulseInFlight = false; this.pulsePromise = null; this.stopping = false; }
   async start() { if (this.interval) return; this.stopping = false; this.interval = setInterval(() => this.pulse().catch(err => logger.error(logger.contextError({ phase: "pulse" }, err, "engine pulse failed"))), env.ENGINE_INTERVAL_MS); await this.pulse(); }
@@ -396,6 +434,8 @@ class SimulationEngine {
   }
   async runSimulation(sim) {
     if (this.stopping) return;
+    const databaseLimitReached = await enforceDatabaseSizeLimit({ simulationId: sim.id, hub: this.hub, phase: "tick.preflight" });
+    if (databaseLimitReached) return;
     const runtimeContext={simulationId:sim.id,tickId:null,tickQueryCount:0};
     return observability.runWithContext(runtimeContext,async()=>{
     const context = { simulationId: sim.id, simulationVersion: sim.version, simulationTime: sim.currentSimulationAt || null };
@@ -984,7 +1024,9 @@ class SimulationEngine {
         // optional housekeeping (snapshots, observability or retention).
         await simRepo.completeTick(tickId, { status: "COMPLETED", entityCount: actors.length });
 
-        if (count % env.SNAPSHOT_EVERY_TICKS === 0) {
+        const databaseLimitReached = await enforceDatabaseSizeLimit({ simulationId: sim.id, hub: this.hub, phase: "tick.postflight" });
+
+        if (count % env.SNAPSHOT_EVERY_TICKS === 0 && !databaseLimitReached) {
           try {
             await simRepo.createSnapshot(sim.id, nextTime);
           } catch (err) {
