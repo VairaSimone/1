@@ -491,6 +491,65 @@ function resolvePlanCommitment(context){
   );
   return candidate?{action,candidate,reason:"ACTIVE_PLAN_COMMITMENT"}:null;
 }
+function compactOperationalDecisionContext({
+  chosenAction,
+  selectedTargetEntityId,
+  selectedTargetLocationId,
+  selectionMode,
+  decisionSource,
+  triggerType,
+  criticalNeedCode,
+  criticalAction,
+  criticalResourceRecovery,
+  chosenCandidate,
+  proactivity,
+  aiChoice,
+  geminiDecision
+}={}) {
+  return {
+    schemaVersion:4,
+    operational:true,
+    chosenAction:normalizeAction(chosenAction)||null,
+    targetEntityId:selectedTargetEntityId||null,
+    targetLocationId:selectedTargetLocationId||null,
+    selectionMode:selectionMode||null,
+    decisionSource:decisionSource||null,
+    triggerType:triggerType||null,
+    criticalNeed:normalizeAction(criticalNeedCode)||null,
+    criticalAction:normalizeAction(criticalAction)||null,
+    criticalResourceRecovery:criticalResourceRecovery?{
+      code:normalizeAction(criticalResourceRecovery.code||criticalResourceRecovery.critical?.code)||null,
+      mode:criticalResourceRecovery.mode||null,
+      resource:criticalResourceRecovery.resource||criticalResourceRecovery.critical?.resource||null,
+      targetLocationId:criticalResourceRecovery.targetLocationId||criticalResourceRecovery.candidate?.targetLocationId||null
+    }:null,
+    candidate:chosenCandidate?{
+      action:normalizeAction(chosenCandidate.action)||null,
+      score:Number.isFinite(Number(chosenCandidate.score))?Number(Number(chosenCandidate.score).toFixed(4)):0,
+      targetEntityId:chosenCandidate.targetEntityId||null,
+      targetLocationId:chosenCandidate.targetLocationId||null,
+      resource:chosenCandidate.resourceIntent?.resource||null,
+      resourceDriven:Boolean(chosenCandidate.resourceIntent),
+      socialTarget:Boolean(chosenCandidate.socialTarget),
+      planCommitted:Boolean(chosenCandidate.planCommitted),
+      recoveryBlocked:Boolean(chosenCandidate.recoveryBlocked)
+    }:null,
+    proactivity:{
+      mode:proactivity?.mode||null,
+      priority:proactivity?.priority||null,
+      trigger:proactivity?.trigger||null
+    },
+    gemini:{
+      status:geminiDecision?.status||null,
+      source:geminiDecision?.source||null,
+      reason:geminiDecision?.reason||null,
+      attempted:Boolean(geminiDecision?.attempted),
+      accepted:Boolean(aiChoice),
+      confidence:Number.isFinite(Number(aiChoice?.confidence))?Number(Number(aiChoice.confidence).toFixed(4)):null
+    }
+  };
+}
+
 function compactDecisionContext(context = {}) {
   const compactNumber = (value, fallback = null) => {
     const n = Number(value);
@@ -1135,7 +1194,7 @@ async function makeDecision({
   const predictedSuccessProbability=calibratedSuccessProbability({action:chosen,candidates,context});
   const expectedOutcome={actionType:chosen,targetEntityId:selectedTargetEntityId,targetLocationId:selectedTargetLocationId,strategy:selectedStrategy,planProposal:selectedPlanProposal,predictedSuccessProbability,calibrationSamples:0,lastObservedOutcome:null,calibrationErrorEma:0};
   const optionId = uuid();
-  const decisionContext = JSON.stringify(
+  const fullDecisionContext = JSON.stringify(
     compactDecisionContext({
       ...context,
       proactivity,
@@ -1165,6 +1224,21 @@ async function makeDecision({
       aiChoice: aiChoice || null
     })
   );
+  const operationalDecisionContext = JSON.stringify(compactOperationalDecisionContext({
+    chosenAction:chosen,
+    selectedTargetEntityId,
+    selectedTargetLocationId,
+    selectionMode,
+    decisionSource,
+    triggerType,
+    criticalNeedCode,
+    criticalAction,
+    criticalResourceRecovery,
+    chosenCandidate,
+    proactivity,
+    aiChoice,
+    geminiDecision:context.geminiDecision
+  }));
   const actionDefinition = {
     actionType: chosen,
     targetEntityId: selectedTargetEntityId,
@@ -1198,13 +1272,13 @@ async function makeDecision({
         : null
   };
   const selectedOptionSnapshot = JSON.stringify({
+    schemaVersion:2,
     optionId,
     decisionId,
     optionCode: chosen,
-    description: "Autonomously selected " + chosen,
-    actionDefinition,
-    evaluation,
-    expectedOutcome,
+    actionType: chosen,
+    targetEntityId: selectedTargetEntityId,
+    targetLocationId: selectedTargetLocationId,
     selectedSimulationAt: mysqlSimulationTime,
     source: "DECISION_EVALUATION"
   });
@@ -1220,7 +1294,23 @@ async function makeDecision({
         mysqlSimulationTime,
         triggerEventId,
         triggerType || proactivity.trigger || proactivity.mode || "AUTONOMOUS",
-        decisionContext
+        operationalDecisionContext
+      ]
+    );
+
+    await conn.query(
+      `INSERT INTO decision_context_archive
+       (decision_id,simulation_id,entity_id,simulation_time,context)
+       VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?)
+       ON DUPLICATE KEY UPDATE
+         context=VALUES(context),
+         simulation_time=VALUES(simulation_time)`,
+      [
+        decisionId,
+        simulationId,
+        entityId,
+        mysqlSimulationTime,
+        fullDecisionContext
       ]
     );
 
