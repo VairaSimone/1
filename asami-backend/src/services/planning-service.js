@@ -7,6 +7,8 @@ const { assertTransition } = require("./state-machine");
 const GOAL_PRESSURE_CODES=new Set(["HUNGER","THIRST","SLEEPINESS","SOCIAL_NEED","FUN","CURIOSITY","ACHIEVEMENT","BELONGING"]);
 const GOAL_TEMPLATES={HUNGER:{title:"Find food",description:"Get food and satisfy the current hunger pressure.",goalType:"NEED",steps:[{title:"Go somewhere with food",description:"Travel to a reachable place where food is available.",actionType:"WALKING"},{title:"Eat",description:"Consume available food and verify the result.",actionType:"EATING"}]},THIRST:{title:"Find water",description:"Find accessible water and satisfy the current thirst pressure.",goalType:"NEED",steps:[{title:"Go somewhere with water",description:"Travel to a reachable place where water is available.",actionType:"WALKING"},{title:"Drink",description:"Consume available water and verify the result.",actionType:"DRINKING"}]},SOCIAL_NEED:{title:"Connect with someone",description:"Have a meaningful social interaction to reduce social pressure.",goalType:"NEED",steps:[{title:"Talk with someone",description:"Find an appropriate person and have a social interaction.",actionType:"TALKING"}]},BELONGING:{title:"Strengthen belonging",description:"Build or reinforce a meaningful social connection.",goalType:"NEED",steps:[{title:"Talk with someone",description:"Have an interaction that can contribute to belonging.",actionType:"TALKING"}]},FUN:{title:"Do something enjoyable",description:"Choose an enjoyable activity and follow through with it.",goalType:"NEED",steps:[{title:"Go somewhere interesting",description:"Travel to a suitable place for leisure.",actionType:"WALKING"},{title:"Have fun",description:"Perform an activity that meaningfully satisfies fun.",actionType:"PLAYING"}]},CURIOSITY:{title:"Learn something new",description:"Seek a novel experience and turn it into learning.",goalType:"NEED",steps:[{title:"Explore somewhere new",description:"Visit a location that is interesting and not recently visited.",actionType:"EXPLORING"},{title:"Learn from the experience",description:"Read or study something connected to the experience.",actionType:"READING"}]},ACHIEVEMENT:{title:"Accomplish something",description:"Complete a meaningful productive activity.",goalType:"NEED",steps:[{title:"Work toward the objective",description:"Perform a productive activity that advances the objective.",actionType:"STUDYING"},{title:"Complete the objective",description:"Continue with a productive activity until the goal is complete.",actionType:"WORKING"}]},SLEEPINESS:{title:"Get enough sleep",description:"Restore sleep and energy when sleep pressure is high.",goalType:"NEED",steps:[{title:"Sleep",description:"Get enough uninterrupted sleep and verify recovery.",actionType:"SLEEPING"}]}};
 const MAX_STEP_ATTEMPTS=1,MAX_GOAL_AGE_HOURS=24,MAX_PLAN_REPLANS=3;
+const GOAL_STAGNATION_REPLAN_HOURS=Math.max(24,Math.min(168,Number(process.env.GOAL_STAGNATION_REPLAN_HOURS)||48));
+const MAX_GOAL_STAGNATION_REPLANS=Math.max(1,Math.min(5,Number(process.env.GOAL_STAGNATION_MAX_REPLANS)||2));
 const PERSONAL_GOAL_INTERVAL_HOURS=24;
 const LONG_TERM_GOAL_INTERVAL_HOURS=72;
 const PERSISTENT_GOAL_TYPES=new Set(["PERSONAL","LONG_TERM"]);
@@ -25,6 +27,17 @@ const LONG_TERM_GOAL_TEMPLATES=[
 function normalizeAction(value){return String(value||"").trim().toUpperCase();}
 function parseJson(value,fallback={}){if(value===null||value===undefined)return fallback;if(typeof value==='object')return value;try{return JSON.parse(value);}catch{return fallback;}}
 function mysqlSimulationDateTime(value){const date=value instanceof Date?value:new Date(value);if(!Number.isFinite(date.getTime()))throw Object.assign(new Error("Invalid simulation time"),{code:"INVALID_SIMULATION_TIME"});const pad=n=>String(n).padStart(2,"0"),ms=String(date.getUTCMilliseconds()).padStart(3,"0");return `${date.getUTCFullYear()}-${pad(date.getUTCMonth()+1)}-${pad(date.getUTCDate())} ${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}:${pad(date.getUTCSeconds())}.${ms}`;}
+function simulationTimestampMs(value){
+  if(value instanceof Date)return value.getTime();
+  const direct=new Date(value);
+  if(Number.isFinite(direct.getTime()))return direct.getTime();
+  const normalized=String(value||"").trim();
+  if(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d{1,3})?$/.test(normalized)){
+    const sqlDate=new Date(normalized.replace(" ","T")+"Z");
+    if(Number.isFinite(sqlDate.getTime()))return sqlDate.getTime();
+  }
+  return NaN;
+}
 function selectTopNeed(needs){return(needs||[]).filter(need=>GOAL_PRESSURE_CODES.has(normalizeAction(need.code))).map(need=>({...need,value:Number(need.value),priorityWeight:Number(need.priorityWeight||1)})).filter(need=>Number.isFinite(need.value)&&need.value>.30).sort((a,b)=>(b.value*b.priorityWeight)-(a.value*a.priorityWeight))[0]||null;}
 async function getActiveGoal(simulationId,entityId){const[rows]=await pool.query(`SELECT BIN_TO_UUID(id) AS id,title,goal_type AS goalType,priority,progress,status,motivation,result,created_simulation_at AS createdAt FROM goals WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND status IN ('DRAFT','ACTIVE','PAUSED','BLOCKED') ORDER BY CASE goal_type WHEN 'NEED' THEN 0 ELSE 1 END, CASE status WHEN 'ACTIVE' THEN 0 WHEN 'DRAFT' THEN 1 WHEN 'PAUSED' THEN 2 WHEN 'BLOCKED' THEN 3 ELSE 4 END,priority DESC,created_simulation_at ASC LIMIT 1`,[simulationId,entityId]);return rows[0]||null;}
 async function getPlanForGoal(simulationId,entityId,goalId){if(!goalId)return null;const[plans]=await pool.query(`SELECT BIN_TO_UUID(id) AS id,version,title,status,strategy FROM plans WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND goal_id=UUID_TO_BIN(?) AND status IN ('DRAFT','ACTIVE','PAUSED','BLOCKED') ORDER BY created_simulation_at DESC LIMIT 1`,[simulationId,entityId,goalId]);if(!plans.length)return null;const plan=plans[0];const[steps]=await pool.query(`SELECT BIN_TO_UUID(id) AS id,sequence,title,description,status,activity_type_id AS activityTypeId,intended_start_simulation_at AS intendedStart,deadline_simulation_at AS deadline,result,version FROM plan_steps WHERE plan_id=UUID_TO_BIN(?) ORDER BY sequence ASC`,[plan.id]);return{...plan,strategy:parseJson(plan.strategy,{}),steps:steps.map(step=>({...step,result:parseJson(step.result,null)}))};}
@@ -614,6 +627,110 @@ async function ensureGoalPlan({simulationId,entityId,simulationTime,needs}){
 }
 
 function selectActiveStep(plan){const steps=Array.isArray(plan?.steps)?plan.steps.slice().sort((a,b)=>Number(a.sequence)-Number(b.sequence)):[];return steps.find(step=>step.status==="ACTIVE")||steps.find(step=>step.status==="PENDING")||null;}
+
+async function handleGoalStagnation({simulationId,entityId,simulationTime,goalState,currentLocationId=null}={}){
+  const goal=goalState?.goal,plan=goalState?.plan;
+  if(!goal||!plan||String(goal.status||"").toUpperCase()!=="ACTIVE")return null;
+  const now=simulationTimestampMs(simulationTime);
+  if(!Number.isFinite(now))return null;
+
+  const goalResult=parseJson(goal.result,{})||{};
+  const lastProgressMs=simulationTimestampMs(goalResult.lastProgressAt||goal.createdAt);
+  const lastRecoveryMs=simulationTimestampMs(goalResult.lastStagnationRecoveryAt);
+  const anchor=Math.max(
+    Number.isFinite(lastProgressMs)?lastProgressMs:now,
+    Number.isFinite(lastRecoveryMs)?lastRecoveryMs:0
+  );
+  const stagnantHours=Math.max(0,(now-anchor)/3600000);
+  if(stagnantHours<GOAL_STAGNATION_REPLAN_HOURS)return null;
+
+  const recoveryCount=Math.max(0,Number(goalResult.stagnationReplans)||0);
+  if(recoveryCount>=MAX_GOAL_STAGNATION_REPLANS||String(goal.goalType||"").toUpperCase()!=="NEED"){
+    const abandoned=await abandonGoal({
+      simulationId,
+      entityId,
+      goalId:goal.id,
+      simulationTime,
+      reason:"GOAL_STAGNATION_REPLAN_LIMIT"
+    });
+    return abandoned?{abandoned:true,recoveryCount,stagnantHours}:null;
+  }
+
+  const activeStep=selectActiveStep(plan);
+  if(!activeStep)return null;
+
+  const motivation=parseJson(goal.motivation,{})||{};
+  const needCode=normalizeAction(motivation.need);
+  if(!GOAL_TEMPLATES[needCode])return null;
+
+  const stepResult=parseJson(activeStep.result,{})||{};
+  const avoidLocationIds=new Set(Array.isArray(stepResult.avoidLocationIds)?stepResult.avoidLocationIds:[]);
+  const avoidTargetEntityIds=new Set(Array.isArray(stepResult.avoidTargetEntityIds)?stepResult.avoidTargetEntityIds:[]);
+  const activeAction=normalizeAction(stepResult.actionType||activeStep.actionType);
+  if(currentLocationId&&(activeAction==="DRINKING"||activeAction==="EATING"))avoidLocationIds.add(currentLocationId);
+
+  for(const step of plan.steps||[]){
+    const status=String(step.status||"").toUpperCase();
+    if(["PENDING","ACTIVE","BLOCKED"].includes(status))assertTransition("plan_step",status,"CANCELLED");
+  }
+  assertTransition("plan",String(plan.status||"").toUpperCase(),"CANCELLED");
+
+  await pool.query(
+    "UPDATE plan_steps SET status='CANCELLED',version=version+1 WHERE plan_id=UUID_TO_BIN(?) AND status IN ('PENDING','ACTIVE','BLOCKED')",
+    [plan.id]
+  );
+  await pool.query(
+    "UPDATE plans SET status='CANCELLED',version=version+1 WHERE id=UUID_TO_BIN(?) AND status='ACTIVE'",
+    [plan.id]
+  );
+
+  const nextRecoveryCount=recoveryCount+1;
+  const newPlan=await createPlanForGoal({
+    simulationId,
+    entityId,
+    goalId:goal.id,
+    simulationTime,
+    needCode,
+    pressure:Number(motivation.pressure||0),
+    priority:Number(goal.priority||.5),
+    replanCount:Number(goalResult.replanCount||0),
+    avoidLocationIds:[...avoidLocationIds].slice(0,8),
+    avoidTargetEntityIds:[...avoidTargetEntityIds].slice(0,8)
+  });
+
+  const nextGoalResult={
+    ...goalResult,
+    stagnationReplans:nextRecoveryCount,
+    lastStagnationRecoveryAt:simulationTime,
+    lastStagnationAction:activeAction||null
+  };
+  const [updatedGoal]=await pool.query(
+    "UPDATE goals SET result=?,version=version+1 WHERE id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND status='ACTIVE' AND version=?",
+    [JSON.stringify(nextGoalResult),goal.id,simulationId,entityId,Number(goal.version)]
+  );
+  if(!updatedGoal.affectedRows)return null;
+
+  logger.warn({
+    simulationId,
+    entityId,
+    goalId:goal.id,
+    oldPlanId:plan.id,
+    newPlanId:newPlan?.id||null,
+    simulationTime,
+    stagnantHours:Number(stagnantHours.toFixed(2)),
+    progress:Number(goal.progress||0),
+    stagnationReplans:nextRecoveryCount
+  },"goal stagnation triggered bounded replan");
+
+  return{
+    replanned:Boolean(newPlan),
+    abandoned:false,
+    recoveryCount:nextRecoveryCount,
+    stagnantHours,
+    newPlanId:newPlan?.id||null
+  };
+}
+
 async function resolveGoalIdFromAction({simulationId,entityId,actionId}){if(!actionId)return null;const[rows]=await pool.query(`SELECT BIN_TO_UUID(source_goal_id) AS goalId FROM actions WHERE id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) LIMIT 1`,[actionId,simulationId,entityId]);return rows[0]?.goalId||null;}
 async function advancePersistentGoalFromAnyAutonomousAction({simulationId,entityId,actionType,outcome,simulationTime,actionResult=null,excludeGoalId=null}={}){
   const actionId=actionResult?.actionId||null;
@@ -907,7 +1024,24 @@ async function advancePlanForAction({simulationId,entityId,goalId,actionType,out
   const failedSteps=refreshedPlan.steps.filter(candidate=>candidate.status==="FAILED").length;
 
   let progress=0;
-  if(totalSteps){
+  const strategyProgressBase=Number(refreshedPlan.strategy?.progressBase);
+  const strategyProgressUnit=Number(refreshedPlan.strategy?.progressUnit);
+  if(Number.isFinite(strategyProgressBase)&&Number.isFinite(strategyProgressUnit)&&strategyProgressUnit>0){
+    let contributionUnits=0;
+    for(const candidate of refreshedPlan.steps){
+      if(candidate.status==="COMPLETED"){
+        contributionUnits+=1;
+        continue;
+      }
+      if(persistent){
+        const result=parseJson(candidate.result,{})||{};
+        const required=Math.max(2,Number(result.requiredCompletions)||(goalType==="LONG_TERM"?6:3));
+        const completions=Math.max(0,Number(result.completions)||0);
+        contributionUnits+=Math.min(1,completions/required);
+      }
+    }
+    progress=Math.max(0,Math.min(1,strategyProgressBase+contributionUnits*strategyProgressUnit));
+  }else if(totalSteps){
     let units=0;
     for(const candidate of refreshedPlan.steps){
       if(candidate.status==="COMPLETED"){
@@ -916,12 +1050,7 @@ async function advancePlanForAction({simulationId,entityId,goalId,actionType,out
       }
       if(persistent){
         const result=parseJson(candidate.result,{})||{};
-        const required=Math.max(
-          2,
-          Number(result.requiredCompletions)||(
-            goalType==="LONG_TERM"?6:3
-          )
-        );
+        const required=Math.max(2,Number(result.requiredCompletions)||(goalType==="LONG_TERM"?6:3));
         const completions=Math.max(0,Number(result.completions)||0);
         units+=Math.min(1,completions/required);
       }
@@ -930,7 +1059,7 @@ async function advancePlanForAction({simulationId,entityId,goalId,actionType,out
     progress=Number((units/totalSteps).toFixed(4));
   }
 
-  const planCompleted=totalSteps>0&&completedSteps===totalSteps;
+  const planCompletedtotalSteps>0&&completedSteps===totalSteps;
   if(planCompleted&&refreshedPlan.status!=="COMPLETED"){
     await pool.query(
       `UPDATE plans
@@ -960,20 +1089,31 @@ async function advancePlanForAction({simulationId,entityId,goalId,actionType,out
   let goalVersionAfterProgress=currentGoalVersion;
 
   if(progress<1&&["ACTIVE","DRAFT","PAUSED"].includes(goalStatus)){
+    const previousGoalProgress=Number(goal.progress||0);
+    const progressImproved=progress>previousGoalProgress+0.0001;
+    const previousGoalResult=parseJson(goal.result,{})||{};
+    const nextGoalResult={
+      ...previousGoalResult,
+      ...(progressImproved?{
+        lastProgressAt:simulationTime,
+        lastStagnationRecoveryAt:null
+      }:{})
+    };
     const[goalUpdated]=await pool.query(
-      `UPDATE goals
-       SET progress=?,version=version+1
-       WHERE id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND version=? AND status IN ('ACTIVE','DRAFT','PAUSED')`,
-      [progress,goalId,entityId,currentGoalVersion]
+      "UPDATE goals SET progress=?,result=?,version=version+1 WHERE id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND version=? AND status IN ('ACTIVE','DRAFT','PAUSED')",
+      [progress,JSON.stringify(nextGoalResult),goalId,entityId,currentGoalVersion]
     );
     if(goalUpdated.affectedRows)goalVersionAfterProgress=currentGoalVersion+1;
   }
 
   if(planCompleted){
     const mysqlTime=mysqlSimulationDateTime(simulationTime);
+    const previousGoalResult=parseJson(goal.result,{})||{};
     const completionResult={
+      ...previousGoalResult,
       completionSource:"PLAN",
       completedAt:simulationTime,
+      lastProgressAt:simulationTime,
       progressModel:persistent?"CUMULATIVE_ACTIONS":"STEP_COMPLETION"
     };
     const[completedGoal]=await pool.query(
@@ -1051,4 +1191,4 @@ async function advancePlanForAction({simulationId,entityId,goalId,actionType,out
 
   return{changed,completed:false,progress,planId:refreshedPlan.id};
 }
-module.exports={GOAL_TEMPLATES,MAX_GOAL_AGE_HOURS,PERSONAL_GOAL_INTERVAL_HOURS,LONG_TERM_GOAL_INTERVAL_HOURS,PERSISTENT_GOAL_TYPES,selectTopNeed,selectActiveStep,createPlanForGoal,ensureGoalPlan,advancePlanForAction,advancePersistentGoalFromAnyAutonomousAction,abandonGoal,ensurePersistentGoals,unblockBlockedGoal,revalidateBlockedResourceGoals};
+module.exports={GOAL_TEMPLATES,MAX_GOAL_AGE_HOURS,GOAL_STAGNATION_REPLAN_HOURS,MAX_GOAL_STAGNATION_REPLANS,PERSONAL_GOAL_INTERVAL_HOURS,LONG_TERM_GOAL_INTERVAL_HOURS,PERSISTENT_GOAL_TYPES,selectTopNeed,selectActiveStep,createPlanForGoal,ensureGoalPlan,advancePlanForAction,advancePersistentGoalFromAnyAutonomousAction,handleGoalStagnation,abandonGoal,ensurePersistentGoals,unblockBlockedGoal,revalidateBlockedResourceGoals};
