@@ -40,8 +40,8 @@ function simulationTimestampMs(value){
 }
 function selectTopNeed(needs){return(needs||[]).filter(need=>GOAL_PRESSURE_CODES.has(normalizeAction(need.code))).map(need=>({...need,value:Number(need.value),priorityWeight:Number(need.priorityWeight||1)})).filter(need=>Number.isFinite(need.value)&&need.value>.30).sort((a,b)=>(b.value*b.priorityWeight)-(a.value*a.priorityWeight))[0]||null;}
 async function getActiveGoal(simulationId,entityId){const[rows]=await pool.query(`SELECT BIN_TO_UUID(id) AS id,title,goal_type AS goalType,priority,progress,status,motivation,result,created_simulation_at AS createdAt FROM goals WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND status IN ('DRAFT','ACTIVE','PAUSED','BLOCKED') ORDER BY CASE goal_type WHEN 'NEED' THEN 0 ELSE 1 END, CASE status WHEN 'ACTIVE' THEN 0 WHEN 'DRAFT' THEN 1 WHEN 'PAUSED' THEN 2 WHEN 'BLOCKED' THEN 3 ELSE 4 END,priority DESC,created_simulation_at ASC LIMIT 1`,[simulationId,entityId]);return rows[0]||null;}
-async function getPlanForGoal(simulationId,entityId,goalId){if(!goalId)return null;const[plans]=await pool.query(`SELECT BIN_TO_UUID(id) AS id,version,title,status,strategy FROM plans WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND goal_id=UUID_TO_BIN(?) AND status IN ('DRAFT','ACTIVE','PAUSED','BLOCKED') ORDER BY created_simulation_at DESC LIMIT 1`,[simulationId,entityId,goalId]);if(!plans.length)return null;const plan=plans[0];const[steps]=await pool.query(`SELECT BIN_TO_UUID(id) AS id,sequence,title,description,status,activity_type_id AS activityTypeId,intended_start_simulation_at AS intendedStart,deadline_simulation_at AS deadline,result,version FROM plan_steps WHERE plan_id=UUID_TO_BIN(?) ORDER BY sequence ASC`,[plan.id]);return{...plan,strategy:parseJson(plan.strategy,{}),steps:steps.map(step=>({...step,result:parseJson(step.result,null)}))};}
-async function createPlanForGoal({simulationId,entityId,goalId,simulationTime,needCode,pressure,priority,replanCount=0,avoidLocationIds=[],avoidTargetEntityIds=[]}){const template=GOAL_TEMPLATES[needCode];if(!template?.steps?.length||!goalId)return null;const existing=await getPlanForGoal(simulationId,entityId,goalId);if(existing)return existing;const planId=uuid(),mysqlTime=mysqlSimulationDateTime(simulationTime);await pool.query(`INSERT INTO plans (id,simulation_id,entity_id,goal_id,title,status,strategy,created_simulation_at,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,'ACTIVE',?,?,1)`,[planId,simulationId,entityId,goalId,template.title,JSON.stringify({source:"AUTONOMOUS_NEED",need:needCode,initialPressure:Number(pressure),priority:Number(priority),replanCount:Number(replanCount),avoidLocationIds:Array.isArray(avoidLocationIds)?avoidLocationIds.slice(0,8):[],avoidTargetEntityIds:Array.isArray(avoidTargetEntityIds)?avoidTargetEntityIds.slice(0,8):[]}),mysqlTime]);for(let i=0;i<template.steps.length;i+=1){const step=template.steps[i],actionType=normalizeAction(step.actionType);let activityTypeId=null;if(actionType){const[activityRows]=await pool.query(`SELECT id FROM activity_types WHERE code=? AND active=1 LIMIT 1`,[actionType]);activityTypeId=activityRows[0]?.id||null;}await pool.query(`INSERT INTO plan_steps (id,plan_id,sequence,title,description,status,activity_type_id,intended_start_simulation_at,deadline_simulation_at,result,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,'PENDING',?,NULL,NULL,?,1)`,[uuid(),planId,i+1,step.title,step.description,activityTypeId,JSON.stringify({actionType,attempts:0,avoidLocationIds:Array.isArray(avoidLocationIds)?avoidLocationIds.slice(0,8):[],avoidTargetEntityIds:Array.isArray(avoidTargetEntityIds)?avoidTargetEntityIds.slice(0,8):[]})]);}await pool.query(`UPDATE plan_steps SET status='ACTIVE',version=version+1 WHERE plan_id=UUID_TO_BIN(?) AND sequence=1 AND status='PENDING'`,[planId]);return getPlanForGoal(simulationId,entityId,goalId);}
+async function getPlanForGoal(simulationId,entityId,goalId,db=pool){if(!goalId)return null;const[plans]=await db.query(`SELECT BIN_TO_UUID(id) AS id,version,title,status,strategy FROM plans WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND goal_id=UUID_TO_BIN(?) AND status IN ('DRAFT','ACTIVE','PAUSED','BLOCKED') ORDER BY created_simulation_at DESC LIMIT 1`,[simulationId,entityId,goalId]);if(!plans.length)return null;const plan=plans[0];const[steps]=await db.query(`SELECT BIN_TO_UUID(id) AS id,sequence,title,description,status,activity_type_id AS activityTypeId,intended_start_simulation_at AS intendedStart,deadline_simulation_at AS deadline,result,version FROM plan_steps WHERE plan_id=UUID_TO_BIN(?) ORDER BY sequence ASC`,[plan.id]);return{...plan,strategy:parseJson(plan.strategy,{}),steps:steps.map(step=>({...step,result:parseJson(step.result,null)}))};}
+async function createPlanForGoal({simulationId,entityId,goalId,simulationTime,needCode,pressure,priority,replanCount=0,avoidLocationIds=[],avoidTargetEntityIds=[],db=pool}){const template=GOAL_TEMPLATES[needCode];if(!template?.steps?.length||!goalId)return null;const existing=await getPlanForGoal(simulationId,entityId,goalId,db);if(existing)return existing;const planId=uuid(),mysqlTime=mysqlSimulationDateTime(simulationTime);await db.query(`INSERT INTO plans (id,simulation_id,entity_id,goal_id,title,status,strategy,created_simulation_at,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,'ACTIVE',?,?,1)`,[planId,simulationId,entityId,goalId,template.title,JSON.stringify({source:"AUTONOMOUS_NEED",need:needCode,initialPressure:Number(pressure),priority:Number(priority),replanCount:Number(replanCount),avoidLocationIds:Array.isArray(avoidLocationIds)?avoidLocationIds.slice(0,8):[],avoidTargetEntityIds:Array.isArray(avoidTargetEntityIds)?avoidTargetEntityIds.slice(0,8):[]}),mysqlTime]);for(let i=0;i<template.steps.length;i+=1){const step=template.steps[i],actionType=normalizeAction(step.actionType);let activityTypeId=null;if(actionType){const[activityRows]=await pool.query(`SELECT id FROM activity_types WHERE code=? AND active=1 LIMIT 1`,[actionType]);activityTypeId=activityRows[0]?.id||null;}await pool.query(`INSERT INTO plan_steps (id,plan_id,sequence,title,description,status,activity_type_id,intended_start_simulation_at,deadline_simulation_at,result,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,'PENDING',?,NULL,NULL,?,1)`,[uuid(),planId,i+1,step.title,step.description,activityTypeId,JSON.stringify({actionType,attempts:0,avoidLocationIds:Array.isArray(avoidLocationIds)?avoidLocationIds.slice(0,8):[],avoidTargetEntityIds:Array.isArray(avoidTargetEntityIds)?avoidTargetEntityIds.slice(0,8):[]})]);}await pool.query(`UPDATE plan_steps SET status='ACTIVE',version=version+1 WHERE plan_id=UUID_TO_BIN(?) AND sequence=1 AND status='PENDING'`,[planId]);return getPlanForGoal(simulationId,entityId,goalId,db);}
 function resourceForGoalNeed(needCode){
   return {HUNGER:"food",THIRST:"water"}[normalizeAction(needCode)]||null;
 }
@@ -669,68 +669,87 @@ async function handleGoalStagnation({simulationId,entityId,simulationTime,goalSt
   const activeAction=normalizeAction(stepResult.actionType||activeStep.actionType);
   if(currentLocationId&&(activeAction==="DRINKING"||activeAction==="EATING"))avoidLocationIds.add(currentLocationId);
 
-  for(const step of plan.steps||[]){
-    const status=String(step.status||"").toUpperCase();
-    if(["PENDING","ACTIVE","BLOCKED"].includes(status))assertTransition("plan_step",status,"CANCELLED");
-  }
-  assertTransition("plan",String(plan.status||"").toUpperCase(),"CANCELLED");
+  const recovery=await withTransaction(async conn=>{
+    const [goalRows]=await conn.query(
+      "SELECT status,version FROM goals WHERE id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) LIMIT 1 FOR UPDATE",
+      [goal.id,simulationId,entityId]
+    );
+    if(!goalRows.length||String(goalRows[0].status||"").toUpperCase()!=="ACTIVE"||Number(goalRows[0].version)!==Number(goal.version))return null;
 
-  await pool.query(
-    "UPDATE plan_steps SET status='CANCELLED',version=version+1 WHERE plan_id=UUID_TO_BIN(?) AND status IN ('PENDING','ACTIVE','BLOCKED')",
-    [plan.id]
-  );
-  await pool.query(
-    "UPDATE plans SET status='CANCELLED',version=version+1 WHERE id=UUID_TO_BIN(?) AND status='ACTIVE'",
-    [plan.id]
-  );
+    const [planRows]=await conn.query(
+      "SELECT status,version FROM plans WHERE id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND goal_id=UUID_TO_BIN(?) LIMIT 1 FOR UPDATE",
+      [plan.id,simulationId,entityId,goal.id]
+    );
+    if(!planRows.length||String(planRows[0].status||"").toUpperCase()!=="ACTIVE"||Number(planRows[0].version)!==Number(plan.version))return null;
 
-  const nextRecoveryCount=recoveryCount+1;
-  const newPlan=await createPlanForGoal({
-    simulationId,
-    entityId,
-    goalId:goal.id,
-    simulationTime,
-    needCode,
-    pressure:Number(motivation.pressure||0),
-    priority:Number(goal.priority||.5),
-    replanCount:Number(goalResult.replanCount||0),
-    avoidLocationIds:[...avoidLocationIds].slice(0,8),
-    avoidTargetEntityIds:[...avoidTargetEntityIds].slice(0,8)
+    for(const step of plan.steps||[]){
+      const status=String(step.status||"").toUpperCase();
+      if(["PENDING","ACTIVE","BLOCKED"].includes(status))assertTransition("plan_step",status,"CANCELLED");
+    }
+    assertTransition("plan","ACTIVE","CANCELLED");
+
+    await conn.query(
+      "UPDATE plan_steps SET status='CANCELLED',version=version+1 WHERE plan_id=UUID_TO_BIN(?) AND status IN ('PENDING','ACTIVE','BLOCKED')",
+      [plan.id]
+    );
+    await conn.query(
+      "UPDATE plans SET status='CANCELLED',version=version+1 WHERE id=UUID_TO_BIN(?) AND status='ACTIVE'",
+      [plan.id]
+    );
+
+    const nextRecoveryCount=recoveryCount+1;
+    const newPlan=await createPlanForGoal({
+      simulationId,
+      entityId,
+      goalId:goal.id,
+      simulationTime,
+      needCode,
+      pressure:Number(motivation.pressure||0),
+      priority:Number(goal.priority||.5),
+      replanCount:Number(goalResult.replanCount||0),
+      avoidLocationIds:[...avoidLocationIds].slice(0,8),
+      avoidTargetEntityIds:[...avoidTargetEntityIds].slice(0,8),
+      db:conn
+    });
+    if(!newPlan)throw Object.assign(new Error("Stagnated goal could not be replanned"),{code:"GOAL_REPLAN_FAILED"});
+
+    const nextGoalResult={
+      ...goalResult,
+      stagnationReplans:nextRecoveryCount,
+      lastStagnationRecoveryAt:simulationTime,
+      lastStagnationAction:activeAction||null
+    };
+    const [updatedGoal]=await conn.query(
+      "UPDATE goals SET result=?,version=version+1 WHERE id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND status='ACTIVE' AND version=?",
+      [JSON.stringify(nextGoalResult),goal.id,simulationId,entityId,Number(goal.version)]
+    );
+    if(!updatedGoal.affectedRows)throw Object.assign(new Error("Stagnated goal changed during replan"),{code:"GOAL_REPLAN_CONFLICT"});
+
+    return{
+      replanned:true,
+      abandoned:false,
+      recoveryCount:nextRecoveryCount,
+      stagnantHours,
+      newPlanId:newPlan.id
+    };
   });
 
-  const nextGoalResult={
-    ...goalResult,
-    stagnationReplans:nextRecoveryCount,
-    lastStagnationRecoveryAt:simulationTime,
-    lastStagnationAction:activeAction||null
-  };
-  const [updatedGoal]=await pool.query(
-    "UPDATE goals SET result=?,version=version+1 WHERE id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND status='ACTIVE' AND version=?",
-    [JSON.stringify(nextGoalResult),goal.id,simulationId,entityId,Number(goal.version)]
-  );
-  if(!updatedGoal.affectedRows)return null;
+  if(!recovery)return null;
 
   logger.warn({
     simulationId,
     entityId,
     goalId:goal.id,
     oldPlanId:plan.id,
-    newPlanId:newPlan?.id||null,
+    newPlanId:recovery.newPlanId,
     simulationTime,
-    stagnantHours:Number(stagnantHours.toFixed(2)),
+    stagnantHours:Number(recovery.stagnantHours.toFixed(2)),
     progress:Number(goal.progress||0),
-    stagnationReplans:nextRecoveryCount
+    stagnationReplans:recovery.recoveryCount
   },"goal stagnation triggered bounded replan");
 
-  return{
-    replanned:Boolean(newPlan),
-    abandoned:false,
-    recoveryCount:nextRecoveryCount,
-    stagnantHours,
-    newPlanId:newPlan?.id||null
-  };
+  return recovery;
 }
-
 async function resolveGoalIdFromAction({simulationId,entityId,actionId}){if(!actionId)return null;const[rows]=await pool.query(`SELECT BIN_TO_UUID(source_goal_id) AS goalId FROM actions WHERE id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) LIMIT 1`,[actionId,simulationId,entityId]);return rows[0]?.goalId||null;}
 async function advancePersistentGoalFromAnyAutonomousAction({simulationId,entityId,actionType,outcome,simulationTime,actionResult=null,excludeGoalId=null}={}){
   const actionId=actionResult?.actionId||null;
