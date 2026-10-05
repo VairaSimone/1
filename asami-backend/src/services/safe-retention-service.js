@@ -152,7 +152,11 @@ async function getOldestRetentionDebtAt(conn, simulationId, simulationTime) {
     "WHERE a.simulation_id=UUID_TO_BIN(?) AND a.decision_id IS NOT NULL " +
     "AND a.status IN ('COMPLETED','CANCELLED','INTERRUPTED','FAILED') " +
     "AND a.completed_simulation_at IS NOT NULL AND a.completed_simulation_at < ? " +
-    "AND JSON_EXTRACT(d.actual_outcome,'$.actionSummary') IS NULL" +
+    "AND JSON_EXTRACT(d.actual_outcome,'$.actionSummary') IS NULL " +
+    "UNION ALL " +
+    "SELECT dca.simulation_time FROM decision_context_archive dca " +
+    "WHERE dca.simulation_id=UUID_TO_BIN(?) " +
+    "AND dca.simulation_time < ?" +
     ") debt",
     [
       simulationId, needCutoff,
@@ -160,7 +164,8 @@ async function getOldestRetentionDebtAt(conn, simulationId, simulationTime) {
       simulationId, relationshipCutoff,
       simulationId, importantThreshold, eventCutoff, importantEventCutoff,
       simulationId, actionCutoff,
-      simulationId, actionCutoff
+      simulationId, actionCutoff,
+      simulationId, cutoffDateTime(simulationTime, POLICY.decisionContextArchiveDays)
     ]
   );
   return rows[0]?.oldest_at || null;
@@ -1257,6 +1262,7 @@ async function runSafeRetention(simulationId, simulationTime) {
       decisionContextCandidates: Number(context.candidates || 0),
       decisionOptionCandidates: Number(options.candidates || 0),
       decisionContextArchiveCandidates: Number(contextArchive.candidates || 0),
+      decisionContextArchiveBacklog: Number(contextArchive.remainingCandidates || 0),
       eventCandidates: Number(events.candidates || 0),
       actionCandidates: Number(actions.candidates || 0),
       needHistoryCandidates: Number(needs.candidates || 0),
