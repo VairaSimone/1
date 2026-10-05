@@ -6,17 +6,16 @@ test("goal observability separates elapsed gaps from active action time",()=>{
   const simulationId="sim-goal-observability";
   const entityId="entity-goal-observability";
   const goalId="goal-goal-observability";
-  const first=observability.recordGoalProgress(simulationId,entityId,"2026-01-01T00:00:00Z",{
+  observability.recordGoalProgress(simulationId,entityId,"2026-01-01T00:00:00Z",{
     goalId,progress:0.2,status:"ACTIVE",actionType:"WORKING"
   });
-  assert.ok(first);
-  const second=observability.recordGoalProgress(simulationId,entityId,"2026-01-01T01:00:00Z",{
-    goalId,progress:0.2,status:"ACTIVE",actionType:"WORKING"
+  const gap=observability.recordGoalActionOutcome(simulationId,entityId,"2026-01-01T01:00:00Z",{
+    goalId,actionId:"action-0",actionType:"WORKING",outcome:"SUCCESS",durationMinutes:0
   });
-  assert.equal(second.timeSinceLastProgress,1);
-  assert.equal(second.timeSinceLastAction,1);
-  assert.equal(second.totalActiveTime,0);
-  assert.equal(second.activeTimeOnCurrentGoal,0);
+  assert.equal(gap.timeSinceLastProgress,1);
+  assert.equal(gap.timeSinceLastAction,1);
+  assert.equal(gap.totalActiveTime,0);
+  assert.equal(gap.activeTimeOnCurrentGoal,0);
   const outcome=observability.recordGoalActionOutcome(simulationId,entityId,"2026-01-01T02:00:00Z",{
     goalId,actionId:"action-1",actionType:"WORKING",outcome:"SUCCESS",durationMinutes:90
   });
