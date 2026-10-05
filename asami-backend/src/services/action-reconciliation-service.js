@@ -5,7 +5,7 @@ const { markActionPostProcessingComplete } = require("./action-service");
 const logger = require("../lib/logger");
 
 async function reconcileStaleEvaluatedDecisions(simulationId,simulationTime,{limit=null}={}){
-  if(!simulationId||!simulationTime)return{checked:0,repaired:0,kept:0};
+  if(!simulationId||!simulationTime)return{checked:0,repaired:0,kept:0,stale:0,remainingStale:0,invariantViolations:0};
 
   const safeLimit=Math.max(
     1,
@@ -18,9 +18,16 @@ async function reconcileStaleEvaluatedDecisions(simulationId,simulationTime,{lim
     1,
     Number(env.DECISION_RECONCILIATION_GRACE_MINUTES)||5
   );
+  const maxEvaluatedMinutes=Math.max(
+    graceMinutes,
+    Number(env.DECISION_RECONCILIATION_MAX_EVALUATED_MINUTES)||720
+  );
+  const simulationNowMs=new Date(simulationTime).getTime();
+  if(!Number.isFinite(simulationNowMs))throw new TypeError("simulationTime must be a valid timestamp");
 
-  const cutoff=new Date(new Date(simulationTime).getTime()-graceMinutes*60000);
-  const cutoffSimulationTime=normalizeSimulationTimestamp(cutoff);
+  const cutoffSimulationTime=normalizeSimulationTimestamp(
+    new Date(simulationNowMs-graceMinutes*60000)
+  );
 
   const [rows]=await pool.query(
     `SELECT BIN_TO_UUID(d.id) AS decisionId,
@@ -30,7 +37,11 @@ async function reconcileStaleEvaluatedDecisions(simulationId,simulationTime,{lim
             BIN_TO_UUID(i.id) AS intentionId,
             i.status AS intentionStatus,
             BIN_TO_UUID(a.id) AS actionId,
-            a.status AS actionStatus
+            a.status AS actionStatus,
+            a.action_type AS actionType,
+            a.started_simulation_at AS actionStartedSimulationAt,
+            a.parameters AS actionParameters,
+            a.result AS actionResult
      FROM decisions d
      LEFT JOIN intentions i
        ON i.decision_id=d.id
@@ -46,17 +57,224 @@ async function reconcileStaleEvaluatedDecisions(simulationId,simulationTime,{lim
     [simulationId,cutoffSimulationTime,safeLimit]
   );
 
-  let repaired=0,kept=0;
+  let repaired=0,kept=0,invariantViolations=0;
   for(const row of rows){
+    const decisionAgeMinutes=Math.max(
+      0,
+      (simulationNowMs-new Date(row.simulationTime).getTime())/60000
+    );
     const actionStatus=String(row.actionStatus||"").toUpperCase();
     const intentionStatus=String(row.intentionStatus||"").toUpperCase();
+    const actionResult=parseJson(row.actionResult,{})||{};
+    const actionParameters=parseJson(row.actionParameters,{})||{};
 
-    if(["ACTIVE","COMPLETED","INTERRUPTED"].includes(actionStatus)){
-      kept+=1;
+    if(actionStatus==="COMPLETED"){
+      const [updated]=await pool.query(
+        `UPDATE decisions
+         SET status='EXECUTED',
+             actual_outcome=COALESCE(
+               actual_outcome,
+               ?
+             )
+         WHERE id=UUID_TO_BIN(?)
+           AND simulation_id=UUID_TO_BIN(?)
+           AND status='EVALUATED'`,
+        [
+          JSON.stringify({
+            actionId:row.actionId,
+            outcome:actionResult.outcome||"SUCCESS",
+            success:actionResult.success!==false,
+            failureReason:actionResult.failureReason||null,
+            recoveredBy:"DECISION_RECONCILER"
+          }),
+          row.decisionId,
+          simulationId
+        ]
+      );
+      if(updated.affectedRows){
+        if(row.intentionId&&intentionStatus==="ACTIVE"){
+          await pool.query(
+            `UPDATE intentions
+             SET status='COMPLETED',version=version+1
+             WHERE id=UUID_TO_BIN(?)
+               AND simulation_id=UUID_TO_BIN(?)
+               AND decision_id=UUID_TO_BIN(?)
+               AND status='ACTIVE'`,
+            [row.intentionId,simulationId,row.decisionId]
+          );
+        }
+        repaired+=1;
+      }
       continue;
     }
 
-    if(["FAILED","CANCELLED"].includes(actionStatus)){
+    if(actionStatus==="INTERRUPTED"){
+      const [updated]=await pool.query(
+        `UPDATE decisions
+         SET status='EXECUTED',
+             actual_outcome=COALESCE(
+               actual_outcome,
+               ?
+             )
+         WHERE id=UUID_TO_BIN(?)
+           AND simulation_id=UUID_TO_BIN(?)
+           AND status='EVALUATED'`,
+        [
+          JSON.stringify({
+            actionId:row.actionId,
+            outcome:actionResult.outcome||"PARTIAL",
+            success:false,
+            failureReason:actionResult.failureReason||"ACTION_INTERRUPTED",
+            interrupted:true,
+            recoveredBy:"DECISION_RECONCILER"
+          }),
+          row.decisionId,
+          simulationId
+        ]
+      );
+      if(updated.affectedRows){
+        if(row.intentionId&&intentionStatus==="ACTIVE"){
+          await pool.query(
+            `UPDATE intentions
+             SET status='CANCELLED',version=version+1
+             WHERE id=UUID_TO_BIN(?)
+               AND simulation_id=UUID_TO_BIN(?)
+               AND decision_id=UUID_TO_BIN(?)
+               AND status='ACTIVE'`,
+            [row.intentionId,simulationId,row.decisionId]
+          );
+        }
+        repaired+=1;
+      }
+      continue;
+    }
+
+    if(actionStatus==="FAILED"||actionStatus==="CANCELLED"){
+      const nextStatus=actionStatus==="FAILED"?"FAILED":"CANCELLED";
+      const [updated]=await pool.query(
+        `UPDATE decisions
+         SET status=?,
+             actual_outcome=COALESCE(
+               actual_outcome,
+               ?
+             )
+         WHERE id=UUID_TO_BIN(?)
+           AND simulation_id=UUID_TO_BIN(?)
+           AND status='EVALUATED'`,
+        [
+          nextStatus,
+          JSON.stringify({
+            failureReason:actionResult.failureReason||(
+              actionStatus==="FAILED"
+                ?"ACTION_FAILED_WITHOUT_DECISION_FINALIZATION"
+                :"ACTION_CANCELLED_WITHOUT_DECISION_FINALIZATION"
+            ),
+            recoveredBy:"DECISION_RECONCILER",
+            actionId:row.actionId
+          }),
+          row.decisionId,
+          simulationId
+        ]
+      );
+      if(updated.affectedRows){
+        if(row.intentionId&&intentionStatus==="ACTIVE"){
+          await pool.query(
+            `UPDATE intentions
+             SET status='CANCELLED',version=version+1
+             WHERE id=UUID_TO_BIN(?)
+               AND simulation_id=UUID_TO_BIN(?)
+               AND decision_id=UUID_TO_BIN(?)
+               AND status='ACTIVE'`,
+            [row.intentionId,simulationId,row.decisionId]
+          );
+        }
+        repaired+=1;
+      }
+      continue;
+    }
+
+    if(actionStatus==="ACTIVE"){
+      const expectedCompletionSimulationAt=
+        actionResult.expectedCompletionSimulationAt||
+        actionParameters.expectedCompletionSimulationAt||
+        null;
+      const expectedCompletionMs=expectedCompletionSimulationAt
+        ?new Date(expectedCompletionSimulationAt).getTime()
+        :NaN;
+      const startedMs=new Date(row.actionStartedSimulationAt).getTime();
+      const configuredDurationMinutes=Number(
+        actionResult.durationMinutes||
+        actionParameters.durationMinutes||
+        getActionDurationMinutes(row.actionType)
+      );
+      const derivedDeadlineMs=Number.isFinite(startedMs)&&Number.isFinite(configuredDurationMinutes)
+        ?startedMs+Math.max(1,configuredDurationMinutes)*60000
+        :NaN;
+      const deadlineMs=Number.isFinite(expectedCompletionMs)
+        ?expectedCompletionMs
+        :derivedDeadlineMs;
+      const overdueByAction=Number.isFinite(deadlineMs)&&simulationNowMs>deadlineMs+graceMinutes*60000;
+      const overdueByDecision=decisionAgeMinutes>maxEvaluatedMinutes;
+
+      if(!overdueByAction&&!overdueByDecision){
+        kept+=1;
+        continue;
+      }
+
+      invariantViolations+=1;
+      const failureReason=overdueByDecision
+        ?"EVALUATED_DECISION_MAX_AGE_EXCEEDED"
+        :"ACTIVE_ACTION_COMPLETION_DEADLINE_EXCEEDED";
+      const staleActionResult={
+        ...actionResult,
+        outcome:"FAILURE",
+        success:false,
+        failureReason,
+        recoveredBy:"DECISION_RECONCILER",
+        reconciledAt:simulationTime,
+        decisionAgeMinutes:Number(decisionAgeMinutes.toFixed(2)),
+        expectedCompletionSimulationAt:expectedCompletionSimulationAt||null
+      };
+
+      const [actionUpdated]=await pool.query(
+        `UPDATE actions
+         SET status='FAILED',
+             completed_simulation_at=?,
+             result=?,
+             version=version+1
+         WHERE id=UUID_TO_BIN(?)
+           AND simulation_id=UUID_TO_BIN(?)
+           AND entity_id=UUID_TO_BIN(?)
+           AND status='ACTIVE'`,
+        [
+          simulationTime,
+          JSON.stringify(staleActionResult),
+          row.actionId,
+          simulationId,
+          row.entityId
+        ]
+      );
+
+      if(!actionUpdated.affectedRows){
+        kept+=1;
+        continue;
+      }
+
+      const movementId=actionResult.movement?.movementId||actionParameters.movement?.movementId||null;
+      if(movementId){
+        await pool.query(
+          `UPDATE movements
+           SET status='CANCELLED',
+               reason='stale active action recovered',
+               version=version+1
+           WHERE id=UUID_TO_BIN(?)
+             AND simulation_id=UUID_TO_BIN(?)
+             AND entity_id=UUID_TO_BIN(?)
+             AND status IN ('PLANNED','ACTIVE')`,
+          [movementId,simulationId,row.entityId]
+        );
+      }
+
       if(row.intentionId&&intentionStatus==="ACTIVE"){
         await pool.query(
           `UPDATE intentions
@@ -69,36 +287,41 @@ async function reconcileStaleEvaluatedDecisions(simulationId,simulationTime,{lim
         );
       }
 
-      const nextStatus=actionStatus==="FAILED"?"FAILED":"CANCELLED";
-      const [updated]=await pool.query(
+      const [decisionUpdated]=await pool.query(
         `UPDATE decisions
-         SET status=?,
-             actual_outcome=COALESCE(
-               actual_outcome,
-               JSON_OBJECT(
-                 'failureReason',?,
-                 'recoveredBy','DECISION_RECONCILER',
-                 'actionId',?
-               )
-             )
+         SET status='FAILED',
+             actual_outcome=?
          WHERE id=UUID_TO_BIN(?)
            AND simulation_id=UUID_TO_BIN(?)
            AND status='EVALUATED'`,
         [
-          nextStatus,
-          nextStatus==="FAILED"?"ACTION_TERMINAL_WITHOUT_DECISION_FINALIZATION":"ACTION_CANCELLED_WITHOUT_DECISION_FINALIZATION",
-          row.actionId,
+          JSON.stringify({
+            failureReason,
+            actionId:row.actionId,
+            recoveredBy:"DECISION_RECONCILER",
+            reconciledAt:simulationTime
+          }),
           row.decisionId,
           simulationId
         ]
       );
-      if(updated.affectedRows)repaired+=1;
+      if(decisionUpdated.affectedRows)repaired+=1;
+
+      logger.warn({
+        simulationId,
+        entityId:row.entityId,
+        decisionId:row.decisionId,
+        actionId:row.actionId,
+        simulationTime:row.simulationTime,
+        failureReason,
+        decisionAgeMinutes:Number(decisionAgeMinutes.toFixed(2)),
+        expectedCompletionSimulationAt:expectedCompletionSimulationAt||null,
+        event:"STALE_EVALUATED_DECISION_INVARIANT_VIOLATION"
+      },"stale evaluated decision exceeded its allowed lifetime");
       continue;
     }
 
-    // No executable action exists for this stale decision. The direct
-    // decision_id link makes the intention unambiguous, so cancel it before
-    // failing the decision rather than leaving an orphan ACTIVE intention.
+    invariantViolations+=1;
     if(row.intentionId&&intentionStatus==="ACTIVE"){
       await pool.query(
         `UPDATE intentions
@@ -145,9 +368,34 @@ async function reconcileStaleEvaluatedDecisions(simulationId,simulationTime,{lim
     }
   }
 
-  return{checked:rows.length,repaired,kept};
-}
+  const [remainingRows]=await pool.query(
+    `SELECT COUNT(*) AS count
+     FROM decisions
+     WHERE simulation_id=UUID_TO_BIN(?)
+       AND status='EVALUATED'
+       AND simulation_time<=?`,
+    [simulationId,cutoffSimulationTime]
+  );
+  const remainingStale=Number(remainingRows[0]?.count||0);
 
+  observability.increment(simulationId,"stale_evaluated_decisions_total",rows.length);
+  if(repaired)observability.increment(simulationId,"stale_evaluated_decisions_repaired_total",repaired);
+  if(invariantViolations)observability.increment(
+    simulationId,
+    "stale_evaluated_decision_invariant_violations_total",
+    invariantViolations
+  );
+  observability.setGauge(simulationId,"stale_evaluated_decisions_current",remainingStale);
+
+  return{
+    checked:rows.length,
+    repaired,
+    kept,
+    stale:rows.length,
+    remainingStale,
+    invariantViolations
+  };
+}
 async function reconcileCompletedActions(simulationId,{limit=100}={}) {
   if(!simulationId)return{checked:0,reconciled:0};
   const safeLimit=Math.max(1,Math.min(500,Number(limit)||100));
