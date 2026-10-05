@@ -213,9 +213,16 @@ async function reserve({ prompt, outputTokenCeiling, kind, simulationId=null, en
   const monthlyLimit = Number(budgetKind === "DIALOGUE" ? env.GEMINI_DIALOGUE_MONTHLY_BUDGET_USD : env.GEMINI_AUTONOMY_MONTHLY_BUDGET_USD);
   const dailyRequests = Number(budgetKind === "DIALOGUE" ? env.GEMINI_DIALOGUE_DAILY_MAX_REQUESTS : env.GEMINI_AUTONOMY_DAILY_MAX_REQUESTS);
   const monthlyRequests = Number(budgetKind === "DIALOGUE" ? env.GEMINI_DIALOGUE_MONTHLY_MAX_REQUESTS : env.GEMINI_AUTONOMY_MONTHLY_MAX_REQUESTS);
+  const autonomyPacingEnabled = Boolean(env.GEMINI_AUTONOMY_DAILY_PACING_ENABLED);
   const pacedDailyLimit = budgetKind === "DIALOGUE"
     ? dailyLimit
-    : Math.min(dailyLimit, wallClockDailyPacedLimitUsd(now) * (dailyLimit / Math.max(0.000001, Number(env.GEMINI_DAILY_BUDGET_USD))));
+    : autonomyPacingEnabled
+      ? Math.min(
+          dailyLimit,
+          wallClockDailyPacedLimitUsd(now) *
+            (dailyLimit / Math.max(0.000001, Number(env.GEMINI_DAILY_BUDGET_USD)))
+        )
+      : dailyLimit;
   const simulationDay=simulationDayKey(simulationTime);
   const conn = await pool.getConnection();
 
@@ -250,12 +257,16 @@ async function reserve({ prompt, outputTokenCeiling, kind, simulationId=null, en
       const dailyBlocked = dailyCommitted + estimatedUsd > pacedDailyLimit + 1e-9 || Number(dayRow?.requests || 0) >= dailyRequests;
       let retryAfterMs = 0;
       if (dailyBlocked) {
-        const dailyLimitForPacing = Math.max(0.000001, dailyLimit);
-        const requiredFraction = Math.min(1, (dailyCommitted + estimatedUsd) / dailyLimitForPacing);
-        const graceMinutes = Math.max(0, Number(env.GEMINI_DAILY_PACING_GRACE_MINUTES) || 0);
-        const nowMinutes = now.getUTCHours() * 60 + now.getUTCMinutes() + now.getUTCSeconds() / 60;
-        const requiredMinutes = Math.max(0, requiredFraction * 1440 - graceMinutes);
-        retryAfterMs = Math.max(1000, Math.ceil(Math.max(0, requiredMinutes - nowMinutes) * 60000));
+        if(autonomyPacingEnabled || budgetKind === "DIALOGUE"){
+          const dailyLimitForPacing = Math.max(0.000001, dailyLimit);
+          const requiredFraction = Math.min(1, (dailyCommitted + estimatedUsd) / dailyLimitForPacing);
+          const graceMinutes = Math.max(0, Number(env.GEMINI_DAILY_PACING_GRACE_MINUTES) || 0);
+          const nowMinutes = now.getUTCHours() * 60 + now.getUTCMinutes() + now.getUTCSeconds() / 1000 / 60;
+          const requiredMinutes = Math.max(0, requiredFraction * 1440 - graceMinutes);
+          retryAfterMs = Math.max(1000, Math.ceil(Math.max(0, requiredMinutes - nowMinutes) * 60000));
+        }else{
+          retryAfterMs = Math.max(1000, 24 * 60 * 60 * 1000 - (Date.now() % (24 * 60 * 60 * 1000)));
+        }
         budgetBlockedUntil.set(budgetKind, Date.now() + retryAfterMs);
       } else {
         retryAfterMs = Math.max(1000, 24 * 60 * 60 * 1000 - (Date.now() % (24 * 60 * 60 * 1000)));
