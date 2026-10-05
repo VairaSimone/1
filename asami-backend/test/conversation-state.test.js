@@ -88,3 +88,17 @@ test("future-intent detection covers Italian and English planning cues",()=>{
   assert.equal(chat.hasFutureIntent("I will call you tomorrow"),true);
   assert.equal(chat.hasFutureIntent("Questo film mi piace"),false);
 });
+
+test("proactive conversation reserves and commits its turn",()=>{
+  const fs=require("node:fs");
+  const path=require("node:path");
+  const source=fs.readFileSync(path.join(__dirname,"../src/services/chat-service.js"),"utf8");
+  const reservation=source.indexOf("const turnSequence=await reserveConversationTurn(simulationId,cid);");
+  const provisional=source.indexOf('conversationCommitStatus:"PENDING"');
+  const completed=source.indexOf('conversationCommitStatus:"COMPLETED"');
+  const failed=source.indexOf("conversationCommitStatus','FAILED'");
+  assert.ok(reservation>=0);
+  assert.ok(provisional>reservation);
+  assert.ok(completed>provisional);
+  assert.ok(failed>completed);
+});
