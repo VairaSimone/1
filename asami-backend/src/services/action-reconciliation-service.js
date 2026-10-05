@@ -2,6 +2,7 @@ const { pool, normalizeSimulationTimestamp } = require("../db/pool");
 const { env } = require("../config/env");
 const { advancePlanForAction } = require("./planning-service");
 const { markActionPostProcessingComplete, getActionDurationMinutes } = require("./action-service");
+const { markDecisionActionCreated, markDecisionActionOutcome } = require("./decision-service");
 const observability = require("./simulation-observability");
 function parseJson(value,fallback={}){if(value===null||value===undefined)return fallback;if(typeof value==="object")return value;try{return JSON.parse(value);}catch{return fallback;}}
 const logger = require("../lib/logger");
@@ -468,6 +469,23 @@ async function reconcileCompletedActions(simulationId,{limit=100}={}) {
             recoveredBy:"ACTION_RECONCILER"
           }),row.decisionId]
         );
+        if(row.decisionId){
+          await markDecisionActionCreated({
+            decisionId:row.decisionId,
+            simulationId,
+            entityId:row.entityId,
+            actionId:row.actionId
+          });
+          await markDecisionActionOutcome({
+            decisionId:row.decisionId,
+            simulationId,
+            entityId:row.entityId,
+            actionId:row.actionId,
+            outcome:terminalStatus==="INTERRUPTED"
+              ?String(result.outcome||"PARTIAL").toUpperCase()
+              :String(result.outcome||"SUCCESS").toUpperCase()
+          });
+        }
       }
       if(row.intentionId && String(row.intentionStatus||"").toUpperCase()==="ACTIVE"){
         await pool.query(
@@ -497,6 +515,44 @@ async function reconcileCompletedActions(simulationId,{limit=100}={}) {
         err
       },"completed action reconciliation failed");
     }
+  }
+  // Backfill durable decision→action causality for reconciled terminal actions.
+  const [auditRows]=await pool.query(
+    `SELECT BIN_TO_UUID(a.id) AS actionId,BIN_TO_UUID(a.decision_id) AS decisionId,
+            BIN_TO_UUID(a.entity_id) AS entityId,a.status,a.result
+     FROM actions a
+     WHERE a.simulation_id=UUID_TO_BIN(?)
+       AND a.decision_id IS NOT NULL
+       AND a.status IN ('COMPLETED','INTERRUPTED','FAILED','CANCELLED')
+       AND a.post_processing_status='COMPLETED'
+       AND EXISTS(
+         SELECT 1 FROM decisions d
+         WHERE d.id=a.decision_id AND d.simulation_id=a.simulation_id
+       )
+     ORDER BY a.completed_simulation_at DESC
+     LIMIT ?`,
+    [simulationId,safeLimit]
+  );
+  for(const row of auditRows){
+    try{
+      await markDecisionActionCreated({
+        decisionId:row.decisionId,
+        simulationId,
+        entityId:row.entityId,
+        actionId:row.actionId
+      });
+      const parsed=parseJson(row.result,{});
+      const outcome=row.status==="COMPLETED"
+        ?String(parsed.outcome||"SUCCESS").toUpperCase()
+        :String(parsed.outcome||row.status).toUpperCase();
+      await markDecisionActionOutcome({
+        decisionId:row.decisionId,
+        simulationId,
+        entityId:row.entityId,
+        actionId:row.actionId,
+        outcome
+      });
+    }catch{}
   }
   return{checked:rows.length,reconciled};
 }
