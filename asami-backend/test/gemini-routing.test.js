@@ -207,7 +207,7 @@ test("Routine dialogue uses minimal thinking and compact structured output",()=>
 test("Autonomy uses advanced output only for high-value decisions",()=>{
   assert.match(geminiSource,/function decisionNeedsAdvancedCognition\(context\)/);
   assert.match(geminiSource,/const schema=advanced\?AdvancedDecisionSchema:DecisionSchema/);
-  assert.match(geminiSource,/maxModels:advanced \? null : Number\(env\.GEMINI_AUTONOMY_MAX_MODELS\)/);
+  assert.match(geminiSource,/autonomyMaxModels=Math\.max\(1,Math\.min\(2/);
   assert.match(geminiSource,/Do not output strategy or planProposal/);
 });
 
