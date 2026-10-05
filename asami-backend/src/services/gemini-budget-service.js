@@ -261,7 +261,7 @@ async function reserve({ prompt, outputTokenCeiling, kind, simulationId=null, en
           const dailyLimitForPacing = Math.max(0.000001, dailyLimit);
           const requiredFraction = Math.min(1, (dailyCommitted + estimatedUsd) / dailyLimitForPacing);
           const graceMinutes = Math.max(0, Number(env.GEMINI_DAILY_PACING_GRACE_MINUTES) || 0);
-          const nowMinutes = now.getUTCHours() * 60 + now.getUTCMinutes() + now.getUTCSeconds() / 1000 / 60;
+          const nowMinutes = now.getUTCHours() * 60 + now.getUTCMinutes() + now.getUTCSeconds() / 60;
           const requiredMinutes = Math.max(0, requiredFraction * 1440 - graceMinutes);
           retryAfterMs = Math.max(1000, Math.ceil(Math.max(0, requiredMinutes - nowMinutes) * 60000));
         }else{
