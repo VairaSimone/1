@@ -184,7 +184,6 @@ async function socialCandidates(simulationId,entityId,simulationAt=null){
       historicalRelationship=rel?null:(relationshipByCandidate.get(person.id)?.status==="ENDED"?relationshipByCandidate.get(person.id):null),
       compatibility=compatibilityFromTraits(sourceTraits,targetTraits),
       romantic=romanticScore(rel||{},compatibility);
-    const historicalRelationship=relationshipByCandidate.get(person.id)?.status==="ENDED"?relationshipByCandidate.get(person.id):null;
     return{
       id:person.id,
       name:person.name,
