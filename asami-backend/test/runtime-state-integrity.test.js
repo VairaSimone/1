@@ -98,6 +98,26 @@ test("snapshot creation captures live behavioral state when no explicit state is
   assert.match(source, /schemaVersion:2/);
 });
 
+test("NPC creation is atomic and repairs incomplete state", () => {
+  const population=fs.readFileSync(
+    path.join(__dirname,"../src/services/world-population-service.js"),
+    "utf8"
+  );
+  const state=fs.readFileSync(
+    path.join(__dirname,"../src/services/state-service.js"),
+    "utf8"
+  );
+  const cognitive=fs.readFileSync(
+    path.join(__dirname,"../src/services/cognitive-v2-service.js"),
+    "utf8"
+  );
+  assert.match(population,/return withTransaction\(async conn=>/);
+  assert.match(population,/ensureEntityState\(entityId,simulationTime,conn/);
+  assert.match(population,/cognitiveV2\.ensureIdentity\(simulationId,entityId,simulationTime,conn/);
+  assert.match(population,/repairIncompletePeople/);
+  assert.match(state,/async function ensureEntityState\(entityId,simulationTime,db=pool/);
+  assert.match(cognitive,/async function ensureIdentity\(simulationId, entityId, simulationTime, db=pool/);
+});
 test("startup reconciliation marks only stale RUNNING ticks as FAILED", () => {
   const source = fs.readFileSync(
     path.join(__dirname, "../src/repositories/simulation-repo.js"),
