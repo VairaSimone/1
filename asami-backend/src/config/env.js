@@ -110,7 +110,7 @@ const Env = z.object({
   RETENTION_ENABLED: z.preprocess((value)=>{if(typeof value!=="string")return value;const normalized=value.trim().toLowerCase();if(normalized==="true")return true;if(normalized==="false")return false;return value;},z.boolean()).default(true),
   RETENTION_CHECK_INTERVAL_MS: z.coerce.number().int().min(60000).default(15*60*1000),
   RETENTION_DECISION_CONTEXT_DAYS: z.coerce.number().int().min(1).default(2),
-  RETENTION_DECISION_CONTEXT_ARCHIVE_DAYS: z.coerce.number().int().min(2).default(3),
+  RETENTION_DECISION_CONTEXT_ARCHIVE_DAYS: z.coerce.number().int().min(2).default(2),
   RETENTION_DECISION_OPTIONS_DAYS: z.coerce.number().int().min(2).default(3),
   RETENTION_COGNITIVE_ARTIFACT_DAYS: z.coerce.number().int().min(7).default(14),
   RETENTION_NEED_HISTORY_DAYS: z.coerce.number().int().min(1).default(3),
