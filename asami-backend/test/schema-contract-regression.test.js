@@ -5,6 +5,13 @@ const path=require("node:path");
 const src=path.join(__dirname,"../src");
 const read=name=>fs.readFileSync(path.join(src,name),"utf8");
 
+test("decision context archive is part of startup schema migrations",()=>{
+  const source=read("db/schema-migrations.js");
+  assert.match(source,/ensureDecisionContextArchiveMigration/);
+  assert.match(source,/CREATE TABLE IF NOT EXISTS decision_context_archive/);
+  assert.match(source,/decisionContextArchive/);
+});
+
 test("plan_steps persists only schema-supported terminal and blocked states",()=>{const s=read("services/planning-service.js");assert.match(s,/status='BLOCKED'/);assert.match(s,/status='FAILED'/);
   assert.doesNotMatch(s,/blockedSteps/);});
 
