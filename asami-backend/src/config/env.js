@@ -59,7 +59,7 @@ const Env = z.object({
     return Number.isFinite(n)?Math.max(2048,n):value;
   },z.coerce.number().int().min(2048).max(20000).default(2048)),
   GEMINI_AUTONOMY_COMPACT_OUTPUT_TOKEN_CEILING: z.coerce.number().int().min(2048).max(4096).default(2048),
-  GEMINI_AUTONOMY_MAX_MODELS: z.coerce.number().int().min(1).max(5).default(4),
+  GEMINI_AUTONOMY_MAX_MODELS: z.coerce.number().int().min(1).max(3).default(2),
   GEMINI_DIALOGUE_OUTPUT_TOKEN_CEILING: z.coerce.number().int().min(256).max(20000).default(1536),
   GEMINI_INPUT_PRICE_USD_PER_1M: z.coerce.number().nonnegative().default(0.75),
   GEMINI_OUTPUT_PRICE_USD_PER_1M: z.coerce.number().nonnegative().default(3.75),
@@ -76,10 +76,15 @@ const Env = z.object({
   GEMINI_AUTONOMY_MONTHLY_MAX_REQUESTS: z.coerce.number().int().positive().default(1250),
   GEMINI_DIALOGUE_MONTHLY_MAX_REQUESTS: z.coerce.number().int().positive().default(1500),
   GEMINI_AUTONOMY_MIN_INTERVAL_MINUTES: z.preprocess((value)=>{
-    if(value===undefined||value===null||String(value).trim()==="")return 60;
+    if(value===undefined||value===null||String(value).trim()==="")return 1440;
     const n=Number(value);
-    return Number.isFinite(n)?Math.min(60,Math.max(1,n)):value;
-  },z.coerce.number().nonnegative().default(60)),
+    return Number.isFinite(n)?Math.min(1440,Math.max(60,n)):value;
+  },z.coerce.number().nonnegative().default(1440)),
+  GEMINI_AUTONOMY_HIGH_VALUE_MIN_INTERVAL_MINUTES: z.preprocess((value)=>{
+    if(value===undefined||value===null||String(value).trim()==="")return 120;
+    const n=Number(value);
+    return Number.isFinite(n)?Math.min(720,Math.max(30,n)):value;
+  },z.coerce.number().nonnegative().default(120)),
   GEMINI_DAILY_PACING_GRACE_MINUTES: z.coerce.number().nonnegative().default(10),
   GEMINI_PROVIDER_RATE_LIMIT_COOLDOWN_MS: z.coerce.number().int().min(10000).default(60000),
   GEMINI_PROVIDER_QUOTA_COOLDOWN_MS: z.coerce.number().int().min(60000).default(15*60*1000),
@@ -104,6 +109,7 @@ const Env = z.object({
   RETENTION_ENABLED: z.preprocess((value)=>{if(typeof value!=="string")return value;const normalized=value.trim().toLowerCase();if(normalized==="true")return true;if(normalized==="false")return false;return value;},z.boolean()).default(true),
   RETENTION_CHECK_INTERVAL_MS: z.coerce.number().int().min(60000).default(15*60*1000),
   RETENTION_DECISION_CONTEXT_DAYS: z.coerce.number().int().min(1).default(2),
+  RETENTION_DECISION_CONTEXT_ARCHIVE_DAYS: z.coerce.number().int().min(2).default(3),
   RETENTION_DECISION_OPTIONS_DAYS: z.coerce.number().int().min(2).default(3),
   RETENTION_COGNITIVE_ARTIFACT_DAYS: z.coerce.number().int().min(7).default(14),
   RETENTION_NEED_HISTORY_DAYS: z.coerce.number().int().min(1).default(3),
