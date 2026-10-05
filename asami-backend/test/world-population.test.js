@@ -1,5 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
 const { WORLD_LOCATIONS, MIN_WORLD_PEOPLE, MAX_WORLD_PEOPLE, goalActionSatisfiesNeed } = (() => {
   const world = require("../src/services/world-population-service");
   return { ...world, goalActionSatisfiesNeed: require("../src/services/autonomy-service").goalActionSatisfiesNeed };
