@@ -32,6 +32,9 @@ function goalNeedsValidation(goal,plan,needs=[],simulationTime){
   return Number.isFinite(createdAt)&&Number.isFinite(now)&&
     (now-createdAt)/3600000>MAX_GOAL_AGE_HOURS&&progress<=0;
 }
+function normalizeAction(value){
+  return String(value||"").trim().toUpperCase().replace(/[^A-Z0-9]+/g,"_");
+}
 function parseJson(value,fallback={}){if(value===null||value===undefined)return fallback;if(typeof value==='object')return value;try{return JSON.parse(value);}catch{return fallback;}}
 function clamp(value,min=0,max=1){const n=Number(value);if(!Number.isFinite(n))return min;return Math.max(min,Math.min(max,n));}
 function mysqlSimulationDateTime(value){const date=value instanceof Date?value:new Date(value);if(!Number.isFinite(date.getTime()))throw Object.assign(new Error("Invalid simulation time"),{code:"INVALID_SIMULATION_TIME"});const pad=n=>String(n).padStart(2,"0"),ms=String(date.getUTCMilliseconds()).padStart(3,"0");return `${date.getUTCFullYear()}-${pad(date.getUTCMonth()+1)}-${pad(date.getUTCDate())} ${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}:${pad(date.getUTCSeconds())}.${ms}`;}
