@@ -70,6 +70,15 @@ test("Gemini provider rate and quota limits are isolated per model",()=>{
   assert.match(geminiSource,/if\(!this\._hasAvailableModel\("autonomy"\)\)return false/);
 });
 
+test("Gemini never sends a provider deadline shorter than the 10-second minimum",()=>{
+  assert.match(geminiSource,/MIN_PROVIDER_DEADLINE_MS = 10000/);
+  assert.match(geminiSource,/reason:"GEMINI_DEADLINE_TOO_SHORT"/);
+  assert.match(geminiSource,/remainingBudgetMs<MIN_PROVIDER_DEADLINE_MS/);
+  assert.match(geminiSource,/Math\.max\(MIN_PROVIDER_DEADLINE_MS,Math\.min\(/);
+  assert.doesNotMatch(geminiSource,/Math\.max\(1,Math\.min\(30000,configuredTimeoutMs,timeoutBudgetMs\)\)/);
+});
+  
+
 test("Gemini startup exposes the effective autonomy output ceiling",()=>{
   assert.match(geminiSource,/autonomyOutputTokenCeiling:env\.GEMINI_AUTONOMY_OUTPUT_TOKEN_CEILING/);
 });
