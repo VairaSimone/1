@@ -1390,5 +1390,62 @@ async function makeDecision({
   };
 }
 
+async function markDecisionActionCreated({decisionId,simulationId,entityId,actionId}={}){
+  if(!decisionId||!simulationId||!actionId)return false;
+  const [rows]=await pool.query(
+    `SELECT action_created AS actionCreated,BIN_TO_UUID(action_id) AS actionId
+     FROM decisions
+     WHERE id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?)
+     LIMIT 1`,
+    [decisionId,simulationId,entityId]
+  );
+  if(!rows.length)return false;
+  const current=rows[0];
+  if(Number(current.actionCreated)===1){
+    if(String(current.actionId||"")===String(actionId))return true;
+    throw Object.assign(new Error("Decision action audit already points to a different action"),{code:"DECISION_ACTION_AUDIT_CONFLICT"});
+  }
+  const [updated]=await pool.query(
+    `UPDATE decisions
+     SET action_created=1,action_id=UUID_TO_BIN(?)
+     WHERE id=UUID_TO_BIN(?)
+       AND simulation_id=UUID_TO_BIN(?)
+       AND entity_id=UUID_TO_BIN(?)
+       AND action_created=0
+       AND action_id IS NULL`,
+    [actionId,decisionId,simulationId,entityId]
+  );
+  return Boolean(updated.affectedRows);
+}
+
+async function markDecisionActionOutcome({decisionId,simulationId,entityId,actionId,outcome}={}){
+  if(!decisionId||!simulationId||!actionId||!outcome)return false;
+  const normalized=String(outcome).trim().toUpperCase().slice(0,32);
+  if(!normalized)return false;
+  const [updated]=await pool.query(
+    `UPDATE decisions
+     SET action_outcome=?
+     WHERE id=UUID_TO_BIN(?)
+       AND simulation_id=UUID_TO_BIN(?)
+       AND entity_id=UUID_TO_BIN(?)
+       AND action_created=1
+       AND action_id=UUID_TO_BIN(?)
+       AND action_outcome IS NULL`,
+    [normalized,decisionId,simulationId,entityId,actionId]
+  );
+  if(updated.affectedRows)return true;
+  const [rows]=await pool.query(
+    `SELECT action_created AS actionCreated,BIN_TO_UUID(action_id) AS actionId,action_outcome AS actionOutcome
+     FROM decisions
+     WHERE id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?)
+     LIMIT 1`,
+    [decisionId,simulationId]
+  );
+  const row=rows[0];
+  if(row&&Number(row.actionCreated)===1&&String(row.actionId||"")===String(actionId)&&String(row.actionOutcome||"").toUpperCase()===normalized)return true;
+  if(row&&Number(row.actionCreated)===1&&String(row.actionId||"")===String(actionId)&&row.actionOutcome) return false;
+  return false;
+}
+
 function effectiveSimulationTimeString(value){const date=value instanceof Date?value:new Date(value);if(!Number.isFinite(date.getTime()))throw Object.assign(new Error("Invalid simulation time"),{code:"INVALID_SIMULATION_TIME"});const pad=n=>String(n).padStart(2,"0"),ms=String(date.getUTCMilliseconds()).padStart(3,"0");return `${date.getUTCFullYear()}-${pad(date.getUTCMonth()+1)}-${pad(date.getUTCDate())} ${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}:${pad(date.getUTCSeconds())}.${ms}`;}
-module.exports={ACTIONS,RESOURCE_REQUIREMENTS,scoreAction,buildDecisionContext,buildDecisionContexts,rebuildDecisionCandidates,makeDecision,applyLocationBias,LOCATION_ACTION_BIAS,loadResourceContext,findNearestResourceLocation,shortestRoute,deriveProactivity,applyProactiveOpportunityBias,applyPlanCommitment,applyExplorationCommitment,applyRecoveryBlocks,criticalProtectedActions,recoveryBlockForInterruption,activeRecoveryBlocks,criticalNeedState,criticalNeedAction,criticalResourceNeedState,resolveCriticalResourceRecovery,resolveCriticalDecisionRequirement,validateCriticalDecision,applyRecentActionPenalty,individualityBias,chooseStochasticCandidate,resolvePlanCommitment,chooseSocialTargetCandidate,applySocialFeasibility,applySocialIsolationFallback,applyWanderingGuard,compactDecisionContext,needPriorityState,calibratedSuccessProbability,calibrateDecisionOutcome,criticalNeedSatisfactionAction,criticalNeedTemporalSignal};
+module.exports={ACTIONS,RESOURCE_REQUIREMENTS,scoreAction,buildDecisionContext,buildDecisionContexts,markDecisionActionCreated,markDecisionActionOutcome,rebuildDecisionCandidates,makeDecision,applyLocationBias,LOCATION_ACTION_BIAS,loadResourceContext,findNearestResourceLocation,shortestRoute,deriveProactivity,applyProactiveOpportunityBias,applyPlanCommitment,applyExplorationCommitment,applyRecoveryBlocks,criticalProtectedActions,recoveryBlockForInterruption,activeRecoveryBlocks,criticalNeedState,criticalNeedAction,criticalResourceNeedState,resolveCriticalResourceRecovery,resolveCriticalDecisionRequirement,validateCriticalDecision,applyRecentActionPenalty,individualityBias,chooseStochasticCandidate,resolvePlanCommitment,chooseSocialTargetCandidate,applySocialFeasibility,applySocialIsolationFallback,applyWanderingGuard,compactDecisionContext,needPriorityState,calibratedSuccessProbability,calibrateDecisionOutcome,criticalNeedSatisfactionAction,criticalNeedTemporalSignal};
