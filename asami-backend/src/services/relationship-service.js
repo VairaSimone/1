@@ -96,6 +96,8 @@ async function upsertInteractionRelationship({simulationId,sourceEntityId,target
          WHERE r.simulation_id=UUID_TO_BIN(?)
            AND r.status='ENDED'
            AND rt.code IN ('ACQUAINTANCE','FRIEND')
+           AND r.conflict_score<.78
+           AND r.irritation_score<.80
            AND ${endedWhere}
          ORDER BY CASE rt.code WHEN 'FRIEND' THEN 2 ELSE 1 END DESC,
                   COALESCE(r.ended_simulation_at,r.started_simulation_at) DESC
