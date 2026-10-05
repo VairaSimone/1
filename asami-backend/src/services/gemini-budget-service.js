@@ -63,7 +63,7 @@ async function ensureGeminiUsageTable() {
       KEY idx_gemini_decision_telemetry_sim_entity (simulation_id,entity_id),
       KEY idx_gemini_decision_telemetry_sim_time (simulation_id,simulation_at)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
-  `;
+  `);
 
   const [[column]] = await pool.query(`
     SELECT COUNT(*) AS count
