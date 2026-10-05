@@ -26,6 +26,45 @@ async function ensureGeminiUsageTable() {
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
   `);
 
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS gemini_simulation_usage (
+      id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+      simulation_id VARCHAR(64) NOT NULL,
+      kind VARCHAR(20) NOT NULL,
+      simulation_day VARCHAR(10) NOT NULL,
+      requests INT UNSIGNED NOT NULL DEFAULT 0,
+      input_tokens BIGINT UNSIGNED NOT NULL DEFAULT 0,
+      output_tokens BIGINT UNSIGNED NOT NULL DEFAULT 0,
+      estimated_usd DECIMAL(12,6) NOT NULL DEFAULT 0,
+      actual_usd DECIMAL(12,6) NOT NULL DEFAULT 0,
+      reserved_usd DECIMAL(12,6) NOT NULL DEFAULT 0,
+      created_real_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+      updated_real_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+      PRIMARY KEY (id),
+      UNIQUE KEY uq_gemini_simulation_usage (simulation_id,kind,simulation_day)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS gemini_decision_telemetry (
+      id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+      simulation_id VARCHAR(64) NOT NULL,
+      entity_id VARCHAR(64) NULL,
+      decision_id VARCHAR(64) NULL,
+      kind VARCHAR(20) NOT NULL,
+      outcome VARCHAR(32) NOT NULL,
+      reason VARCHAR(120) NULL,
+      model VARCHAR(100) NULL,
+      simulation_day VARCHAR(10) NOT NULL,
+      simulation_at DATETIME(3) NOT NULL,
+      created_real_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+      PRIMARY KEY (id),
+      UNIQUE KEY uq_gemini_decision_telemetry_decision (decision_id),
+      KEY idx_gemini_decision_telemetry_sim_day (simulation_id,simulation_day),
+      KEY idx_gemini_decision_telemetry_sim_entity (simulation_id,entity_id),
+      KEY idx_gemini_decision_telemetry_sim_time (simulation_id,simulation_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+  `;
+
   const [[column]] = await pool.query(`
     SELECT COUNT(*) AS count
     FROM information_schema.COLUMNS
@@ -71,13 +110,20 @@ function estimateCostUsd(inputTokens, outputTokens) {
     (Number(outputTokens) / 1_000_000) * env.GEMINI_OUTPUT_PRICE_USD_PER_1M;
 }
 
-function dailyPacedLimitUsd(now = new Date()) {
+function wallClockDailyPacedLimitUsd(now = new Date()) {
   const dailyLimit = Number(env.GEMINI_DAILY_BUDGET_USD);
   if (!Number.isFinite(dailyLimit) || dailyLimit <= 0) return 0;
   const graceMinutes = Math.max(0, Number(env.GEMINI_DAILY_PACING_GRACE_MINUTES) || 0);
   const elapsedMinutes = now.getUTCHours() * 60 + now.getUTCMinutes() + now.getUTCSeconds() / 60;
   const fraction = Math.min(1, (elapsedMinutes + graceMinutes) / 1440);
   return dailyLimit * fraction;
+}
+
+const dailyPacedLimitUsd=wallClockDailyPacedLimitUsd;
+
+function simulationDayKey(value) {
+  const date=new Date(value);
+  return Number.isFinite(date.getTime())?date.toISOString().slice(0,10):null;
 }
 
 function rowKey(type, key) {
@@ -142,7 +188,7 @@ function emptyUsage(period_type, period_key, kind = null) {
   return { kind, period_type, period_key, requests: 0, input_tokens: 0, output_tokens: 0, estimated_usd: 0, reserved_usd: 0 };
 }
 
-async function reserve({ prompt, outputTokenCeiling, kind }) {
+async function reserve({ prompt, outputTokenCeiling, kind, simulationId=null, entityId=null, simulationTime=null }) {
   await ensureGeminiUsageTable();
   const budgetKind = kind === "dialogue" ? "DIALOGUE" : "AUTONOMY";
   const cachedBlockMs = Math.max(0, Number(budgetBlockedUntil.get(budgetKind) || 0) - Date.now());
@@ -159,7 +205,8 @@ async function reserve({ prompt, outputTokenCeiling, kind }) {
   const monthlyRequests = Number(budgetKind === "DIALOGUE" ? env.GEMINI_DIALOGUE_MONTHLY_MAX_REQUESTS : env.GEMINI_AUTONOMY_MONTHLY_MAX_REQUESTS);
   const pacedDailyLimit = budgetKind === "DIALOGUE"
     ? dailyLimit
-    : Math.min(dailyLimit, dailyPacedLimitUsd(now) * (dailyLimit / Math.max(0.000001, Number(env.GEMINI_DAILY_BUDGET_USD))));
+    : Math.min(dailyLimit, wallClockDailyPacedLimitUsd(now) * (dailyLimit / Math.max(0.000001, Number(env.GEMINI_DAILY_BUDGET_USD))));
+  const simulationDay=simulationDayKey(simulationTime);
   const conn = await pool.getConnection();
 
   try {
@@ -221,9 +268,17 @@ async function reserve({ prompt, outputTokenCeiling, kind }) {
       `UPDATE gemini_usage SET reserved_usd=reserved_usd+?,requests=requests+1 WHERE kind=? AND period_type='MONTH' AND period_key=?`,
       [estimatedUsd, budgetKind, month]
     );
+    if(simulationId&&simulationDay){
+      await conn.query(
+        `INSERT INTO gemini_simulation_usage(simulation_id,kind,simulation_day,requests,reserved_usd)
+         VALUES(?,?,?,1,?)
+         ON DUPLICATE KEY UPDATE requests=requests+1,reserved_usd=reserved_usd+VALUES(reserved_usd)`,
+        [String(simulationId),budgetKind,simulationDay,estimatedUsd]
+      );
+    }
     await conn.commit();
     budgetBlockedUntil.delete(budgetKind);
-    return { allowed: true, inputTokens, estimatedUsd, day, month, kind };
+    return { allowed: true, inputTokens, estimatedUsd, day, month, kind, simulationId, entityId, simulationDay };
   } catch (err) {
     try { await conn.rollback(); } catch {}
     throw err;
@@ -241,6 +296,14 @@ async function finalize(reservation, usageMetadata) {
   const deltaReserved = actualUsd - Number(estimatedUsd);
   await pool.query(`UPDATE gemini_usage SET input_tokens=input_tokens+?, output_tokens=output_tokens+?, estimated_usd=estimated_usd+?, reserved_usd=GREATEST(0,reserved_usd+?) WHERE kind=? AND period_type='DAY' AND period_key=?`, [inputTokens, outputTokens, actualUsd, deltaReserved, budgetKind, day]);
   await pool.query(`UPDATE gemini_usage SET input_tokens=input_tokens+?, output_tokens=output_tokens+?, estimated_usd=estimated_usd+?, reserved_usd=GREATEST(0,reserved_usd+?) WHERE kind=? AND period_type='MONTH' AND period_key=?`, [inputTokens, outputTokens, actualUsd, deltaReserved, budgetKind, month]);
+  if(reservation.simulationId&&reservation.simulationDay){
+    await pool.query(
+      `UPDATE gemini_simulation_usage
+       SET input_tokens=input_tokens+?,output_tokens=output_tokens+?,actual_usd=actual_usd+?,reserved_usd=GREATEST(0,reserved_usd+?)
+       WHERE simulation_id=? AND kind=? AND simulation_day=?`,
+      [inputTokens,outputTokens,actualUsd,deltaReserved,String(reservation.simulationId),budgetKind,reservation.simulationDay]
+    );
+  }
 }
 
 async function release(reservation) {
@@ -249,6 +312,13 @@ async function release(reservation) {
   const budgetKind = kind === "dialogue" ? "DIALOGUE" : "AUTONOMY";
   await pool.query(`UPDATE gemini_usage SET reserved_usd=GREATEST(0,reserved_usd-?) WHERE kind=? AND period_type='DAY' AND period_key=?`, [estimatedUsd, budgetKind, day]);
   await pool.query(`UPDATE gemini_usage SET reserved_usd=GREATEST(0,reserved_usd-?) WHERE kind=? AND period_type='MONTH' AND period_key=?`, [estimatedUsd, budgetKind, month]);
+  if(reservation.simulationId&&reservation.simulationDay){
+    await pool.query(
+      `UPDATE gemini_simulation_usage SET reserved_usd=GREATEST(0,reserved_usd-?)
+       WHERE simulation_id=? AND kind=? AND simulation_day=?`,
+      [estimatedUsd,String(reservation.simulationId),budgetKind,reservation.simulationDay]
+    );
+  }
 }
 
 async function restoreRejectedRequest(reservation) {
@@ -265,5 +335,100 @@ async function restoreRejectedRequest(reservation) {
      WHERE kind=? AND period_type='MONTH' AND period_key=?`,
     [budgetKind, month]
   );
+  if(reservation.simulationId&&reservation.simulationDay){
+    await pool.query(
+      `UPDATE gemini_simulation_usage SET requests=IF(requests>0,requests-1,0)
+       WHERE simulation_id=? AND kind=? AND simulation_day=?`,
+      [String(reservation.simulationId),budgetKind,reservation.simulationDay]
+    );
+  }
 }
-module.exports = { ensureGeminiUsageTable, reserve, finalize, release, restoreRejectedRequest, getUsage, blockProvider, providerBlockRemainingMs, providerBlockStatus, estimateInputTokens, estimateCostUsd, dailyPacedLimitUsd };
+
+async function recordDecisionOutcome({simulationId,entityId=null,decisionId=null,kind="autonomy",outcome,reason=null,model=null,simulationTime}={}){
+  if(!simulationId||!outcome)return false;
+  await ensureGeminiUsageTable();
+  const simulationDay=simulationDayKey(simulationTime);
+  if(!simulationDay)return false;
+  await pool.query(
+    `INSERT INTO gemini_decision_telemetry
+       (simulation_id,entity_id,decision_id,kind,outcome,reason,model,simulation_day,simulation_at)
+     VALUES(?,?,?,?,?,?,?,?,?)
+     ON DUPLICATE KEY UPDATE
+       entity_id=VALUES(entity_id),kind=VALUES(kind),outcome=VALUES(outcome),
+       reason=VALUES(reason),model=VALUES(model),simulation_day=VALUES(simulation_day),
+       simulation_at=VALUES(simulation_at)`,
+    [String(simulationId),entityId?String(entityId):null,decisionId?String(decisionId):null,
+     String(kind||"autonomy").toUpperCase(),String(outcome),reason?String(reason).slice(0,120):null,
+     model?String(model).slice(0,100):null,simulationDay,simulationTime]
+  );
+  return true;
+}
+
+async function getSimulationDecisionCoverage(simulationId){
+  if(!simulationId)return null;
+  await ensureGeminiUsageTable();
+  const [rows]=await pool.query(
+    `SELECT entity_id AS entityId,kind,outcome,reason,model,simulation_day AS simulationDay,simulation_at AS simulationAt
+     FROM gemini_decision_telemetry WHERE simulation_id=? ORDER BY simulation_at ASC LIMIT 100000`,
+    [String(simulationId)]
+  );
+  const totals={totalDecisions:rows.length,aiDecisions:0,deterministicDecisions:0,aiFallbacks:0,aiUnavailable:0};
+  const byDay=new Map(),byActor=new Map();
+  const add=(bucket,row)=>{
+    bucket.total=Number(bucket.total||0)+1;
+    if(row.outcome==="AI_DECISION")bucket.aiDecisions=Number(bucket.aiDecisions||0)+1;
+    else if(row.outcome==="DETERMINISTIC_DECISION")bucket.deterministicDecisions=Number(bucket.deterministicDecisions||0)+1;
+    else if(row.outcome==="AI_FALLBACK")bucket.aiFallbacks=Number(bucket.aiFallbacks||0)+1;
+    else if(row.outcome==="AI_UNAVAILABLE")bucket.aiUnavailable=Number(bucket.aiUnavailable||0)+1;
+  };
+  for(const row of rows){
+    if(row.outcome==="AI_DECISION")totals.aiDecisions++;
+    else if(row.outcome==="DETERMINISTIC_DECISION")totals.deterministicDecisions++;
+    else if(row.outcome==="AI_FALLBACK")totals.aiFallbacks++;
+    else if(row.outcome==="AI_UNAVAILABLE")totals.aiUnavailable++;
+    const day=byDay.get(row.simulationDay)||{simulationDay:row.simulationDay};
+    add(day,row);byDay.set(row.simulationDay,day);
+    const actorKey=String(row.entityId||"UNKNOWN");
+    const actor=byActor.get(actorKey)||{entityId:row.entityId};
+    add(actor,row);byActor.set(actorKey,actor);
+  }
+  let degradedModeHours=0;
+  for(let i=rows.length-1;i>0&&rows[i].outcome!=="AI_DECISION";i--){
+    const current=new Date(rows[i].simulationAt).getTime();
+    const previous=new Date(rows[i-1].simulationAt).getTime();
+    if(Number.isFinite(current)&&Number.isFinite(previous))degradedModeHours+=Math.max(0,(current-previous)/3600000);
+  }
+  const [usageRows]=await pool.query(
+    `SELECT kind,SUM(requests) AS requests,SUM(input_tokens) AS inputTokens,SUM(output_tokens) AS outputTokens,
+            SUM(estimated_usd) AS estimatedUsd,SUM(actual_usd) AS actualUsd
+     FROM gemini_simulation_usage WHERE simulation_id=? GROUP BY kind`,
+    [String(simulationId)]
+  );
+  return{
+    simulationId:String(simulationId),
+    coverage:{
+      ...totals,
+      aiCoveragePercent:totals.totalDecisions?Number((totals.aiDecisions/totals.totalDecisions*100).toFixed(2)):0,
+      degradedModeHours:Number(degradedModeHours.toFixed(2))
+    },
+    bySimulationDay:[...byDay.values()],
+    byActor:[...byActor.values()],
+    llmBudget:{
+      requests:usageRows.reduce((sum,row)=>sum+Number(row.requests||0),0),
+      inputTokens:usageRows.reduce((sum,row)=>sum+Number(row.inputTokens||0),0),
+      outputTokens:usageRows.reduce((sum,row)=>sum+Number(row.outputTokens||0),0),
+      estimatedUsd:Number(usageRows.reduce((sum,row)=>sum+Number(row.estimatedUsd||0),0).toFixed(6)),
+      actualUsd:Number(usageRows.reduce((sum,row)=>sum+Number(row.actualUsd||0),0).toFixed(6)),
+      byKind:usageRows.map(row=>({
+        kind:row.kind,
+        requests:Number(row.requests||0),
+        inputTokens:Number(row.inputTokens||0),
+        outputTokens:Number(row.outputTokens||0),
+        estimatedUsd:Number(row.estimatedUsd||0),
+        actualUsd:Number(row.actualUsd||0)
+      }))
+    }
+  };
+}
+
+module.exports = { ensureGeminiUsageTable, reserve, finalize, release, restoreRejectedRequest, recordDecisionOutcome, getSimulationDecisionCoverage, getUsage, blockProvider, providerBlockRemainingMs, providerBlockStatus, estimateInputTokens, estimateCostUsd, dailyPacedLimitUsd, wallClockDailyPacedLimitUsd, simulationDayKey };
