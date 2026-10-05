@@ -2,7 +2,7 @@ const test=require("node:test");
 const assert=require("node:assert/strict");
 const fs=require("node:fs");
 const path=require("node:path");
-const { conversationOutcomeDeltas,mergeRelationshipDeltas,relationshipFormationAccepted,socialInteractionOutcome,shouldEndRelationshipAfterInteraction,relationshipContinuityScore }=require("../src/services/social-relationship-service");
+const { conversationOutcomeDeltas,mergeRelationshipDeltas,relationshipFormationAccepted,socialInteractionOutcome,shouldEndRelationshipAfterInteraction,relationshipContinuityScore,historicalRelationshipIsReconnectable }=require("../src/services/social-relationship-service");
 
 test("conversation outcome is merged with baseline into one relationship transition",()=>{
   const merged=mergeRelationshipDeltas({familiarity:.06,trust:.02,respect:.01},{familiarity:.04,trust:.025,affection:.03});
@@ -26,6 +26,13 @@ test("historical social bonds decay gradually instead of resetting to zero",()=>
   const farContinuity=relationshipContinuityScore(recent,"2027-01-23T00:00:00.000Z");
   assert.ok(continuity>0);
   assert.ok(continuity>farContinuity);
+});
+
+test("historical relationship reconnection ignores bonds ended in severe conflict",()=>{
+  const healthy={type:"FRIEND",trust:.42,affection:.38,closeness:.34,familiarity:.62,conflict:.30,irritation:.30,endedSimulationAt:"2026-10-20T00:00:00.000Z"};
+  const hostile={...healthy,conflict:.80};
+  assert.equal(historicalRelationshipIsReconnectable(healthy,"2026-10-25T00:00:00.000Z"),true);
+  assert.equal(historicalRelationshipIsReconnectable(hostile,"2026-10-25T00:00:00.000Z"),false);
 });
 
 test("social continuity reactivates ended non-partner relationships and uses last interaction for decay",()=>{
