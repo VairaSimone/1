@@ -69,7 +69,8 @@ async function loadIdempotentAction(simulationId,idempotencyKey,relationshipInte
     expectedCompletionSimulationAt:metadata.expectedCompletionSimulationAt||null,
     movement:metadata.movement||null,
     idempotent:true,
-    status:action.status
+    status:action.status,
+    result:action.result||{}
   };
 }
 function coordinate(value){if(value===null||value===undefined||String(value).trim()==='')return null;const n=Number(value);return Number.isFinite(n)?n:null;}
@@ -186,7 +187,9 @@ async function startAction({simulationId,entityId,decisionId,intentionId=null,go
         if(["COMPLETED","FAILED","CANCELLED","INTERRUPTED"].includes(existingStatus)){
           await markDecisionActionOutcome({
             decisionId,simulationId,entityId,actionId:existing.actionId,
-            outcome:existingStatus==="COMPLETED"?"SUCCESS":existingStatus
+            outcome:existingStatus==="COMPLETED"
+              ?String(existing.result?.outcome||"SUCCESS").toUpperCase()
+              :existingStatus
           });
         }
       }
