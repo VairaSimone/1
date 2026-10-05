@@ -5,7 +5,8 @@ const { processSocialInteraction } = require("./social-relationship-service");
 const { resolveActionResource } = require("./physical-world-service");
 const { createMemory } = require("./memory-service");
 const { upsertKnowledge } = require("./personality-service");
-const { validateCriticalDecision } = require("./decision-service");
+const { validateCriticalDecision,markDecisionActionCreated,markDecisionActionOutcome } = require("./decision-service");
+const observability = require("./simulation-observability");
 const { assertTransition } = require("./state-machine");
 const { calculateOutcomeDependentNeedDelta, persistNeedTransition, OUTCOME_DEPENDENT_NEED_EFFECTS } = require("./state-service");
 const logger = require("../lib/logger");
@@ -178,7 +179,20 @@ async function startAction({simulationId,entityId,decisionId,intentionId=null,go
       : null;
   if(idempotencyKey){
     const existing=await loadIdempotentAction(simulationId,idempotencyKey,relationshipIntent);
-    if(existing)return existing;
+    if(existing){
+      if(decisionId){
+        await markDecisionActionCreated({decisionId,simulationId,entityId,actionId:existing.actionId});
+        const existingStatus=String(existing.status||"").toUpperCase();
+        if(["COMPLETED","FAILED","CANCELLED","INTERRUPTED"].includes(existingStatus)){
+          await markDecisionActionOutcome({
+            decisionId,simulationId,entityId,actionId:existing.actionId,
+            outcome:existingStatus==="COMPLETED"?"SUCCESS":existingStatus
+          });
+        }
+      }
+      observability.increment(simulationId,"actions_idempotent_reused_total");
+      return existing;
+    }
   }
   let duration=Number(dynamicActivity?.parameters?.durationMinutes||getActionDurationMinutes(normalizedAction));
   let activityDurationMinutes=duration,move=null,origin=null,destination=null,actionId=null,eventId=null;
@@ -251,6 +265,11 @@ async function startAction({simulationId,entityId,decisionId,intentionId=null,go
         })
       ]
     );
+
+    if(decisionId){
+      await markDecisionActionCreated({decisionId,simulationId,entityId,actionId});
+      observability.increment(simulationId,"decisions_with_action_created_total");
+    }
 
     eventId=await createEvent({
       simulationId,
@@ -373,6 +392,11 @@ async function startAction({simulationId,entityId,decisionId,intentionId=null,go
             })
           }),decisionId,simulationId,entityId]
         );
+        if(actionId){
+          try{
+            await markDecisionActionOutcome({decisionId,simulationId,entityId,actionId,outcome:"FAILURE"});
+          }catch{}
+        }
       }catch{}
     }
     throw err;
@@ -555,7 +579,10 @@ await addEffect({simulationId,eventId,effectType:"ACTION_COMPLETED",targetAction
       result: finalResult
     })
   }),decisionId]
-);return{completed:true,outcome:committed.outcome.outcome,success:committed.outcome.success,failureReason:committed.outcome.failureReason,resource:committed.physical,needEffect:committed.needEffect||null,resourceLearning:learning,socialInteraction};}}
+);
+  await markDecisionActionCreated({decisionId,simulationId,entityId,actionId});
+  await markDecisionActionOutcome({decisionId,simulationId,entityId,actionId,outcome:committed.outcome.outcome});
+return{completed:true,outcome:committed.outcome.outcome,success:committed.outcome.success,failureReason:committed.outcome.failureReason,resource:committed.physical,needEffect:committed.needEffect||null,resourceLearning:learning,socialInteraction};}}
 async function markActionPostProcessingComplete(actionId,db=pool){
   if(!actionId)return false;
   const [result]=await db.query(
