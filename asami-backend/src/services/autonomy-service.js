@@ -103,6 +103,8 @@ function buildGeminiDecisionContext({entity,context,memories=[]}={}){
         closeness:Number(candidate.closeness||0),
         affection:Number(candidate.affection||0),
         trust:Number(candidate.trust||0),
+        conflict:Number(candidate.conflict||0),
+        irritation:Number(candidate.irritation||0),
         romanticScore:Number(candidate.romanticScore||0)
       }))
     : [];
