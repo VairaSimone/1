@@ -77,6 +77,26 @@ test("selected option snapshot no longer duplicates evaluation and expected outc
   assert.doesNotMatch(block,/evaluation,/);
 });
 
+test("decision action audit is durable after action retention",()=>{
+  const fs=require("node:fs");
+  const path=require("node:path");
+  const migration=fs.readFileSync(path.join(__dirname,"../src/db/schema-migrations.js"),"utf8");
+  const decision=fs.readFileSync(path.join(__dirname,"../src/services/decision-service.js"),"utf8");
+  const action=fs.readFileSync(path.join(__dirname,"../src/services/action-service.js"),"utf8");
+  assert.match(migration,/ensureDecisionActionAuditMigration/);
+  assert.match(migration,/ADD COLUMN action_created TINYINT\(1\)/);
+  assert.match(migration,/ADD COLUMN action_id BINARY\(16\)/);
+  assert.match(migration,/ADD COLUMN action_outcome VARCHAR\(32\)/);
+  assert.match(migration,/a\.decision_id=d\.id/);
+  assert.match(migration,/JSON_EXTRACT\(actual_outcome,'\$\.actionId'\)/);
+  assert.match(decision,/markDecisionActionCreated/);
+  assert.match(decision,/action_created=1/);
+  assert.match(decision,/action_outcome IS NULL/);
+  assert.match(decision,/DECISION_ACTION_AUDIT_CONFLICT/);
+  assert.match(action,/markDecisionActionCreated/);
+  assert.match(action,/markDecisionActionOutcome/);
+});
+
 test("unrelated SQL is not modified", () => {
   const sql = "SELECT * FROM decisions WHERE id=UUID_TO_BIN(?)";
   assert.equal(fixDecisionInsertSql(sql), sql);
