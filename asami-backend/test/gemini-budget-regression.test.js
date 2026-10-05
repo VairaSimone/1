@@ -143,6 +143,21 @@ test("Gemini reserve increments the monthly request counter exactly like the dai
   }
 });
 
+test("autonomy wall-clock budget pacing is explicitly configurable and disabled by default",()=>{
+  const envSource=require("node:fs").readFileSync(
+    require("node:path").join(__dirname,"../src/config/env.js"),
+    "utf8"
+  );
+  assert.match(envSource,/GEMINI_AUTONOMY_DAILY_PACING_ENABLED/);
+  assert.match(envSource,/\.default\(false\)/);
+  const budgetSource=require("node:fs").readFileSync(
+    require("node:path").join(__dirname,"../src/services/gemini-budget-service.js"),
+    "utf8"
+  );
+  assert.match(budgetSource,/autonomyPacingEnabled/);
+  assert.match(budgetSource,/pacedDailyLimit/);
+});
+
 test("simulation-day telemetry remains separate from the wall-clock budget",()=>{
   const loaded=loadBudgetServiceWithFakePool();
   try{
