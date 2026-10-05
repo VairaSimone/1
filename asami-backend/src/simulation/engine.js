@@ -472,7 +472,7 @@ class SimulationEngine {
           setPhase("world.resource_distribution");
           const distributedResources = await maintainDistributedResources(sim.id, nextTime.toISOString());
           if (distributedResources.replenished.length) {
-            logger.info({
+            logger.debug({
               simulationId: sim.id,
               simulationTime: nextTime.toISOString(),
               replenishedLocations: distributedResources.replenished.length,
