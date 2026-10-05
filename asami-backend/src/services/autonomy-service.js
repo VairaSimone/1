@@ -411,7 +411,10 @@ async function actForEntity({simulationId,entityId,simulationTime,gemini,tickId=
       cognitiveProfile:{...context.cognitiveProfile,plans:refreshedPlans},
       activePlanStep:activePlanStep||null,
       simulationTime
-    };const memories=batchContext?.contexts?.has(entityId)?(context.memories||[]):await recallContext(simulationId,entityId,8,{simulationTime,goalIds:(context.goals||[]).map(goal=>goal.id).filter(Boolean),locationId:context.location?.locationId||null,locationType:context.location?.locationType||null,candidateActionTypes:(context.candidates||[]).map(candidate=>candidate.action).filter(Boolean)}),geminiTrigger=getGeminiTrigger(entity,context,memories);context.geminiTrigger=geminiTrigger;let aiChoice=null;
+    };
+  }
+
+  const memories=batchContext?.contexts?.has(entityId)?(context.memories||[]):await recallContext(simulationId,entityId,8,{simulationTime,goalIds:(context.goals||[]).map(goal=>goal.id).filter(Boolean),locationId:context.location?.locationId||null,locationType:context.location?.locationType||null,candidateActionTypes:(context.candidates||[]).map(candidate=>candidate.action).filter(Boolean)}),geminiTrigger=getGeminiTrigger(entity,context,memories);context.geminiTrigger=geminiTrigger;let aiChoice=null;
 let geminiDecision={status:"NOT_CONSULTED",source:"DETERMINISTIC",reason:"NO_GEMINI_TRIGGER",attempted:false,retryAfterMs:0};
 if(geminiTrigger){
   if(!gemini?.client){
