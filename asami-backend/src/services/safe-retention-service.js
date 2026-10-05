@@ -1227,6 +1227,8 @@ async function runSafeRetention(simulationId, simulationTime) {
     const cognitiveActorCaps = await deleteActorCognitiveArtifacts(lock.conn, simulationId, mysqlSimulationTime);
     const counterfactuals = await deleteResolvedCounterfactuals(lock.conn, simulationId, mysqlSimulationTime);
     const worlds = await deleteResolvedCounterfactualWorlds(lock.conn, simulationId, mysqlSimulationTime);
+    observability.increment(simulationId,"memory_archived_total",Number(memoryArchive.archived||0));
+    observability.increment(simulationId,"memory_deduplicated_total",Number(duplicateMemories.deleted||0));
     const summary = {
       simulationId,
       simulationTime,
