@@ -50,6 +50,33 @@ test("16-byte UUID buffers are converted to canonical UUID strings", () => {
   assert.deepEqual(binaryUuidToString(Buffer.from("abc", "utf8")), Buffer.from("abc", "utf8"));
 });
 
+test("autonomous decisions store a compact operational context and archive the full context",()=>{
+  const fs=require("node:fs");
+  const path=require("node:path");
+  const source=fs.readFileSync(path.join(__dirname,"../src/services/decision-service.js"),"utf8");
+  assert.match(source,/function compactOperationalDecisionContext\(/);
+  assert.match(source,/operationalDecisionContext/);
+  assert.match(source,/fullDecisionContext/);
+  assert.match(source,/INSERT INTO decision_context_archive/);
+  assert.match(source,/operational:true/);
+  assert.match(source,/schemaVersion:4/);
+});
+
+test("selected option snapshot no longer duplicates evaluation and expected outcome payloads",()=>{
+  const fs=require("node:fs");
+  const path=require("node:path");
+  const source=fs.readFileSync(path.join(__dirname,"../src/services/decision-service.js"),"utf8");
+  const start=source.indexOf("const selectedOptionSnapshot = JSON.stringify(");
+  const end=source.indexOf("\n\n  await withTransaction",start);
+  const block=source.slice(start,end);
+  assert.ok(block);
+  assert.match(block,/targetEntityId/);
+  assert.match(block,/targetLocationId/);
+  assert.doesNotMatch(block,/actionDefinition,/);
+  assert.doesNotMatch(block,/expectedOutcome,/);
+  assert.doesNotMatch(block,/evaluation,/);
+});
+
 test("unrelated SQL is not modified", () => {
   const sql = "SELECT * FROM decisions WHERE id=UUID_TO_BIN(?)";
   assert.equal(fixDecisionInsertSql(sql), sql);
