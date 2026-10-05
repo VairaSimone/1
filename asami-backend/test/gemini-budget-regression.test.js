@@ -142,3 +142,15 @@ test("Gemini reserve increments the monthly request counter exactly like the dai
     loaded.restore();
   }
 });
+
+test("simulation-day telemetry remains separate from the wall-clock budget",()=>{
+  const loaded=loadBudgetServiceWithFakePool();
+  try{
+    assert.equal(loaded.service.simulationDayKey("2040-01-02 23:30:00.000"),"2040-01-02");
+    assert.equal(loaded.service.simulationDayKey("2040-01-02T23:30:00.000Z"),"2040-01-02");
+    assert.equal(typeof loaded.service.getSimulationDecisionCoverage,"function");
+    assert.equal(typeof loaded.service.recordDecisionOutcome,"function");
+  }finally{
+    loaded.restore();
+  }
+});
