@@ -77,6 +77,78 @@ function decisionNeedsAdvancedCognition(context){
   return ["PLAN_DELIBERATION","AMBIGUITY","FAILURE_REFLECTION","UNCERTAINTY"].includes(type);
 }
 
+function normalizeProviderSchemaNode(node, root, resolving = new Set()) {
+  if (node === true || node === false || node === null || typeof node !== "object") return node;
+  if (node.$ref) {
+    const ref = String(node.$ref);
+    const prefix = "#/$defs/";
+    if (!ref.startsWith(prefix)) return node;
+    const name = ref.slice(prefix.length);
+    if (!root.$defs?.[name] || resolving.has(name)) return node;
+    const next = new Set(resolving);
+    next.add(name);
+    return normalizeProviderSchemaNode(root.$defs[name], root, next);
+  }
+  const allowed = new Set([
+    "type","nullable","properties","required","additionalProperties","items","anyOf","allOf","oneOf",
+    "enum","const","description","format","pattern","minLength","maxLength","minimum","maximum",
+    "exclusiveMinimum","exclusiveMaximum","multipleOf","minItems","maxItems","uniqueItems"
+  ]);
+  const out = {};
+  for (const [key, value] of Object.entries(node)) {
+    if (!allowed.has(key)) continue;
+    if (key === "properties") {
+      out.properties = {};
+      for (const [property, propertySchema] of Object.entries(value || {})) {
+        out.properties[property] = normalizeProviderSchemaNode(propertySchema, root, resolving);
+      }
+      continue;
+    }
+    if (key === "items" || key === "additionalProperties") {
+      out[key] = typeof value === "object" ? normalizeProviderSchemaNode(value, root, resolving) : value;
+      continue;
+    }
+    if (key === "anyOf" || key === "oneOf" || key === "allOf") {
+      out[key] = Array.isArray(value) ? value.map(item => normalizeProviderSchemaNode(item, root, resolving)) : value;
+      continue;
+    }
+    out[key] = value;
+  }
+  if (Array.isArray(out.type) && out.type.includes("null")) {
+    const nonNullTypes = out.type.filter(type => type !== "null");
+    if (nonNullTypes.length === 1) {
+      out.type = nonNullTypes[0];
+      out.nullable = true;
+    }
+  }
+  if (Array.isArray(out.anyOf) && out.anyOf.length === 2) {
+    const nullIndex = out.anyOf.findIndex(item => item && item.type === "null");
+    if (nullIndex >= 0) {
+      const valueIndex = nullIndex === 0 ? 1 : 0;
+      const candidate = out.anyOf[valueIndex];
+      if (candidate && typeof candidate === "object" && !candidate.anyOf && !candidate.oneOf && !candidate.allOf) {
+        const nullableCandidate = { ...candidate, nullable: true };
+        delete out.anyOf;
+        Object.assign(out, nullableCandidate);
+      }
+    }
+  }
+  return out;
+}
+
+function toProviderJsonSchema(schema) {
+  if (!schema || typeof z.toJSONSchema !== "function") {
+    throw Object.assign(new Error("Zod JSON Schema conversion is unavailable"), { code: "AI_SCHEMA_CONVERSION_UNAVAILABLE" });
+  }
+  const root = z.toJSONSchema(schema, {
+    target: "draft-07",
+    io: "input",
+    reused: "inline",
+    cycles: "throw",
+    unrepresentable: "throw"
+  });
+  return normalizeProviderSchemaNode(root, root);
+}
 function dialogueNeedsAdvancedCognition(context){
   const type=String(context?.conversationIntent?.type||"");
   if(["PLANNING","EMOTIONAL_SHARING","DISAGREEMENT"].includes(type))return true;
@@ -491,15 +563,25 @@ class GeminiService {
       return null;
     }
 
-    const responseSchema=schema===DialogueSchema
-      ?dialogueProviderSchema({advanced:false})
-      :schema===AdvancedDialogueSchema
-        ?dialogueProviderSchema({advanced:true})
-        :schema===DecisionSchema
-          ?{type:"object",properties:{selectedActionType:{type:"string"},targetEntityId:{type:"string",nullable:true},targetLocationId:{type:"string",nullable:true},reason:{type:"string",maxLength:360},confidence:{type:"number"}},required:["selectedActionType","reason","confidence"]}
-          :schema===AdvancedDecisionSchema
-            ?{type:"object",properties:{selectedActionType:{type:"string"},targetEntityId:{type:"string",nullable:true},targetLocationId:{type:"string",nullable:true},reason:{type:"string",maxLength:360},confidence:{type:"number"},strategy:{type:"object",nullable:true,properties:{objective:{type:"string",maxLength:255},rationale:{type:"string",maxLength:360},constraints:{type:"array",items:{type:"string",maxLength:160}},fallbackActionType:{type:"string",nullable:true}}},planProposal:{type:"object",nullable:true,properties:{title:{type:"string",maxLength:255},strategy:{type:"object"},steps:{type:"array",items:{type:"object",properties:{title:{type:"string",maxLength:255},description:{type:"string",maxLength:320},actionType:{type:"string",maxLength:100}}}}}}},required:["selectedActionType","reason","confidence"]}
-            :undefined;
+    let responseSchema;
+    try{
+      responseSchema=toProviderJsonSchema(schema);
+    }catch(error){
+      this.lastRequestStatus={
+        status:"FALLBACK",
+        source:"DETERMINISTIC_FALLBACK",
+        reason:"AI_SCHEMA_CONVERSION_FAILED",
+        attempted:false,
+        retryAfterMs:0,
+        kind
+      };
+      logger.error({
+        kind,
+        error:String(error?.message||error),
+        errorCode:String(error?.code||"UNKNOWN_SCHEMA_ERROR")
+      },"Gemini provider schema conversion failed; deterministic fallback used");
+      return null;
+    }
 
     let lastTransientFailure=null;
     for(let modelIndex=0;modelIndex<models.length;modelIndex++){
@@ -972,4 +1054,4 @@ class GeminiService {
   }
 
 }
-module.exports={GeminiService,DecisionSchema,AdvancedDecisionSchema,DialogueSchema,AdvancedDialogueSchema,decisionNeedsAdvancedCognition,dialogueNeedsAdvancedCognition,compactDialogueContext,classifyGeminiError,computeProviderBackoffMs};
+module.exports={GeminiService,DecisionSchema,AdvancedDecisionSchema,DialogueSchema,AdvancedDialogueSchema,decisionNeedsAdvancedCognition,dialogueNeedsAdvancedCognition,compactDialogueContext,classifyGeminiError,computeProviderBackoffMs,toProviderJsonSchema};
