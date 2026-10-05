@@ -1,4 +1,21 @@
 const logger = require("../lib/logger");
+const EXPECTED_DISCONNECT_CODES = new Set([
+  "ECONNRESET",
+  "ECANCELED",
+  "EPIPE",
+  "ERR_STREAM_WRITE_AFTER_END",
+  "ERR_SOCKET_CLOSED",
+  "ABORT_ERR"
+]);
+
+function socketFailureCode(error) {
+  return String(error?.code || error?.name || "").trim().toUpperCase();
+}
+
+function isExpectedDisconnect(error, ws) {
+  const code = socketFailureCode(error);
+  return EXPECTED_DISCONNECT_CODES.has(code) || !ws || ws.readyState !== 1;
+}
 
 class RealtimeHub {
   constructor() {
@@ -9,6 +26,14 @@ class RealtimeHub {
     this.clients.add(client);
 
     const logSocketError = (err) => {
+      this.clients.delete(client);
+      if (isExpectedDisconnect(err, ws)) {
+        logger.debug(
+          { simulationId, code: socketFailureCode(err) || null },
+          "websocket client disconnected"
+        );
+        return;
+      }
       logger.warnThrottled(
         `realtime:websocket-error:${simulationId}`,
         60000,
@@ -46,22 +71,36 @@ class RealtimeHub {
       try {
         client.ws.send(message, (err) => {
           if (!err) return;
+          this.clients.delete(client);
+          if (isExpectedDisconnect(err, client.ws)) {
+            logger.debug(
+              { simulationId, type, code: socketFailureCode(err) || null },
+              "websocket client disconnected during realtime delivery"
+            );
+            return;
+          }
           logger.warnThrottled(
             `realtime:websocket-send:${simulationId}:${type}`,
             60000,
             { err, simulationId, type },
             "websocket send failed"
           );
-          this.clients.delete(client);
         });
       } catch (err) {
+        this.clients.delete(client);
+        if (isExpectedDisconnect(err, client.ws)) {
+          logger.debug(
+            { simulationId, type, code: socketFailureCode(err) || null },
+            "websocket client disconnected during realtime delivery"
+          );
+          continue;
+        }
         logger.warnThrottled(
           `realtime:websocket-send:${simulationId}:${type}`,
           60000,
           { err, simulationId, type },
           "websocket send failed"
         );
-        this.clients.delete(client);
       }
     }
   }
