@@ -86,6 +86,7 @@ const Env = z.object({
     return Number.isFinite(n)?Math.min(720,Math.max(30,n)):value;
   },z.coerce.number().nonnegative().default(120)),
   GEMINI_DAILY_PACING_GRACE_MINUTES: z.coerce.number().nonnegative().default(10),
+  GEMINI_AUTONOMY_DAILY_PACING_ENABLED: z.preprocess((value)=>{if(typeof value!=="string")return value;const normalized=value.trim().toLowerCase();if(normalized==="true")return true;if(normalized==="false")return false;return value;},z.boolean()).default(false),
   GEMINI_PROVIDER_RATE_LIMIT_COOLDOWN_MS: z.coerce.number().int().min(10000).default(60000),
   GEMINI_PROVIDER_QUOTA_COOLDOWN_MS: z.coerce.number().int().min(60000).default(15*60*1000),
   GEMINI_PROVIDER_FAILURE_BASE_COOLDOWN_MS: z.coerce.number().int().min(1000).max(300000).default(10000),
