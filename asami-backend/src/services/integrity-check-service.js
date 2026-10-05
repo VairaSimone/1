@@ -1,5 +1,6 @@
 const { pool } = require("../db/pool");
 const logger = require("../lib/logger");
+const { env } = require("../config/env");
 
 const CHECK_INTERVAL_HOURS=6;
 const lastCheckSimulationAt=new Map();
@@ -16,6 +17,7 @@ async function runSimulationIntegrityCheck(simulationId,simulationTime,{force=fa
   if(!force&&now!==null&&last!==undefined&&now-last<CHECK_INTERVAL_HOURS*3600000){
     return{skipped:true,reason:"interval"};
   }
+  const staleEvaluatedCutoff=now===null?null:new Date(now-Math.max(15,Number(env.DECISION_RECONCILIATION_MAX_EVALUATED_MINUTES)||720)*60000);
   const checks=[
     {
       name:"actions_decision_scope",
@@ -69,12 +71,23 @@ async function runSimulationIntegrityCheck(simulationId,simulationTime,{force=fa
                WHERE me.id=m.entity_id
                  AND me.simulation_id<>e.simulation_id
              )`
-    }
+    },
+    ...(staleEvaluatedCutoff?[
+      {
+        name:"stale_evaluated_decisions",
+        sql:`SELECT COUNT(*) AS count
+             FROM decisions
+             WHERE simulation_id=UUID_TO_BIN(?)
+               AND status='EVALUATED'
+               AND simulation_time<=?`,
+        params:[simulationId,staleEvaluatedCutoff]
+      }
+    ]:[])
   ];
 
   const violations=[];
   for(const check of checks){
-    const [rows]=await pool.query(check.sql,[simulationId]);
+    const [rows]=await pool.query(check.sql,check.params||[simulationId]);
     const count=Number(rows[0]?.count||0);
     if(count)violations.push({check:check.name,count});
   }
