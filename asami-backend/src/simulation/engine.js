@@ -329,12 +329,14 @@ async function interruptActiveAction({ simulationId, entityId, active, simulatio
   return true;
 }
 
-async function enforceDatabaseSizeLimit({ simulationId, hub, phase }) {
+async function enforceDatabaseSizeLimit({ simulationId = null, hub, phase }) {
   const limit = await checkDatabaseSizeLimit();
   if (!limit.enabled) return false;
 
-  observability.setGauge(simulationId, "database_size_bytes", limit.sizeBytes);
-  observability.setGauge(simulationId, "database_size_limit_bytes", limit.limitBytes);
+  if (simulationId) {
+    observability.setGauge(simulationId, "database_size_bytes", limit.sizeBytes);
+    observability.setGauge(simulationId, "database_size_limit_bytes", limit.limitBytes);
+  }
   observability.setGauge("global", "database_size_bytes", limit.sizeBytes);
   observability.setGauge("global", "database_size_limit_bytes", limit.limitBytes);
 
@@ -350,8 +352,10 @@ async function enforceDatabaseSizeLimit({ simulationId, hub, phase }) {
     });
   }
 
-  if (pausedIds.length) {
-    logger.warn({
+  logger.warnThrottled(
+    "engine:database-size-limit",
+    60000,
+    {
       simulationId,
       phase,
       event: "DATABASE_SIZE_LIMIT_REACHED",
@@ -360,10 +364,12 @@ async function enforceDatabaseSizeLimit({ simulationId, hub, phase }) {
       databaseSizeBytes: limit.sizeBytes,
       databaseLimitBytes: limit.limitBytes,
       pausedSimulationIds: pausedIds
-    }, "database size limit reached; simulations paused");
-  }
+    },
+    "database size limit reached; simulations paused"
+  );
 
-  return pausedIds.includes(simulationId);
+  // Global preflight calls use simulationId=null and must stop scheduling entirely.
+  return !simulationId || pausedIds.includes(simulationId);
 }
 
 class SimulationEngine {
@@ -408,6 +414,16 @@ class SimulationEngine {
 );
         return;
       }
+
+      // Hard database-cap preflight: do this before loading/scheduling any
+      // simulation so an already-over-limit database cannot receive another tick.
+      const databaseLimitReached = await enforceDatabaseSizeLimit({
+        simulationId: null,
+        hub: this.hub,
+        phase: "pulse.preflight"
+      });
+      if (databaseLimitReached) return;
+
       const simulations = await simRepo.listSimulations();
       const maxConcurrent=Math.max(1,Number(env.MAX_CONCURRENT_SIMULATIONS)||1);
       let queueDepth=0;
