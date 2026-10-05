@@ -1059,7 +1059,7 @@ async function advancePlanForAction({simulationId,entityId,goalId,actionType,out
     progress=Number((units/totalSteps).toFixed(4));
   }
 
-  const planCompletedtotalSteps>0&&completedSteps===totalSteps;
+  const planCompleted=totalSteps>0&&completedSteps===totalSteps;
   if(planCompleted&&refreshedPlan.status!=="COMPLETED"){
     await pool.query(
       `UPDATE plans
