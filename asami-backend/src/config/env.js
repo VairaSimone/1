@@ -1,6 +1,10 @@
 const { z } = require("zod");
 require("dotenv").config({ quiet: true });
 
+function blankAsDefault(value, fallback) {
+  return value === undefined || value === null || String(value).trim() === "" ? fallback : value;
+}
+
 const Env = z.object({
   NODE_ENV: z.string().default("development"),
   PORT: z.coerce.number().int().positive().default(3000),
@@ -138,11 +142,11 @@ const Env = z.object({
   RETENTION_RELATIONSHIP_HISTORY_DAYS: z.coerce.number().int().min(7).default(45),
   RETENTION_BATCH_SIZE: z.coerce.number().int().min(250).max(5000).default(5000),
   RETENTION_MAX_DELETES_PER_TABLE: z.coerce.number().int().min(500).max(20000).default(8000),
-  RETENTION_TIME_BUDGET_MS: z.coerce.number().int().min(250).max(30000).default(5000),
-  NEED_HISTORY_MIN_DELTA: z.coerce.number().nonnegative().default(0.01),
-  EMOTION_HISTORY_MIN_DELTA: z.coerce.number().nonnegative().default(0.01),
-  NEED_HISTORY_MIN_SIMULATION_INTERVAL_MINUTES: z.coerce.number().nonnegative().default(15),
-  EMOTION_HISTORY_MIN_SIMULATION_INTERVAL_MINUTES: z.coerce.number().nonnegative().default(15),
+  RETENTION_TIME_BUDGET_MS: z.preprocess((value)=>blankAsDefault(value,7500),z.coerce.number().int().min(250).max(30000).default(7500)),
+  NEED_HISTORY_MIN_DELTA: z.preprocess((value)=>blankAsDefault(value,0.01),z.coerce.number().nonnegative().default(0.01)),
+  EMOTION_HISTORY_MIN_DELTA: z.preprocess((value)=>blankAsDefault(value,0.01),z.coerce.number().nonnegative().default(0.01)),
+  NEED_HISTORY_MIN_SIMULATION_INTERVAL_MINUTES: z.preprocess((value)=>blankAsDefault(value,15),z.coerce.number().nonnegative().default(15)),
+  EMOTION_HISTORY_MIN_SIMULATION_INTERVAL_MINUTES: z.preprocess((value)=>blankAsDefault(value,15),z.coerce.number().nonnegative().default(15)),
   RETENTION_DRY_RUN: z.preprocess((value)=>{if(typeof value!=="string")return value;const normalized=value.trim().toLowerCase();if(normalized==="true")return true;if(normalized==="false")return false;return value;},z.boolean()).default(false),
   CORS_ORIGIN: z.string().default("*")
 });
