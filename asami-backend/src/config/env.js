@@ -149,6 +149,8 @@ const Env = z.object({
   RETENTION_TRAIT_HISTORY_DAYS: z.coerce.number().int().min(7).default(30),
   RETENTION_GEMINI_DECISION_TELEMETRY_DAYS: z.coerce.number().int().min(7).default(30),
   TRAIT_HISTORY_MIN_DELTA: z.preprocess((value)=>blankAsDefault(value,0.001),z.coerce.number().nonnegative().default(0.001)),
+  NEED_HISTORY_SIGNIFICANT_MIN_DELTA: z.preprocess((value)=>blankAsDefault(value,0.03),z.coerce.number().nonnegative().default(0.03)),
+  EMOTION_HISTORY_SIGNIFICANT_MIN_DELTA: z.preprocess((value)=>blankAsDefault(value,0.03),z.coerce.number().nonnegative().default(0.03)),
   NEED_HISTORY_MIN_DELTA: z.preprocess((value)=>blankAsDefault(value,0.01),z.coerce.number().nonnegative().default(0.01)),
   EMOTION_HISTORY_MIN_DELTA: z.preprocess((value)=>blankAsDefault(value,0.01),z.coerce.number().nonnegative().default(0.01)),
   NEED_HISTORY_MIN_SIMULATION_INTERVAL_MINUTES: z.preprocess((value)=>blankAsDefault(value,15),z.coerce.number().nonnegative().default(15)),
