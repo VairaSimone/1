@@ -136,9 +136,15 @@ async function accumulateNeedHistory({ entityId, needId, code, oldValue, newValu
     significant: significant && significantDelta,
     critical,
     threshold: NEED_HISTORY_MIN_DELTA
-  })) return false;
+  })) {
+    if (significant || critical) pendingNeedHistory.delete(key);
+    return false;
+  }
   if (!forcePersist) {
-    if (!backgroundHistory) return false;
+    if (!backgroundHistory) {
+      if (significant || critical) pendingNeedHistory.delete(key);
+      return false;
+    }
     if (!historyIntervalElapsed(
       lastNeedHistoryPersistedAt.get(key),
       pending.simulationTime,
@@ -242,9 +248,15 @@ async function accumulateEmotionHistory({ entityId, emotionId, code, oldIntensit
     delta: pending.delta,
     significant: significant && significantDelta,
     threshold: EMOTION_HISTORY_MIN_DELTA
-  })) return false;
+  })) {
+    if (significant) pendingEmotionHistory.delete(key);
+    return false;
+  }
   if (!forcePersist) {
-    if (!backgroundHistory) return false;
+    if (!backgroundHistory) {
+      if (significant) pendingEmotionHistory.delete(key);
+      return false;
+    }
     if (!historyIntervalElapsed(
       lastEmotionHistoryPersistedAt.get(key),
       pending.simulationTime,
