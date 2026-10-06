@@ -60,3 +60,12 @@ test("decision service contains outcome calibration updates",()=>{
   assert.match(source,/calibrationSamples/);
   assert.match(source,/calibrationErrorEma/);
 });
+
+test("decision full context is archived selectively",()=>{
+  const { shouldArchiveFullDecisionContext } = require("../src/services/decision-service");
+  assert.equal(shouldArchiveFullDecisionContext({selectionMode:"STOCHASTIC_DETERMINISTIC",proactivity:{priority:"LOW"}}),false);
+  assert.equal(shouldArchiveFullDecisionContext({selectionMode:"PLAN_COMMITMENT"}),true);
+  assert.equal(shouldArchiveFullDecisionContext({aiChoice:{selectedActionType:"READING"}}),true);
+  assert.equal(shouldArchiveFullDecisionContext({criticalNeedCode:"HUNGER"}),true);
+  assert.equal(shouldArchiveFullDecisionContext({proactivity:{priority:"HIGH"}}),true);
+});
