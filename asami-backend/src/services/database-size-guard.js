@@ -23,8 +23,7 @@ async function getInnoDBAllocatedSizeBytes(db = pool) {
   const [rows] = await db.query(
     `SELECT COALESCE(SUM(allocated_size), 0) AS bytes
      FROM information_schema.innodb_tablespaces
-     WHERE name LIKE CONCAT(?, '/%')
-        OR name IN ('innodb_system', 'innodb_temporary', 'innodb_undo_001', 'innodb_undo_002')`,
+     WHERE name LIKE CONCAT(?, '/%')`,
     [env.DB_NAME]
   );
   return Number(rows[0]?.bytes || 0);
