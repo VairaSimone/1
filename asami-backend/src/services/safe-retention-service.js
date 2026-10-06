@@ -16,13 +16,41 @@ const adaptiveStateBySimulation = new Map();
 let retentionTelemetryReady = null;
 
 function positiveInt(value, fallback, minimum) {
+  if (value === undefined || value === null || String(value).trim() === "") return fallback;
   const n = Number(value);
   return Number.isFinite(n) ? Math.max(minimum, Math.floor(n)) : fallback;
 }
 
 function boundedNumber(value, fallback, minimum, maximum) {
+  if (value === undefined || value === null || String(value).trim() === "") return fallback;
   const n = Number(value);
   return Number.isFinite(n) ? Math.min(maximum, Math.max(minimum, n)) : fallback;
+}
+
+function normalizeArchiveJson(value) {
+  if (Buffer.isBuffer(value)) value = value.toString("utf8");
+  if (value && typeof value === "object") {
+    try {
+      JSON.stringify(value);
+      return value;
+    } catch {}
+  }
+  if (typeof value === "string") {
+    try {
+      return JSON.parse(value);
+    } catch {
+      return {
+        schemaVersion: 1,
+        _invalidJson: true,
+        _rawContext: value
+      };
+    }
+  }
+  return {
+    schemaVersion: 1,
+    _invalidJson: true,
+    _rawContext: String(value ?? "")
+  };
 }
 
 function simulationTimestampMs(value) {
@@ -601,7 +629,7 @@ async function deleteOldMemories(conn, simulationId, simulationTime) {
 async function compactOldDecisionContexts(conn, simulationId, simulationTime) {
   const cutoff = cutoffDateTime(simulationTime, POLICY.decisionContextDays);
   const archiveCandidatesSql =
-    "SELECT BIN_TO_UUID(d.id) AS decisionId,BIN_TO_UUID(d.entity_id) AS entityId,d.simulation_id AS simulationId,d.simulation_time AS simulationTime,d.context " +
+    "SELECT BIN_TO_UUID(d.id) AS decisionId,BIN_TO_UUID(d.entity_id) AS entityId,d.simulation_id AS simulationId,d.simulation_time AS simulationTime,d.selected_option_id AS selectedOptionId,d.context " +
     "FROM decisions d " +
     "WHERE d.simulation_id=UUID_TO_BIN(?) " +
     "AND d.status IN ('EXECUTED','FAILED','CANCELLED') " +
@@ -623,32 +651,50 @@ async function compactOldDecisionContexts(conn, simulationId, simulationTime) {
   );
 
   let archived=0;
+  const archivedDecisionContexts = [];
   for(const row of rows){
     if(!retentionBudgetAvailable(simulationId))break;
+    const archiveContext = normalizeArchiveJson(row.context);
     await conn.query(
       `INSERT INTO decision_context_archive
        (decision_id,simulation_id,entity_id,simulation_time,context)
        VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?)
-       ON DUPLICATE KEY UPDATE context=VALUES(context),simulation_time=VALUES(simulation_time)`,
-      [row.decisionId,simulationId,row.entityId,row.simulationTime,row.context]
+       ON DUPLICATE KEY UPDATE decision_id=decision_id`,
+      [
+        row.decisionId,
+        simulationId,
+        row.entityId,
+        row.simulationTime,
+        JSON.stringify(archiveContext)
+      ]
     );
+    archivedDecisionContexts.push({
+      decisionId: row.decisionId,
+      selectedOptionId: row.selectedOptionId ? Buffer.isBuffer(row.selectedOptionId)
+        ? row.selectedOptionId.toString("hex")
+        : row.selectedOptionId
+        : null,
+      context: archiveContext
+    });
     archived+=1;
   }
 
-  const archivedIds=rows.slice(0,archived).map(row=>row.decisionId);
-  if(archivedIds.length){
-    const placeholders=archivedIds.map(()=> "UUID_TO_BIN(?)").join(",");
-    await conn.query(
-      "UPDATE decisions SET context=JSON_SET(" +
-        "COALESCE(context,JSON_OBJECT())," +
-        "'$.schemaVersion',4," +
-        "'$.operational',true," +
-        "'$.archived',true," +
-        "'$.chosenAction',JSON_EXTRACT(context,'$.chosenAction')," +
-        "'$.selectedOptionId',IF(selected_option_id IS NULL,NULL,BIN_TO_UUID(selected_option_id))" +
-      ") WHERE id IN ("+placeholders+")",
-      archivedIds
-    );
+  if(archivedDecisionContexts.length){
+    for(const item of archivedDecisionContexts){
+      if(!retentionBudgetAvailable(simulationId))break;
+      const context = item.context && typeof item.context === "object" ? item.context : {};
+      const operationalContext = {
+        schemaVersion: 4,
+        operational: true,
+        archived: true,
+        chosenAction: context.chosenAction ?? null,
+        selectedOptionId: item.selectedOptionId || null
+      };
+      await conn.query(
+        "UPDATE decisions SET context=? WHERE id=UUID_TO_BIN(?)",
+        [JSON.stringify(operationalContext), item.decisionId]
+      );
+    }
   }
 
   const [remaining] = await conn.query(
