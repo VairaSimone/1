@@ -1068,11 +1068,44 @@ async function deleteOldDecisionOptions(conn, simulationId, simulationTime) {
     "JOIN decisions d ON d.id=dopt.decision_id " +
     "WHERE d.simulation_id=UUID_TO_BIN(?) AND d.status IN ('EXECUTED','FAILED','CANCELLED') " +
     "AND d.simulation_time < ?";
-  return deleteSelectedRows(conn,{
-    selectSql,selectParams:[simulationId,cutoff],
-    countSql,countParams:[simulationId,cutoff],
-    deleteTable:"decision_options",resultKey:"deleted"
-  });
+
+  if (POLICY.dryRun) {
+    const [rows]=await conn.query(countSql,[simulationId,cutoff]);
+    const candidates=Number(rows[0]?.candidates||0);
+    return {candidates,deleted:0,remainingCandidates:candidates,dryRun:true};
+  }
+
+  let deleted=0;
+  while(deleted<POLICY.maxDeletesPerTable&&retentionBudgetAvailable(simulationId)){
+    await conn.query(
+      "UPDATE decisions d JOIN decision_options dopt ON dopt.decision_id=d.id " +
+      "SET d.selected_option_id=NULL " +
+      "WHERE d.simulation_id=UUID_TO_BIN(?) " +
+      "AND d.status IN ('EXECUTED','FAILED','CANCELLED') " +
+      "AND d.simulation_time < ? " +
+      "AND d.selected_option_id=dopt.id",
+      [simulationId,cutoff]
+    );
+    const [rows]=await conn.query(selectSql,[simulationId,cutoff]);
+    if(!rows.length)break;
+    const ids=rows.map(row=>row.id).filter(Boolean);
+    if(!ids.length)break;
+    const placeholders=ids.map(()=> "UUID_TO_BIN(?)").join(",");
+    const [result]=await conn.query(
+      "DELETE FROM decision_options WHERE id IN ("+placeholders+")",
+      ids
+    );
+    const affected=Number(result.affectedRows||0);
+    deleted+=affected;
+    if(affected<rows.length)break;
+  }
+
+  const [backlog]=await conn.query(countSql,[simulationId,cutoff]);
+  return {
+    deleted,
+    remainingCandidates:Number(backlog[0]?.candidates||0),
+    budgetExhausted:retentionBudgetRemainingMs(simulationId)<=0
+  };
 }
 
 async function deleteOldTraitHistory(conn, simulationId, simulationTime) {
