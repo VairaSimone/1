@@ -2,6 +2,7 @@ const { pool } = require("../db/pool");
 const { env } = require("../config/env");
 
 const BYTES_PER_MB = 1024 * 1024;
+const DUMP_ESTIMATE_SAFETY_FACTOR = 1.5;
 
 function megabytesToBytes(megabytes) {
   const value = Number(megabytes);
@@ -40,6 +41,16 @@ async function getInnoDBDataAndIndexSizeBytes(db = pool) {
   return Number(rows[0]?.bytes || 0);
 }
 
+async function getLogicalDataSizeBytes(db = pool) {
+  const [rows] = await db.query(
+    `SELECT COALESCE(SUM(data_length), 0) AS bytes
+     FROM information_schema.tables
+     WHERE table_schema = ?`,
+    [env.DB_NAME]
+  );
+  return Number(rows[0]?.bytes || 0);
+}
+
 async function getBinaryLogSizeBytes(db = pool) {
   const [statusRows] = await db.query("SHOW VARIABLES LIKE 'log_bin'");
   const enabled = String(statusRows[0]?.Value || "").trim().toUpperCase() === "ON";
@@ -49,17 +60,28 @@ async function getBinaryLogSizeBytes(db = pool) {
   return rows.reduce((total, row) => total + Math.max(0, Number(row.File_size || 0)), 0);
 }
 
+function estimateDumpSizeBytes(logicalDataBytes) {
+  const dataBytes = Math.max(0, Number(logicalDataBytes) || 0);
+  return Math.ceil(dataBytes * DUMP_ESTIMATE_SAFETY_FACTOR);
+}
+
 async function getDatabaseSizeBreakdown(db = pool) {
-  const [innodbAllocatedBytes, innodbDataAndIndexBytes, binaryLogBytes] = await Promise.all([
+  const [innodbAllocatedBytes, innodbDataAndIndexBytes, logicalDataBytes, binaryLogBytes] = await Promise.all([
     getInnoDBAllocatedSizeBytes(db),
     getInnoDBDataAndIndexSizeBytes(db),
+    getLogicalDataSizeBytes(db),
     getBinaryLogSizeBytes(db)
   ]);
+
+  const estimatedDumpBytes = estimateDumpSizeBytes(logicalDataBytes);
+
   return {
     innodbAllocatedBytes,
     innodbDataAndIndexBytes,
+    logicalDataBytes,
     binaryLogBytes,
-    sizeBytes: innodbAllocatedBytes + binaryLogBytes
+    estimatedDumpBytes,
+    sizeBytes: estimatedDumpBytes
   };
 }
 
@@ -81,7 +103,9 @@ async function checkDatabaseSizeLimit(db = pool) {
       storage: {
         innodbAllocatedBytes: 0,
         innodbDataAndIndexBytes: 0,
-        binaryLogBytes: 0
+        logicalDataBytes: 0,
+        binaryLogBytes: 0,
+        estimatedDumpBytes: 0
       }
     };
   }
@@ -100,12 +124,15 @@ async function checkDatabaseSizeLimit(db = pool) {
 
 module.exports = {
   BYTES_PER_MB,
+  DUMP_ESTIMATE_SAFETY_FACTOR,
   megabytesToBytes,
-  getDatabaseSizeLimitBytes,
   isDatabaseSizeLimitReached,
+  getDatabaseSizeLimitBytes,
   getInnoDBAllocatedSizeBytes,
   getInnoDBDataAndIndexSizeBytes,
+  getLogicalDataSizeBytes,
   getBinaryLogSizeBytes,
+  estimateDumpSizeBytes,
   getDatabaseSizeBreakdown,
   getDatabaseSizeBytes,
   checkDatabaseSizeLimit
