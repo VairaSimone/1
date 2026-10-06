@@ -19,13 +19,41 @@ function isDatabaseSizeLimitReached(sizeBytes, limitBytes = getDatabaseSizeLimit
   return Number.isFinite(size) && Number.isFinite(limit) && limit > 0 && size >= limit;
 }
 
-async function getDatabaseSizeBytes(db = pool) {
+async function getInnoDBAllocatedSizeBytes(db = pool) {
   const [rows] = await db.query(
-    `SELECT COALESCE(SUM(data_length + index_length), 0) AS bytes
-     FROM information_schema.tables
-     WHERE table_schema = DATABASE()`
+    `SELECT COALESCE(SUM(allocated_size), 0) AS bytes
+     FROM information_schema.innodb_tablespaces
+     WHERE name LIKE CONCAT(?, '/%')
+        OR name IN ('innodb_system', 'innodb_temporary', 'innodb_undo_001', 'innodb_undo_002')`,
+    [env.DB_NAME]
   );
   return Number(rows[0]?.bytes || 0);
+}
+
+async function getBinaryLogSizeBytes(db = pool) {
+  const [statusRows] = await db.query("SHOW VARIABLES LIKE 'log_bin'");
+  const enabled = String(statusRows[0]?.Value || "").trim().toUpperCase() === "ON";
+  if (!enabled) return 0;
+
+  const [rows] = await db.query("SHOW BINARY LOGS");
+  return rows.reduce((total, row) => total + Math.max(0, Number(row.File_size || 0)), 0);
+}
+
+async function getDatabaseSizeBreakdown(db = pool) {
+  const [innodbAllocatedBytes, binaryLogBytes] = await Promise.all([
+    getInnoDBAllocatedSizeBytes(db),
+    getBinaryLogSizeBytes(db)
+  ]);
+  return {
+    innodbAllocatedBytes,
+    binaryLogBytes,
+    sizeBytes: innodbAllocatedBytes + binaryLogBytes
+  };
+}
+
+async function getDatabaseSizeBytes(db = pool) {
+  const breakdown = await getDatabaseSizeBreakdown(db);
+  return breakdown.sizeBytes;
 }
 
 async function checkDatabaseSizeLimit(db = pool) {
@@ -37,18 +65,23 @@ async function checkDatabaseSizeLimit(db = pool) {
       limitBytes: 0,
       sizeMb: 0,
       limitMb: 0,
-      reached: false
+      reached: false,
+      storage: {
+        innodbAllocatedBytes: 0,
+        binaryLogBytes: 0
+      }
     };
   }
 
-  const sizeBytes = await getDatabaseSizeBytes(db);
+  const breakdown = await getDatabaseSizeBreakdown(db);
   return {
     enabled: true,
-    sizeBytes,
+    sizeBytes: breakdown.sizeBytes,
     limitBytes,
-    sizeMb: sizeBytes / BYTES_PER_MB,
+    sizeMb: breakdown.sizeBytes / BYTES_PER_MB,
     limitMb: limitBytes / BYTES_PER_MB,
-    reached: isDatabaseSizeLimitReached(sizeBytes, limitBytes)
+    reached: isDatabaseSizeLimitReached(breakdown.sizeBytes, limitBytes),
+    storage: breakdown
   };
 }
 
@@ -57,6 +90,9 @@ module.exports = {
   megabytesToBytes,
   getDatabaseSizeLimitBytes,
   isDatabaseSizeLimitReached,
+  getInnoDBAllocatedSizeBytes,
+  getBinaryLogSizeBytes,
+  getDatabaseSizeBreakdown,
   getDatabaseSizeBytes,
   checkDatabaseSizeLimit
 };
