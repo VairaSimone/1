@@ -202,6 +202,10 @@ async function getOldestRetentionDebtAt(conn, simulationId, simulationTime) {
     "AND a.completed_simulation_at IS NOT NULL AND a.completed_simulation_at < ? " +
     "AND JSON_EXTRACT(d.actual_outcome,'$.actionSummary') IS NULL " +
     "UNION ALL " +
+    "SELECT t.simulation_time FROM simulation_ticks t " +
+    "WHERE t.simulation_id=UUID_TO_BIN(?) AND t.status IN ('COMPLETED','FAILED','SKIPPED') " +
+    "AND t.simulation_time < ? " +
+    "UNION ALL " +
     "SELECT dca.simulation_time FROM decision_context_archive dca " +
     "WHERE dca.simulation_id=UUID_TO_BIN(?) " +
     "AND dca.simulation_time < ?" +
@@ -213,6 +217,7 @@ async function getOldestRetentionDebtAt(conn, simulationId, simulationTime) {
       simulationId, importantThreshold, eventCutoff, importantEventCutoff,
       simulationId, actionCutoff,
       simulationId, actionCutoff,
+      simulationId, cutoffDateTime(simulationTime, POLICY.simulationTickDays),
       simulationId, cutoffDateTime(simulationTime, POLICY.decisionContextArchiveDays)
     ]
   );
@@ -324,6 +329,7 @@ const POLICY = Object.freeze({
   needHistoryDays: positiveInt(process.env.RETENTION_NEED_HISTORY_DAYS, 3, 1),
   emotionHistoryDays: positiveInt(process.env.RETENTION_EMOTION_HISTORY_DAYS, 3, 1),
   actionDays: positiveInt(process.env.RETENTION_ACTION_DAYS, 7, 1),
+  simulationTickDays: positiveInt(process.env.RETENTION_SIMULATION_TICK_DAYS, 2, 1),
   intentionDays: positiveInt(process.env.RETENTION_INTENTION_DAYS, 7, 1),
   decisionDays: positiveInt(process.env.RETENTION_DECISION_DAYS, 30, 7),
   decisionOptionDays: positiveInt(process.env.RETENTION_DECISION_OPTION_DAYS, 7, 3),
@@ -944,6 +950,29 @@ async function deleteResolvedCounterfactualWorlds(conn, simulationId, simulation
   };
 }
 
+async function deleteOldSimulationTicks(conn, simulationId, simulationTime) {
+  const cutoff = cutoffDateTime(simulationTime, POLICY.simulationTickDays);
+  const selectSql =
+    "SELECT BIN_TO_UUID(t.id) AS id FROM simulation_ticks t " +
+    "WHERE t.simulation_id=UUID_TO_BIN(?) " +
+    "AND t.status IN ('COMPLETED','FAILED','SKIPPED') " +
+    "AND t.simulation_time < ? " +
+    "ORDER BY t.simulation_time ASC LIMIT " + POLICY.batchSize;
+  const countSql =
+    "SELECT COUNT(*) AS candidates FROM simulation_ticks t " +
+    "WHERE t.simulation_id=UUID_TO_BIN(?) " +
+    "AND t.status IN ('COMPLETED','FAILED','SKIPPED') " +
+    "AND t.simulation_time < ?";
+  return deleteSelectedRows(conn, {
+    selectSql,
+    selectParams: [simulationId, cutoff],
+    countSql,
+    countParams: [simulationId, cutoff],
+    deleteTable: "simulation_ticks",
+    resultKey: "deleted"
+  });
+}
+
 async function deleteOldEvents(conn, simulationId, simulationTime) {
   const cutoff = cutoffDateTime(simulationTime, POLICY.eventDays);
   const importantCutoff = cutoffDateTime(simulationTime, POLICY.importantEventDays);
@@ -1438,11 +1467,12 @@ async function runSafeRetention(simulationId, simulationTime) {
   const adaptiveProfile = getAdaptiveRetentionProfile(previousState?.overloadStreak || 0);
   retentionDeadlineAt.set(simulationId, Date.now() + adaptiveProfile.timeBudgetMs);
   try {
-    // Prioritize the two unbounded histories first. Their producers are continuous,
+    // Prioritize continuous histories and simulation tick cleanup first. Their producers are continuous,
     // so leaving them to the end of the cycle lets slower cognitive cleanup consume
     // the whole retention budget and the backlog never catches up.
     const needs = await deleteOldNeedHistory(lock.conn, simulationId, mysqlSimulationTime);
     const emotions = await deleteOldEmotionHistory(lock.conn, simulationId, mysqlSimulationTime);
+    const simulationTicks = await deleteOldSimulationTicks(lock.conn, simulationId, mysqlSimulationTime);
     const events = await withEventWriteLock(
       simulationId,
       conn => deleteOldEvents(conn, simulationId, mysqlSimulationTime),
@@ -1491,6 +1521,7 @@ async function runSafeRetention(simulationId, simulationTime) {
       actionsDeleted: Number(actions.deleted || 0),
       needHistoryDeleted: Number(needs.deleted || 0),
       emotionHistoryDeleted: Number(emotions.deleted || 0),
+      simulationTicksDeleted: Number(simulationTicks.deleted || 0),
       cognitiveStatesCompacted: Number(cognitiveStates.deleted || 0),
       societyWealthCompacted: Number(societyWealth.deleted || 0),
       societyTradesDeleted: Number(societyTrades.deleted || 0),
@@ -1520,6 +1551,7 @@ async function runSafeRetention(simulationId, simulationTime) {
       actionCandidates: Number(actions.candidates || 0),
       needHistoryCandidates: Number(needs.candidates || 0),
       emotionHistoryCandidates: Number(emotions.candidates || 0),
+      simulationTickCandidates: Number(simulationTicks.candidates || 0),
       memoryArchiveCandidates: Number(memoryArchive.candidates || 0),
       memoryDeleteCandidates: Number(memories.candidates || 0),
       expectationCandidates: Number(expectations.candidates || 0),
@@ -1527,6 +1559,7 @@ async function runSafeRetention(simulationId, simulationTime) {
       counterfactualWorldCandidates: Number(worlds.candidates || 0),
       needHistoryBacklog: Number(needs.remainingCandidates || 0),
       emotionHistoryBacklog: Number(emotions.remainingCandidates || 0),
+      simulationTickBacklog: Number(simulationTicks.remainingCandidates || 0),
       eventBacklog: Number(events.remainingCandidates || 0),
       actionBacklog: Number(actions.remainingCandidates || 0),
       memoryArchiveBacklog: Number(memoryArchive.remainingCandidates || 0),
@@ -1539,6 +1572,7 @@ async function runSafeRetention(simulationId, simulationTime) {
       retentionBacklogTotal:
         Number(needs.remainingCandidates || 0) +
         Number(emotions.remainingCandidates || 0) +
+        Number(simulationTicks.remainingCandidates || 0) +
         Number(events.remainingCandidates || 0) +
         Number(actions.remainingCandidates || 0) +
         Number(actionSummaries.remainingCandidates || 0) +
@@ -1563,6 +1597,7 @@ async function runSafeRetention(simulationId, simulationTime) {
     const resolvedRows =
       Number(needs.deleted || 0) +
       Number(emotions.deleted || 0) +
+      Number(simulationTicks.deleted || 0) +
       Number(events.deleted || 0) +
       Number(actionSummaries.updated || 0) +
       Number(actions.deleted || 0) +
@@ -1611,6 +1646,7 @@ async function runSafeRetention(simulationId, simulationTime) {
           backlogRows:summary.retentionBacklogTotal,
           needHistoryBacklog:summary.needHistoryBacklog,
           emotionHistoryBacklog:summary.emotionHistoryBacklog,
+          simulationTickBacklog:summary.simulationTickBacklog,
           relationshipHistoryBacklog:summary.relationshipHistoryBacklog,
           actionBacklog:summary.actionBacklog,
           actionDecisionSummaryBacklog:summary.actionDecisionSummaryBacklog,
@@ -1632,6 +1668,7 @@ async function runSafeRetention(simulationId, simulationTime) {
       summary.actionsDeleted ||
       summary.needHistoryDeleted ||
       summary.emotionHistoryDeleted ||
+      summary.simulationTicksDeleted ||
       summary.memoriesArchived ||
       summary.memoriesDeleted ||
       summary.episodicMemoryCapArchived ||
@@ -1654,6 +1691,7 @@ async function runSafeRetention(simulationId, simulationTime) {
         ["actions",summary.actionsDeleted],
         ["needHistory",summary.needHistoryDeleted],
         ["emotionHistory",summary.emotionHistoryDeleted],
+        ["simulationTicks",summary.simulationTicksDeleted],
         ["memoryDedupe",summary.memoriesDeduped],
         ["memoryCapArchived",summary.episodicMemoryCapArchived],
         ["expectationCaps",summary.cognitiveExpectationsCapped],
