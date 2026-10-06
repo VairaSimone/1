@@ -2,6 +2,8 @@ services:
   asami-db:
     image: mysql:8.4
     restart: unless-stopped
+    command:
+      - --skip-log-bin
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD must be set}
     volumes:
