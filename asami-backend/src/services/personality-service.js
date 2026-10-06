@@ -82,14 +82,28 @@ async function getCognitiveProfiles(simulationId, entityIds=[]) {
   for(const row of plans){const profile=byEntity.get(row.entityId);if(profile)profile.plans.push({...row,strategy:parseJson(row.strategy,{}),steps:stepsByPlan.get(row.id)||[]});}
   return byEntity;
 }
-async function updateMentalState(simulationId, entityId, simulationTime, patch = {}) {
+async function updateMentalState(
+  simulationId,
+  entityId,
+  simulationTime,
+  patch = {},
+  { skipIfUnchanged = false, minSimulationIntervalMinutes = 0 } = {}
+) {
   return withEntityStateLock(entityId, async db => {
     for (let attempt = 0; attempt < 3; attempt += 1) {
-      const [rows] = await db.query(`SELECT attributes,version FROM entities WHERE simulation_id=UUID_TO_BIN(?) AND id=UUID_TO_BIN(?) LIMIT 1`, [simulationId, entityId]);
+      const [rows] = await db.query(
+        `SELECT attributes,version
+         FROM entities
+         WHERE simulation_id=UUID_TO_BIN(?) AND id=UUID_TO_BIN(?)
+         LIMIT 1`,
+        [simulationId, entityId]
+      );
       if (!rows.length) return null;
       const attributes = parseJson(rows[0].attributes, {}) || {};
-      const previous = attributes.mentalState && typeof attributes.mentalState === 'object' ? attributes.mentalState : {};
-      attributes.mentalState = {
+      const previous = attributes.mentalState && typeof attributes.mentalState === 'object'
+        ? attributes.mentalState
+        : {};
+      const nextState = {
         currentFocus: patch.currentFocus !== undefined ? safeText(patch.currentFocus,180)||null : previous.currentFocus||null,
         currentConcern: patch.currentConcern !== undefined ? safeText(patch.currentConcern,180)||null : previous.currentConcern||null,
         recentThought: patch.recentThought !== undefined ? safeText(patch.recentThought,300)||null : previous.recentThought||null,
@@ -98,11 +112,39 @@ async function updateMentalState(simulationId, entityId, simulationTime, patch =
         certainty: clamp01(patch.certainty ?? previous.certainty ?? .5),
         updatedSimulationAt: simulationTime
       };
-      const [updated] = await db.query(`UPDATE entities SET attributes=?,version=version+1 WHERE simulation_id=UUID_TO_BIN(?) AND id=UUID_TO_BIN(?) AND version=?`, [JSON.stringify(attributes),simulationId,entityId,rows[0].version]);
-      if (updated.affectedRows) return attributes.mentalState;
+
+      if (skipIfUnchanged && isMentalStateEquivalent(previous, nextState)) {
+        const elapsedMinutes = simulationSimulationMinutesElapsed(previous.updatedSimulationAt, simulationTime);
+        if (elapsedMinutes < Math.max(0, Number(minSimulationIntervalMinutes) || 0)) {
+          return previous;
+        }
+      }
+
+      attributes.mentalState = nextState;
+      const [updated] = await db.query(
+        `UPDATE entities
+         SET attributes=?,version=version+1
+         WHERE simulation_id=UUID_TO_BIN(?) AND id=UUID_TO_BIN(?) AND version=?`,
+        [JSON.stringify(attributes), simulationId, entityId, rows[0].version]
+      );
+      if (updated.affectedRows) return nextState;
     }
     return null;
   });
+}
+function simulationSimulationMinutesElapsed(previous, current) {
+  const previousMs = new Date(previous || 0).getTime();
+  const currentMs = new Date(current || 0).getTime();
+  if (!Number.isFinite(previousMs) || !Number.isFinite(currentMs) || currentMs < previousMs) return Number.POSITIVE_INFINITY;
+  return (currentMs - previousMs) / 60000;
+}
+function isMentalStateEquivalent(previous = {}, next = {}) {
+  return String(previous.currentFocus || "") === String(next.currentFocus || "") &&
+    String(previous.currentConcern || "") === String(next.currentConcern || "") &&
+    String(previous.recentThought || "") === String(next.recentThought || "") &&
+    Math.abs(Number(previous.mentalLoad || 0) - Number(next.mentalLoad || 0)) < 0.03 &&
+    Math.abs(Number(previous.rumination || 0) - Number(next.rumination || 0)) < 0.03 &&
+    Math.abs(Number(previous.certainty || 0) - Number(next.certainty || 0)) < 0.03;
 }
 function deriveMentalPressure(needs=[]){
   const policies={
@@ -148,7 +190,7 @@ async function refreshMentalStateFromSimulation({simulationId,entityId,simulatio
     currentFocus,
     currentConcern,
     mentalLoad:deriveMentalLoad(needs,activeActionType)
-  });
+  },{skipIfUnchanged:true,minSimulationIntervalMinutes:30});
 }
 
 async function upsertPreference({ simulationId, entityId, simulationTime, item }) {
