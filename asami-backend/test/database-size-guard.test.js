@@ -47,6 +47,25 @@ test("database storage guard includes allocated InnoDB tablespaces and retained 
   assert.equal(breakdown.sizeBytes, 1084751872);
 });
 
+test("database storage guard scopes InnoDB allocation to the Asami schema",()=>{
+  const { getInnoDBAllocatedSizeBytes } = require("../src/services/database-size-guard");
+  let receivedSql="";
+  const fakeDb = {
+    query: async (sql) => {
+      receivedSql=sql;
+      return [[{ bytes: "10485760" }]];
+    }
+  };
+  return getInnoDBAllocatedSizeBytes(fakeDb).then(bytes=>{
+    assert.equal(bytes,10485760);
+    assert.match(receivedSql,/name LIKE CONCAT\(\?, '\/%'\)/);
+    assert.doesNotMatch(receivedSql,/innodb_system/);
+    assert.doesNotMatch(receivedSql,/innodb_temporary/);
+    assert.doesNotMatch(receivedSql,/innodb_undo_001/);
+    assert.doesNotMatch(receivedSql,/innodb_undo_002/);
+  });
+});
+
 test("database storage guard ignores binary logs when binary logging is disabled", async () => {
   const { getDatabaseSizeBreakdown } = require("../src/services/database-size-guard");
   const fakeDb = {
