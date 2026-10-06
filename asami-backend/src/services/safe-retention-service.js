@@ -952,25 +952,73 @@ async function deleteResolvedCounterfactualWorlds(conn, simulationId, simulation
 
 async function deleteOldSimulationTicks(conn, simulationId, simulationTime) {
   const cutoff = cutoffDateTime(simulationTime, POLICY.simulationTickDays);
-  const selectSql =
-    "SELECT BIN_TO_UUID(t.id) AS id FROM simulation_ticks t " +
-    "WHERE t.simulation_id=UUID_TO_BIN(?) " +
-    "AND t.status IN ('COMPLETED','FAILED','SKIPPED') " +
-    "AND t.simulation_time < ? " +
-    "ORDER BY t.simulation_time ASC LIMIT " + POLICY.batchSize;
   const countSql =
     "SELECT COUNT(*) AS candidates FROM simulation_ticks t " +
     "WHERE t.simulation_id=UUID_TO_BIN(?) " +
     "AND t.status IN ('COMPLETED','FAILED','SKIPPED') " +
     "AND t.simulation_time < ?";
-  return deleteSelectedRows(conn, {
-    selectSql,
-    selectParams: [simulationId, cutoff],
-    countSql,
-    countParams: [simulationId, cutoff],
-    deleteTable: "simulation_ticks",
-    resultKey: "deleted"
-  });
+
+  if (POLICY.dryRun) {
+    const [rows] = await conn.query(countSql, [simulationId, cutoff]);
+    const candidates = Number(rows[0]?.candidates || 0);
+    return {
+      deleted: 0,
+      candidates,
+      remainingCandidates: candidates,
+      eventsDetached: 0,
+      dryRun: true
+    };
+  }
+
+  let deleted = 0;
+  let eventsDetached = 0;
+  while (deleted < POLICY.maxDeletesPerTable && retentionBudgetAvailable(simulationId)) {
+    const limit = Math.min(POLICY.batchSize, POLICY.maxDeletesPerTable - deleted);
+    const [rows] = await conn.query(
+      "SELECT BIN_TO_UUID(t.id) AS id FROM simulation_ticks t " +
+      "WHERE t.simulation_id=UUID_TO_BIN(?) " +
+      "AND t.status IN ('COMPLETED','FAILED','SKIPPED') " +
+      "AND t.simulation_time < ? " +
+      "ORDER BY t.simulation_time ASC LIMIT " + limit,
+      [simulationId, cutoff]
+    );
+    if (!rows.length) break;
+
+    const ids = rows.map(row => row.id).filter(Boolean);
+    if (!ids.length) break;
+    const placeholders = ids.map(() => "UUID_TO_BIN(?)").join(",");
+
+    // Events outlive ticks. source_tick_id is only provenance metadata, so
+    // detach that optional reference before removing the tick. Keeping the
+    // event itself preserves the longer event retention policy.
+    const [detached] = await conn.query(
+      "UPDATE events " +
+      "SET source_tick_id=NULL " +
+      "WHERE simulation_id=UUID_TO_BIN(?) " +
+      "AND source_tick_id IN (" + placeholders + ")",
+      [simulationId, ...ids]
+    );
+    eventsDetached += Number(detached.affectedRows || 0);
+
+    const [result] = await conn.query(
+      "DELETE FROM simulation_ticks WHERE id IN (" + placeholders + ") " +
+      "AND simulation_id=UUID_TO_BIN(?) " +
+      "AND status IN ('COMPLETED','FAILED','SKIPPED')",
+      [...ids, simulationId]
+    );
+    const affected = Number(result.affectedRows || 0);
+    deleted += affected;
+    if (affected < rows.length) break;
+  }
+
+  const [backlog] = await conn.query(countSql, [simulationId, cutoff]);
+  return {
+    deleted,
+    candidates: Number(backlog[0]?.candidates || 0) + deleted,
+    remainingCandidates: Number(backlog[0]?.candidates || 0),
+    eventsDetached,
+    budgetExhausted: retentionBudgetRemainingMs(simulationId) <= 0
+  };
 }
 
 async function deleteOldEvents(conn, simulationId, simulationTime) {
@@ -1522,6 +1570,7 @@ async function runSafeRetention(simulationId, simulationTime) {
       needHistoryDeleted: Number(needs.deleted || 0),
       emotionHistoryDeleted: Number(emotions.deleted || 0),
       simulationTicksDeleted: Number(simulationTicks.deleted || 0),
+      simulationTickEventsDetached: Number(simulationTicks.eventsDetached || 0),
       cognitiveStatesCompacted: Number(cognitiveStates.deleted || 0),
       societyWealthCompacted: Number(societyWealth.deleted || 0),
       societyTradesDeleted: Number(societyTrades.deleted || 0),
@@ -1692,6 +1741,7 @@ async function runSafeRetention(simulationId, simulationTime) {
         ["needHistory",summary.needHistoryDeleted],
         ["emotionHistory",summary.emotionHistoryDeleted],
         ["simulationTicks",summary.simulationTicksDeleted],
+        ["simulationTickEventsDetached",summary.simulationTickEventsDetached],
         ["memoryDedupe",summary.memoriesDeduped],
         ["memoryCapArchived",summary.episodicMemoryCapArchived],
         ["expectationCaps",summary.cognitiveExpectationsCapped],
@@ -1751,6 +1801,10 @@ async function maybeRunSafeRetention(simulationId, simulationTime) {
     }
     return result;
   } catch (err) {
+    // Do not retry a failed retention cycle on every engine tick. That can
+    // turn one schema/data issue into a continuous error storm.
+    lastRunAt.set(simulationId, now);
+    if (Number.isFinite(simulationMs)) lastRunSimulationAt.set(simulationId, simulationMs);
     logger.error({ simulationId, simulationTime, err }, "safe retention cycle failed");
     return { skipped: true, reason: "error" };
   } finally {
