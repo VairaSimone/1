@@ -601,7 +601,7 @@ async function deleteOldMemories(conn, simulationId, simulationTime) {
 async function compactOldDecisionContexts(conn, simulationId, simulationTime) {
   const cutoff = cutoffDateTime(simulationTime, POLICY.decisionContextDays);
   const archiveCandidatesSql =
-    "SELECT BIN_TO_UUID(d.id) AS decisionId,d.entity_id AS entityId,d.simulation_id AS simulationId,d.simulation_time AS simulationTime,d.context " +
+    "SELECT BIN_TO_UUID(d.id) AS decisionId,BIN_TO_UUID(d.entity_id) AS entityId,d.simulation_id AS simulationId,d.simulation_time AS simulationTime,d.context " +
     "FROM decisions d " +
     "WHERE d.simulation_id=UUID_TO_BIN(?) " +
     "AND d.status IN ('EXECUTED','FAILED','CANCELLED') " +
