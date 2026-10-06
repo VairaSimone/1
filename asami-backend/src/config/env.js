@@ -128,6 +128,7 @@ const Env = z.object({
   RETENTION_NEED_HISTORY_DAYS: z.coerce.number().int().min(1).default(3),
   RETENTION_EMOTION_HISTORY_DAYS: z.coerce.number().int().min(1).default(3),
   RETENTION_ACTION_DAYS: z.coerce.number().int().min(1).default(7),
+  RETENTION_SIMULATION_TICK_DAYS: z.coerce.number().int().min(1).default(2),
   RETENTION_EVENT_DAYS: z.coerce.number().int().min(1).default(7),
   RETENTION_IMPORTANT_EVENT_DAYS: z.coerce.number().int().min(7).default(30),
   RETENTION_MEMORY_ARCHIVE_DAYS: z.coerce.number().int().min(7).default(21),
