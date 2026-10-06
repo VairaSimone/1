@@ -31,6 +31,7 @@ const EMOTION_HISTORY_MIN_SIMULATION_INTERVAL_MINUTES = nonNegativeEnvNumber(
   process.env.EMOTION_HISTORY_MIN_SIMULATION_INTERVAL_MINUTES,
   360
 );
+const TRAIT_HISTORY_MIN_DELTA = nonNegativeEnvNumber(process.env.TRAIT_HISTORY_MIN_DELTA, 0.001);
 const pendingNeedHistory = new Map();
 const pendingEmotionHistory = new Map();
 const lastNeedHistoryPersistedAt = new Map();
