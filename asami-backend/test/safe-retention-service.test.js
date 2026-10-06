@@ -333,7 +333,8 @@ test("decision context archival preserves invalid raw context and never overwrit
   const path=require("node:path");
   const source=fs.readFileSync(path.join(__dirname,"../src/services/safe-retention-service.js"),"utf8");
   assert.match(source,/ON DUPLICATE KEY UPDATE decision_id=decision_id/);
-  assert.match(source,/JSON\.stringify\(archiveContext\)/);
+  assert.match(source,/serializeArchiveJson\(archiveContext\)/);
+  assert.match(source,/function serializeArchiveJson\(value\)/);
   assert.match(source,/BIN_TO_UUID\(d\.selected_option_id\) AS selectedOptionId/);
   assert.match(source,/UPDATE decisions SET context=\? WHERE id=UUID_TO_BIN\(\?\)/);
   assert.match(source,/JSON_VALID\(d\.context\)/);
