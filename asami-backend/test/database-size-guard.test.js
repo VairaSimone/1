@@ -44,7 +44,7 @@ test("database storage guard includes allocated InnoDB tablespaces and retained 
   const breakdown = await getDatabaseSizeBreakdown(fakeDb);
   assert.equal(breakdown.innodbAllocatedBytes, 10485760);
   assert.equal(breakdown.binaryLogBytes, 1074266112);
-  assert.equal(breakdown.sizeBytes, 1084749824);
+  assert.equal(breakdown.sizeBytes, 1084751872);
 });
 
 test("database storage guard ignores binary logs when binary logging is disabled", async () => {
