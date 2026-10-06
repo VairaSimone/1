@@ -6,14 +6,35 @@ const { loadNeedIndividualization } = require("./need-individualization-service"
 
 function round5(value) { return Math.round((Number(value) + Number.EPSILON) * 100000) / 100000; }
 function parseJson(value, fallback = {}) { if (value === null || value === undefined) return fallback; if (typeof value === "object") return value; try { return JSON.parse(value); } catch { return fallback; } }
-const NEED_HISTORY_MIN_DELTA = Number.isFinite(Number(process.env.NEED_HISTORY_MIN_DELTA))
-  ? Math.max(0, Number(process.env.NEED_HISTORY_MIN_DELTA))
-  : 0.01;
-const EMOTION_HISTORY_MIN_DELTA = Number.isFinite(Number(process.env.EMOTION_HISTORY_MIN_DELTA))
-  ? Math.max(0, Number(process.env.EMOTION_HISTORY_MIN_DELTA))
-  : 0.01;
+function nonNegativeEnvNumber(value, fallback) {
+  if (value === undefined || value === null || String(value).trim() === "") return fallback;
+  const number = Number(value);
+  return Number.isFinite(number) ? Math.max(0, number) : fallback;
+}
+function simulationMinutesElapsed(previous, current) {
+  const previousMs = new Date(previous).getTime();
+  const currentMs = new Date(current).getTime();
+  if (!Number.isFinite(previousMs) || !Number.isFinite(currentMs) || currentMs < previousMs) return Number.POSITIVE_INFINITY;
+  return (currentMs - previousMs) / 60000;
+}
+function historyIntervalElapsed(lastPersistedAt, simulationTime, minimumMinutes) {
+  if (!lastPersistedAt || minimumMinutes <= 0) return true;
+  return simulationMinutesElapsed(lastPersistedAt, simulationTime) >= minimumMinutes;
+}
+const NEED_HISTORY_MIN_DELTA = nonNegativeEnvNumber(process.env.NEED_HISTORY_MIN_DELTA, 0.01);
+const EMOTION_HISTORY_MIN_DELTA = nonNegativeEnvNumber(process.env.EMOTION_HISTORY_MIN_DELTA, 0.01);
+const NEED_HISTORY_MIN_SIMULATION_INTERVAL_MINUTES = nonNegativeEnvNumber(
+  process.env.NEED_HISTORY_MIN_SIMULATION_INTERVAL_MINUTES,
+  15
+);
+const EMOTION_HISTORY_MIN_SIMULATION_INTERVAL_MINUTES = nonNegativeEnvNumber(
+  process.env.EMOTION_HISTORY_MIN_SIMULATION_INTERVAL_MINUTES,
+  15
+);
 const pendingNeedHistory = new Map();
 const pendingEmotionHistory = new Map();
+const lastNeedHistoryPersistedAt = new Map();
+const lastEmotionHistoryPersistedAt = new Map();
 const initializedEntityState = new Set();
 const ENTITY_STATE_LOCK_TIMEOUT_SECONDS = Number.isFinite(Number(process.env.ENTITY_STATE_LOCK_TIMEOUT_SECONDS))
   ? Math.max(0, Math.min(15, Number(process.env.ENTITY_STATE_LOCK_TIMEOUT_SECONDS)))
@@ -48,12 +69,12 @@ const CRITICAL_NEED_THRESHOLDS = Object.freeze({
   SAFETY: { direction: "LOW", threshold: 0.2 }
 });
 
-function historyScopeKey(kind, entityId, stateId, causeActionId = null, causeEventId = null, simulationTime = null) {
+function historyScopeKey(kind, entityId, stateId, causeActionId = null, causeEventId = null) {
   const cause = causeActionId
     ? `action:${causeActionId}`
     : causeEventId
       ? `event:${causeEventId}`
-      : `time:${String(simulationTime || "")}`;
+      : "background";
   return `${kind}:${entityId}:${stateId}:${cause}`;
 }
 
@@ -98,7 +119,18 @@ async function accumulateNeedHistory({ entityId, needId, code, oldValue, newValu
   pendingNeedHistory.set(key, pending);
 
   const critical = crossesCriticalNeedThreshold(code, pending.oldValue, pending.newValue);
+  const forcePersist = Boolean(significant || critical);
+  const backgroundHistory = !pending.causeActionId && !pending.causeEventId;
   if (!shouldPersistHistory({ delta: pending.delta, significant, critical, threshold: NEED_HISTORY_MIN_DELTA })) return false;
+  if (
+    backgroundHistory &&
+    !forcePersist &&
+    !historyIntervalElapsed(
+      lastNeedHistoryPersistedAt.get(key),
+      pending.simulationTime,
+      NEED_HISTORY_MIN_SIMULATION_INTERVAL_MINUTES
+    )
+  ) return false;
 
   const matchCondition = pending.causeActionId
     ? `entity_id=UUID_TO_BIN(?) AND need_id=UUID_TO_BIN(?) AND cause_action_id=UUID_TO_BIN(?)`
@@ -135,6 +167,7 @@ async function accumulateNeedHistory({ entityId, needId, code, oldValue, newValu
           existing.id
         ]
       );
+      if (backgroundHistory) lastNeedHistoryPersistedAt.set(key, pending.simulationTime);
       pendingNeedHistory.delete(key);
       return true;
     }
@@ -156,6 +189,7 @@ async function accumulateNeedHistory({ entityId, needId, code, oldValue, newValu
       pending.causeActionId
     ]
   );
+  if (backgroundHistory) lastNeedHistoryPersistedAt.set(key, pending.simulationTime);
   pendingNeedHistory.delete(key);
   return true;
 }
@@ -187,7 +221,18 @@ async function accumulateEmotionHistory({ entityId, emotionId, code, oldIntensit
   pending.causeActionId = causeActionId || pending.causeActionId || null;
   pendingEmotionHistory.set(key, pending);
 
+  const forcePersist = Boolean(significant);
+  const backgroundHistory = !pending.causeActionId && !pending.causeEventId;
   if (!shouldPersistHistory({ delta: pending.delta, significant, threshold: EMOTION_HISTORY_MIN_DELTA })) return false;
+  if (
+    backgroundHistory &&
+    !forcePersist &&
+    !historyIntervalElapsed(
+      lastEmotionHistoryPersistedAt.get(key),
+      pending.simulationTime,
+      EMOTION_HISTORY_MIN_SIMULATION_INTERVAL_MINUTES
+    )
+  ) return false;
 
   const matchCondition = pending.causeActionId
     ? `entity_id=UUID_TO_BIN(?) AND emotion_id=UUID_TO_BIN(?) AND cause_action_id=UUID_TO_BIN(?)`
@@ -224,6 +269,7 @@ async function accumulateEmotionHistory({ entityId, emotionId, code, oldIntensit
           existing.id
         ]
       );
+      if (backgroundHistory) lastEmotionHistoryPersistedAt.set(key, pending.simulationTime);
       pendingEmotionHistory.delete(key);
       return true;
     }
@@ -245,6 +291,7 @@ async function accumulateEmotionHistory({ entityId, emotionId, code, oldIntensit
       pending.causeActionId
     ]
   );
+  if (backgroundHistory) lastEmotionHistoryPersistedAt.set(key, pending.simulationTime);
   pendingEmotionHistory.delete(key);
   return true;
 }
