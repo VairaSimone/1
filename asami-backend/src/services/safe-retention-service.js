@@ -635,7 +635,14 @@ async function compactOldDecisionContexts(conn, simulationId, simulationTime) {
     "AND d.status IN ('EXECUTED','FAILED','CANCELLED') " +
     "AND d.simulation_time < ? " +
     "AND d.context IS NOT NULL " +
-    "AND (JSON_VALID(d.context)=0 OR COALESCE(JSON_UNQUOTE(JSON_EXTRACT(d.context,'$.operational')),'false') <> 'true')";
+    "AND COALESCE(
+      IF(
+        JSON_VALID(d.context),
+        JSON_UNQUOTE(JSON_EXTRACT(d.context,'$.operational')),
+        'false'
+      ),
+      'false'
+    ) <> 'true'";
 
   if (POLICY.dryRun) {
     const [rows] = await conn.query(
@@ -700,7 +707,14 @@ async function compactOldDecisionContexts(conn, simulationId, simulationTime) {
     "AND d.status IN ('EXECUTED','FAILED','CANCELLED') " +
     "AND d.simulation_time < ? " +
     "AND d.context IS NOT NULL " +
-    "AND (JSON_VALID(d.context)=0 OR COALESCE(JSON_UNQUOTE(JSON_EXTRACT(d.context,'$.operational')),'false') <> 'true')",
+    "AND COALESCE(
+      IF(
+        JSON_VALID(d.context),
+        JSON_UNQUOTE(JSON_EXTRACT(d.context,'$.operational')),
+        'false'
+      ),
+      'false'
+    ) <> 'true'",
     [simulationId,cutoff]
   );
 
