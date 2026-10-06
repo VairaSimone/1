@@ -994,6 +994,24 @@ function validateCriticalDecision(needs = [], actionType, targetLocationId = nul
   return requirement;
 }
 
+function shouldArchiveFullDecisionContext({
+  selectionMode = null,
+  criticalNeedCode = null,
+  criticalAction = null,
+  criticalResourceRecovery = null,
+  proactivity = null,
+  triggerType = null,
+  aiChoice = null
+} = {}) {
+  if (aiChoice) return true;
+  if (criticalNeedCode || criticalAction || criticalResourceRecovery) return true;
+  if (selectionMode === "PLAN_COMMITMENT") return true;
+  if (String(proactivity?.priority || "").toUpperCase() === "HIGH") return true;
+  if (triggerType) return true;
+  return false;
+}
+
+
 async function makeDecision({
   simulationId,
   entityId,
@@ -1195,36 +1213,47 @@ async function makeDecision({
   const predictedSuccessProbability=calibratedSuccessProbability({action:chosen,candidates,context});
   const expectedOutcome={actionType:chosen,targetEntityId:selectedTargetEntityId,targetLocationId:selectedTargetLocationId,strategy:selectedStrategy,planProposal:selectedPlanProposal,predictedSuccessProbability,calibrationSamples:0,lastObservedOutcome:null,calibrationErrorEma:0};
   const optionId = uuid();
-  const fullDecisionContext = JSON.stringify(
-    compactDecisionContext({
-      ...context,
-      proactivity,
-      needPriority,
-      selectionMode,
-      chosenAction: chosen,
-      criticalNeed: criticalNeedCode,
-      criticalAction,
-      criticalResourceRecovery: criticalResourceRecovery
-        ? {
-            code: criticalResourceRecovery.critical.code,
-            resource: criticalResourceRecovery.critical.resource,
-            mode: criticalResourceRecovery.mode,
-            targetLocationId: criticalResourceRecovery.candidate?.targetLocationId || null
-          }
-        : null,
-      individuality: individualityBias(entityId, chosen),
-      candidates,
-      aiProposal: aiProposalSnapshot,
-      validatedDecision: {
-        actionType: chosen,
-        targetEntityId: selectedTargetEntityId,
-        targetLocationId: selectedTargetLocationId,
-        selectionMode,
-        transformation
-      },
-      aiChoice: aiChoice || null
-    })
-  );
+  const archiveFullDecisionContext = shouldArchiveFullDecisionContext({
+    selectionMode,
+    criticalNeedCode,
+    criticalAction,
+    criticalResourceRecovery,
+    proactivity,
+    triggerType,
+    aiChoice
+  });
+  const fullDecisionContext = archiveFullDecisionContext
+    ? JSON.stringify(
+        compactDecisionContext({
+          ...context,
+          proactivity,
+          needPriority,
+          selectionMode,
+          chosenAction: chosen,
+          criticalNeed: criticalNeedCode,
+          criticalAction,
+          criticalResourceRecovery: criticalResourceRecovery
+            ? {
+                code: criticalResourceRecovery.critical.code,
+                resource: criticalResourceRecovery.critical.resource,
+                mode: criticalResourceRecovery.mode,
+                targetLocationId: criticalResourceRecovery.candidate?.targetLocationId || null
+              }
+            : null,
+          individuality: individualityBias(entityId, chosen),
+          candidates,
+          aiProposal: aiProposalSnapshot,
+          validatedDecision: {
+            actionType: chosen,
+            targetEntityId: selectedTargetEntityId,
+            targetLocationId: selectedTargetLocationId,
+            selectionMode,
+            transformation
+          },
+          aiChoice: aiChoice || null
+        })
+      )
+    : null;
   const operationalDecisionContext = JSON.stringify(compactOperationalDecisionContext({
     chosenAction:chosen,
     selectedTargetEntityId,
@@ -1238,7 +1267,8 @@ async function makeDecision({
     chosenCandidate,
     proactivity,
     aiChoice,
-    geminiDecision:context.geminiDecision
+    geminiDecision:context.geminiDecision,
+    fullContextArchived: archiveFullDecisionContext
   }));
   const actionDefinition = {
     actionType: chosen,
@@ -1299,21 +1329,23 @@ async function makeDecision({
       ]
     );
 
-    await conn.query(
-      `INSERT INTO decision_context_archive
-       (decision_id,simulation_id,entity_id,simulation_time,context)
-       VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?)
-       ON DUPLICATE KEY UPDATE
-         context=VALUES(context),
-         simulation_time=VALUES(simulation_time)`,
-      [
-        decisionId,
-        simulationId,
-        entityId,
-        mysqlSimulationTime,
-        fullDecisionContext
-      ]
-    );
+    if (archiveFullDecisionContext && fullDecisionContext) {
+      await conn.query(
+        `INSERT INTO decision_context_archive
+         (decision_id,simulation_id,entity_id,simulation_time,context)
+         VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?)
+         ON DUPLICATE KEY UPDATE
+           context=VALUES(context),
+           simulation_time=VALUES(simulation_time)`,
+        [
+          decisionId,
+          simulationId,
+          entityId,
+          mysqlSimulationTime,
+          fullDecisionContext
+        ]
+      );
+    };
 
     await conn.query(
       `INSERT INTO decision_options(id,decision_id,option_code,description,action_definition,evaluation,expected_outcome)
@@ -1450,4 +1482,4 @@ async function markDecisionActionOutcome({decisionId,simulationId,entityId,actio
 }
 
 function effectiveSimulationTimeString(value){const date=value instanceof Date?value:new Date(value);if(!Number.isFinite(date.getTime()))throw Object.assign(new Error("Invalid simulation time"),{code:"INVALID_SIMULATION_TIME"});const pad=n=>String(n).padStart(2,"0"),ms=String(date.getUTCMilliseconds()).padStart(3,"0");return `${date.getUTCFullYear()}-${pad(date.getUTCMonth()+1)}-${pad(date.getUTCDate())} ${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}:${pad(date.getUTCSeconds())}.${ms}`;}
-module.exports={ACTIONS,RESOURCE_REQUIREMENTS,scoreAction,buildDecisionContext,buildDecisionContexts,markDecisionActionCreated,markDecisionActionOutcome,rebuildDecisionCandidates,makeDecision,applyLocationBias,LOCATION_ACTION_BIAS,loadResourceContext,findNearestResourceLocation,shortestRoute,deriveProactivity,applyProactiveOpportunityBias,applyPlanCommitment,applyExplorationCommitment,applyRecoveryBlocks,criticalProtectedActions,recoveryBlockForInterruption,activeRecoveryBlocks,criticalNeedState,criticalNeedAction,criticalResourceNeedState,resolveCriticalResourceRecovery,resolveCriticalDecisionRequirement,validateCriticalDecision,applyRecentActionPenalty,individualityBias,chooseStochasticCandidate,resolvePlanCommitment,chooseSocialTargetCandidate,applySocialFeasibility,applySocialIsolationFallback,applyWanderingGuard,compactDecisionContext,needPriorityState,calibratedSuccessProbability,calibrateDecisionOutcome,criticalNeedSatisfactionAction,criticalNeedTemporalSignal};
+module.exports={shouldArchiveFullDecisionContext,ACTIONS,RESOURCE_REQUIREMENTS,scoreAction,buildDecisionContext,buildDecisionContexts,markDecisionActionCreated,markDecisionActionOutcome,rebuildDecisionCandidates,makeDecision,applyLocationBias,LOCATION_ACTION_BIAS,loadResourceContext,findNearestResourceLocation,shortestRoute,deriveProactivity,applyProactiveOpportunityBias,applyPlanCommitment,applyExplorationCommitment,applyRecoveryBlocks,criticalProtectedActions,recoveryBlockForInterruption,activeRecoveryBlocks,criticalNeedState,criticalNeedAction,criticalResourceNeedState,resolveCriticalResourceRecovery,resolveCriticalDecisionRequirement,validateCriticalDecision,applyRecentActionPenalty,individualityBias,chooseStochasticCandidate,resolvePlanCommitment,chooseSocialTargetCandidate,applySocialFeasibility,applySocialIsolationFallback,applyWanderingGuard,compactDecisionContext,needPriorityState,calibratedSuccessProbability,calibrateDecisionOutcome,criticalNeedSatisfactionAction,criticalNeedTemporalSignal};
