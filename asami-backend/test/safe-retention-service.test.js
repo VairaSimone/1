@@ -338,3 +338,22 @@ test("decision context archival preserves invalid raw context and never overwrit
   assert.match(source,/UPDATE decisions SET context=\? WHERE id=UUID_TO_BIN\(\?\)/);
   assert.match(source,/JSON_VALID\(d\.context\)/);
 });
+
+test("retention has lifecycle cleanup for operational decision artifacts",()=>{
+  const fs=require("node:fs");
+  const path=require("node:path");
+  const source=fs.readFileSync(path.join(__dirname,"../src/services/safe-retention-service.js"),"utf8");
+  for(const helper of [
+    "deleteOldIntentions",
+    "deleteOldDecisionOptions",
+    "deleteOldTraitHistory",
+    "deleteOldGeminiDecisionTelemetry",
+    "deleteOldDecisions"
+  ]) {
+    assert.match(source,new RegExp("function " + helper + "\\b"));
+  }
+  assert.match(source,/RETENTION_DECISION_DAYS/);
+  assert.match(source,/RETENTION_INTENTION_DAYS/);
+  assert.match(source,/NOT EXISTS \(SELECT 1 FROM decision_options/);
+  assert.match(source,/NOT EXISTS \(SELECT 1 FROM decision_context_archive/);
+});
