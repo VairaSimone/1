@@ -150,6 +150,7 @@ test("decision context archive is bounded separately from the operational decisi
   assert.match(source,/async function deleteOldDecisionContextArchives/);
   assert.match(source,/decisionContextArchivesDeleted/);
   assert.match(source,/JSON_EXTRACT\(d\.context,'\\$\.operational'\)/);
+  assert.match(source,/BIN_TO_UUID\(d\.entity_id\) AS entityId/);
 });
 
 test("retention services continuous histories before slower cognitive cleanup",()=>{
