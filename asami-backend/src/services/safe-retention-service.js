@@ -33,7 +33,13 @@ function normalizeArchiveJson(value) {
     try {
       JSON.stringify(value);
       return value;
-    } catch {}
+    } catch {
+      return {
+        schemaVersion: 1,
+        _invalidJson: true,
+        _rawContext: String(value)
+      };
+    }
   }
   if (typeof value === "string") {
     try {
@@ -51,6 +57,19 @@ function normalizeArchiveJson(value) {
     _invalidJson: true,
     _rawContext: String(value ?? "")
   };
+}
+
+function serializeArchiveJson(value) {
+  const normalized = normalizeArchiveJson(value);
+  try {
+    return JSON.stringify(normalized);
+  } catch {
+    return JSON.stringify({
+      schemaVersion: 1,
+      _invalidJson: true,
+      _rawContext: String(value ?? "")
+    });
+  }
 }
 
 function simulationTimestampMs(value) {
@@ -640,14 +659,14 @@ async function compactOldDecisionContexts(conn, simulationId, simulationTime) {
     "AND d.status IN ('EXECUTED','FAILED','CANCELLED') " +
     "AND d.simulation_time < ? " +
     "AND d.context IS NOT NULL " +
-    "AND COALESCE(
-      IF(
-        JSON_VALID(d.context),
-        JSON_UNQUOTE(JSON_EXTRACT(d.context,'$.operational')),
-        'false'
-      ),
-      'false'
-    ) <> 'true'";
+    "AND COALESCE(" +
+    "IF(" +
+    "JSON_VALID(d.context)," +
+    "JSON_UNQUOTE(JSON_EXTRACT(d.context,'$.operational'))," +
+    "'false'" +
+    ")," +
+    "'false'" +
+    ") <> 'true'";
 
   if (POLICY.dryRun) {
     const [rows] = await conn.query(
@@ -677,7 +696,7 @@ async function compactOldDecisionContexts(conn, simulationId, simulationTime) {
         simulationId,
         row.entityId,
         row.simulationTime,
-        JSON.stringify(archiveContext)
+        serializeArchiveJson(archiveContext)
       ]
     );
     archivedDecisionContexts.push({
@@ -712,14 +731,14 @@ async function compactOldDecisionContexts(conn, simulationId, simulationTime) {
     "AND d.status IN ('EXECUTED','FAILED','CANCELLED') " +
     "AND d.simulation_time < ? " +
     "AND d.context IS NOT NULL " +
-    "AND COALESCE(
-      IF(
-        JSON_VALID(d.context),
-        JSON_UNQUOTE(JSON_EXTRACT(d.context,'$.operational')),
-        'false'
-      ),
-      'false'
-    ) <> 'true'",
+    "AND COALESCE(" +
+    "IF(" +
+    "JSON_VALID(d.context)," +
+    "JSON_UNQUOTE(JSON_EXTRACT(d.context,'$.operational'))," +
+    "'false'" +
+    ")," +
+    "'false'" +
+    ") <> 'true'",
     [simulationId,cutoff]
   );
 
