@@ -516,26 +516,6 @@ class SimulationEngine {
 
           setPhase("world.relationships");
           await evolveRelationships(sim.id, nextTime);
-          setPhase("action.reconcile");
-          const reconciliation = await reconcileCompletedActions(sim.id,{limit:100});
-          if (reconciliation.reconciled) {
-            logger.info({simulationId:sim.id,simulationTime:nextTime.toISOString(),event:"ACTION_RECONCILIATION",reconciled:reconciliation.reconciled},"completed action post-processing reconciled");
-          }
-
-          const staleDecisionReconciliation = await reconcileStaleEvaluatedDecisions(
-            sim.id,
-            nextTime.toISOString()
-          );
-          if (staleDecisionReconciliation.repaired) {
-            logger.warn({
-              simulationId: sim.id,
-              simulationTime: nextTime.toISOString(),
-              event: "DECISION_RECONCILIATION",
-              checked: staleDecisionReconciliation.checked,
-              repaired: staleDecisionReconciliation.repaired
-            }, "stale evaluated decisions reconciled");
-          }
-
           setPhase("integrity.check");
           const integrity = await runSimulationIntegrityCheck(sim.id,nextTime.toISOString());
           if(!integrity.skipped && !integrity.healthy){
@@ -1014,6 +994,36 @@ class SimulationEngine {
           }
         }
         if (this.stopping) return;
+
+        // Reconcile only after normal entity processing has had a chance to
+        // complete ACTIVE actions. This prevents a large simulation-time jump
+        // (for example after restart) from turning legitimately completed
+        // actions into stale failures before completeAction() can run.
+        setPhase("action.reconcile");
+        const reconciliation = await reconcileCompletedActions(sim.id,{limit:100});
+        if (reconciliation.reconciled) {
+          logger.info({
+            simulationId:sim.id,
+            simulationTime:nextTime.toISOString(),
+            event:"ACTION_RECONCILIATION",
+            reconciled:reconciliation.reconciled
+          },"completed action post-processing reconciled");
+        }
+
+        const staleDecisionReconciliation = await reconcileStaleEvaluatedDecisions(
+          sim.id,
+          nextTime.toISOString()
+        );
+        if (staleDecisionReconciliation.repaired) {
+          logger.warn({
+            simulationId: sim.id,
+            reconciliationSimulationTime: nextTime.toISOString(),
+            event: "DECISION_RECONCILIATION",
+            checked: staleDecisionReconciliation.checked,
+            repaired: staleDecisionReconciliation.repaired
+          }, "stale evaluated decisions reconciled");
+        }
+
         setPhase("world.decay"); await decayMemories(sim.id, nextTime); this.tickCounter.set(sim.id, Number(this.tickCounter.get(sim.id) || 0) + 1);
         const count = Number(this.tickCounter.get(sim.id) || 0);
         if (count % env.GEMINI_PROACTIVE_EVERY_TICKS === 0) {
