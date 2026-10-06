@@ -96,9 +96,17 @@ function normalizeProviderSchemaNode(node, root, resolving = new Set()) {
     "enum","const","description","format","pattern","minLength","maxLength","minimum","maximum",
     "exclusiveMinimum","exclusiveMaximum","multipleOf","minItems","maxItems","uniqueItems"
   ]);
+  const providerSupportedStringFormats = new Set(["date-time","date","time"]);
   const out = {};
   for (const [key, value] of Object.entries(node)) {
     if (!allowed.has(key)) continue;
+    // Gemini Structured Outputs supports only a subset of JSON Schema string
+    // formats. Zod's z.string().uuid() becomes format:"uuid", which is valid
+    // JSON Schema but is not a supported Gemini response-schema format.
+    // Passing it through makes the autonomy decision request provider-specific
+    // and can surface as a generic 503, while dialogue schemas do not contain
+    // UUID-formatted response fields.
+    if (key === "format" && !providerSupportedStringFormats.has(String(value))) continue;
     if (key === "properties") {
       out.properties = {};
       for (const [property, propertySchema] of Object.entries(value || {})) {
@@ -336,6 +344,18 @@ function createGeminiCodedError(message,code,details={},cause=null){
   if(details&&typeof details==="object")Object.assign(error,details);
   if(cause)error.cause=cause;
   return error;
+}
+
+function summarizeProviderError(err,failure={}){
+  return {
+    name:err?.name||null,
+    code:err?.code||null,
+    status:Number.isFinite(Number(failure?.status))?Number(failure.status):(
+      Number.isFinite(Number(err?.status))?Number(err.status):null
+    ),
+    statusText:err?.statusText||err?.response?.statusText||null,
+    message:String(err?.message||err||"").slice(0,600)
+  };
 }
 
 function classifyGeminiError(err) {
@@ -801,12 +821,7 @@ class GeminiService {
               rawPreview:typeof raw==="string"?raw.slice(0,500):"",
               fallbackTo:fallbackModel,
               latencyMs:Date.now()-startedAt,
-              providerError:{
-                name:err?.name||null,
-                code:err?.code||null,
-                status:failure.status||null,
-                message:String(err?.message||err||"").slice(0,500)
-              }
+              providerError:summarizeProviderError(err,failure)
             },
             fallbackModel
               ? "Gemini produced invalid structured output; trying fallback model"
@@ -882,7 +897,8 @@ class GeminiService {
               failureStreak:state.failureStreak,
               retryAfterMs:transientCooldown,
               fallbackTo:fallbackModel,
-              latencyMs:Date.now()-startedAt
+              latencyMs:Date.now()-startedAt,
+              providerError:summarizeProviderError(err,failure)
             },
             fallbackModel
               ? "Gemini model unavailable; trying fallback model"
