@@ -139,6 +139,10 @@ const Env = z.object({
   RETENTION_BATCH_SIZE: z.coerce.number().int().min(250).max(5000).default(5000),
   RETENTION_MAX_DELETES_PER_TABLE: z.coerce.number().int().min(500).max(20000).default(8000),
   RETENTION_TIME_BUDGET_MS: z.coerce.number().int().min(250).max(30000).default(5000),
+  NEED_HISTORY_MIN_DELTA: z.coerce.number().nonnegative().default(0.01),
+  EMOTION_HISTORY_MIN_DELTA: z.coerce.number().nonnegative().default(0.01),
+  NEED_HISTORY_MIN_SIMULATION_INTERVAL_MINUTES: z.coerce.number().nonnegative().default(15),
+  EMOTION_HISTORY_MIN_SIMULATION_INTERVAL_MINUTES: z.coerce.number().nonnegative().default(15),
   RETENTION_DRY_RUN: z.preprocess((value)=>{if(typeof value!=="string")return value;const normalized=value.trim().toLowerCase();if(normalized==="true")return true;if(normalized==="false")return false;return value;},z.boolean()).default(false),
   CORS_ORIGIN: z.string().default("*")
 });
