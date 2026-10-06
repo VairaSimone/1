@@ -305,6 +305,11 @@ const POLICY = Object.freeze({
   needHistoryDays: positiveInt(process.env.RETENTION_NEED_HISTORY_DAYS, 3, 1),
   emotionHistoryDays: positiveInt(process.env.RETENTION_EMOTION_HISTORY_DAYS, 3, 1),
   actionDays: positiveInt(process.env.RETENTION_ACTION_DAYS, 7, 1),
+  intentionDays: positiveInt(process.env.RETENTION_INTENTION_DAYS, 7, 1),
+  decisionDays: positiveInt(process.env.RETENTION_DECISION_DAYS, 30, 7),
+  decisionOptionDays: positiveInt(process.env.RETENTION_DECISION_OPTION_DAYS, 7, 3),
+  traitHistoryDays: positiveInt(process.env.RETENTION_TRAIT_HISTORY_DAYS, 30, 7),
+  geminiDecisionTelemetryDays: positiveInt(process.env.RETENTION_GEMINI_DECISION_TELEMETRY_DAYS, 30, 7),
   eventDays: positiveInt(process.env.RETENTION_EVENT_DAYS, 7, 1),
   importantEventDays: positiveInt(process.env.RETENTION_IMPORTANT_EVENT_DAYS, 30, 7),
   memoryArchiveDays: positiveInt(process.env.RETENTION_MEMORY_ARCHIVE_DAYS, 21, 7),
@@ -1031,6 +1036,129 @@ async function compactOldActionDecisionSummaries(conn, simulationId, simulationT
   };
 }
 
+async function deleteOldIntentions(conn, simulationId, simulationTime) {
+  const cutoff = cutoffDateTime(simulationTime, POLICY.intentionDays);
+  const selectSql =
+    "SELECT BIN_TO_UUID(i.id) AS id FROM intentions i " +
+    "WHERE i.simulation_id=UUID_TO_BIN(?) AND i.status IN ('COMPLETED','CANCELLED') " +
+    "AND i.created_simulation_at < ? " +
+    "AND NOT EXISTS (SELECT 1 FROM actions a WHERE a.source_intention_id=i.id) " +
+    "ORDER BY i.created_simulation_at ASC LIMIT " + POLICY.batchSize;
+  const countSql =
+    "SELECT COUNT(*) AS candidates FROM intentions i " +
+    "WHERE i.simulation_id=UUID_TO_BIN(?) AND i.status IN ('COMPLETED','CANCELLED') " +
+    "AND i.created_simulation_at < ? " +
+    "AND NOT EXISTS (SELECT 1 FROM actions a WHERE a.source_intention_id=i.id)";
+  return deleteSelectedRows(conn,{
+    selectSql,selectParams:[simulationId,cutoff],
+    countSql,countParams:[simulationId,cutoff],
+    deleteTable:"intentions",resultKey:"deleted"
+  });
+}
+
+async function deleteOldDecisionOptions(conn, simulationId, simulationTime) {
+  const cutoff = cutoffDateTime(simulationTime, POLICY.decisionOptionDays);
+  const selectSql =
+    "SELECT BIN_TO_UUID(dopt.id) AS id FROM decision_options dopt " +
+    "JOIN decisions d ON d.id=dopt.decision_id " +
+    "WHERE d.simulation_id=UUID_TO_BIN(?) AND d.status IN ('EXECUTED','FAILED','CANCELLED') " +
+    "AND d.simulation_time < ? ORDER BY d.simulation_time ASC LIMIT " + POLICY.batchSize;
+  const countSql =
+    "SELECT COUNT(*) AS candidates FROM decision_options dopt " +
+    "JOIN decisions d ON d.id=dopt.decision_id " +
+    "WHERE d.simulation_id=UUID_TO_BIN(?) AND d.status IN ('EXECUTED','FAILED','CANCELLED') " +
+    "AND d.simulation_time < ?";
+  return deleteSelectedRows(conn,{
+    selectSql,selectParams:[simulationId,cutoff],
+    countSql,countParams:[simulationId,cutoff],
+    deleteTable:"decision_options",resultKey:"deleted"
+  });
+}
+
+async function deleteOldTraitHistory(conn, simulationId, simulationTime) {
+  const cutoff = cutoffDateTime(simulationTime, POLICY.traitHistoryDays);
+  const selectSql =
+    "SELECT BIN_TO_UUID(th.id) AS id FROM entity_trait_history th " +
+    "JOIN entities e ON e.id=th.entity_id " +
+    "WHERE e.simulation_id=UUID_TO_BIN(?) AND th.changed_simulation_at < ? " +
+    "ORDER BY th.changed_simulation_at ASC LIMIT " + POLICY.batchSize;
+  const countSql =
+    "SELECT COUNT(*) AS candidates FROM entity_trait_history th " +
+    "JOIN entities e ON e.id=th.entity_id " +
+    "WHERE e.simulation_id=UUID_TO_BIN(?) AND th.changed_simulation_at < ?";
+  return deleteSelectedRows(conn,{
+    selectSql,selectParams:[simulationId,cutoff],
+    countSql,countParams:[simulationId,cutoff],
+    deleteTable:"entity_trait_history",resultKey:"deleted"
+  });
+}
+
+async function deleteOldGeminiDecisionTelemetry(conn, simulationId, simulationTime) {
+  const cutoff = cutoffDateTime(simulationTime, POLICY.geminiDecisionTelemetryDays);
+  const selectSql =
+    "SELECT id FROM gemini_decision_telemetry " +
+    "WHERE simulation_id=? AND simulation_at < ? " +
+    "ORDER BY simulation_at ASC LIMIT " + POLICY.batchSize;
+  const countSql =
+    "SELECT COUNT(*) AS candidates FROM gemini_decision_telemetry " +
+    "WHERE simulation_id=? AND simulation_at < ?";
+  if (POLICY.dryRun) {
+    const [rows]=await conn.query(countSql,[String(simulationId),cutoff]);
+    const candidates=Number(rows[0]?.candidates||0);
+    return {candidates,deleted:0,remainingCandidates:candidates,dryRun:true};
+  }
+  let deleted=0;
+  while(deleted< POLICY.maxDeletesPerTable && retentionBudgetAvailable(simulationId)){
+    const [rows]=await conn.query(selectSql,[String(simulationId),cutoff]);
+    if(!rows.length)break;
+    const ids=rows.map(row=>Number(row.id)).filter(Number.isFinite);
+    if(!ids.length)break;
+    const placeholders=ids.map(()=>"?").join(",");
+    const [result]=await conn.query("DELETE FROM gemini_decision_telemetry WHERE id IN ("+placeholders+")",ids);
+    const affected=Number(result.affectedRows||0);
+    deleted+=affected;
+    if(affected<rows.length)break;
+  }
+  const [backlog]=await conn.query(countSql,[String(simulationId),cutoff]);
+  return {
+    deleted,
+    remainingCandidates:Number(backlog[0]?.candidates||0),
+    budgetExhausted:retentionBudgetRemainingMs(simulationId)<=0
+  };
+}
+
+async function deleteOldDecisions(conn, simulationId, simulationTime) {
+  const cutoff = cutoffDateTime(simulationTime, POLICY.decisionDays);
+  const selectSql =
+    "SELECT BIN_TO_UUID(d.id) AS id FROM decisions d " +
+    "WHERE d.simulation_id=UUID_TO_BIN(?) AND d.status IN ('EXECUTED','FAILED','CANCELLED') " +
+    "AND d.simulation_time < ? " +
+    "AND NOT EXISTS (SELECT 1 FROM actions a WHERE a.decision_id=d.id) " +
+    "AND NOT EXISTS (SELECT 1 FROM intentions i WHERE i.decision_id=d.id) " +
+    "AND NOT EXISTS (SELECT 1 FROM decision_options dopt WHERE dopt.decision_id=d.id) " +
+    "AND NOT EXISTS (SELECT 1 FROM cognitive_expectations ce WHERE ce.decision_id=d.id) " +
+    "AND NOT EXISTS (SELECT 1 FROM counterfactuals cf WHERE cf.decision_id=d.id) " +
+    "AND NOT EXISTS (SELECT 1 FROM counterfactual_worlds cw WHERE cw.decision_id=d.id) " +
+    "AND NOT EXISTS (SELECT 1 FROM decision_context_archive dca WHERE dca.decision_id=d.id) " +
+    "ORDER BY d.simulation_time ASC LIMIT " + POLICY.batchSize;
+  const countSql =
+    "SELECT COUNT(*) AS candidates FROM decisions d " +
+    "WHERE d.simulation_id=UUID_TO_BIN(?) AND d.status IN ('EXECUTED','FAILED','CANCELLED') " +
+    "AND d.simulation_time < ? " +
+    "AND NOT EXISTS (SELECT 1 FROM actions a WHERE a.decision_id=d.id) " +
+    "AND NOT EXISTS (SELECT 1 FROM intentions i WHERE i.decision_id=d.id) " +
+    "AND NOT EXISTS (SELECT 1 FROM decision_options dopt WHERE dopt.decision_id=d.id) " +
+    "AND NOT EXISTS (SELECT 1 FROM cognitive_expectations ce WHERE ce.decision_id=d.id) " +
+    "AND NOT EXISTS (SELECT 1 FROM counterfactuals cf WHERE cf.decision_id=d.id) " +
+    "AND NOT EXISTS (SELECT 1 FROM counterfactual_worlds cw WHERE cw.decision_id=d.id) " +
+    "AND NOT EXISTS (SELECT 1 FROM decision_context_archive dca WHERE dca.decision_id=d.id)";
+  return deleteSelectedRows(conn,{
+    selectSql,selectParams:[simulationId,cutoff],
+    countSql,countParams:[simulationId,cutoff],
+    deleteTable:"decisions",resultKey:"deleted"
+  });
+}
+
 async function deleteOldActions(conn, simulationId, simulationTime) {
   const cutoff = cutoffDateTime(simulationTime, POLICY.actionDays);
   const selectSql =
@@ -1269,6 +1397,7 @@ async function runSafeRetention(simulationId, simulationTime) {
     );
     const actionSummaries = await compactOldActionDecisionSummaries(lock.conn, simulationId, mysqlSimulationTime);
     const actions = await deleteOldActions(lock.conn, simulationId, mysqlSimulationTime);
+    const intentions = await deleteOldIntentions(lock.conn, simulationId, mysqlSimulationTime);
     const relationshipHistory = await deleteOldRelationshipHistory(lock.conn, simulationId, mysqlSimulationTime);
     const cognitiveStates = await compactOldCognitiveStates(lock.conn, simulationId, mysqlSimulationTime);
     const societyWealth = await compactOldEmergentWealthHistory(lock.conn, simulationId, mysqlSimulationTime);
@@ -1278,6 +1407,7 @@ async function runSafeRetention(simulationId, simulationTime) {
     const context = await compactOldDecisionContexts(lock.conn, simulationId, mysqlSimulationTime);
     const contextArchive = await deleteOldDecisionContextArchives(lock.conn, simulationId, mysqlSimulationTime);
     const options = await deleteUnselectedDecisionOptions(lock.conn, simulationId, mysqlSimulationTime);
+    const decisionOptions = await deleteOldDecisionOptions(lock.conn, simulationId, mysqlSimulationTime);
     const memoryDedupeBackfilled = await backfillMemoryDedupeKeys(lock.conn, simulationId);
     const episodicMemoryCap = await archiveExcessEpisodicMemories(lock.conn, simulationId, mysqlSimulationTime);
     const duplicateMemories = await compactDuplicateMemories(lock.conn, simulationId, mysqlSimulationTime);
@@ -1287,6 +1417,9 @@ async function runSafeRetention(simulationId, simulationTime) {
     const cognitiveActorCaps = await deleteActorCognitiveArtifacts(lock.conn, simulationId, mysqlSimulationTime);
     const counterfactuals = await deleteResolvedCounterfactuals(lock.conn, simulationId, mysqlSimulationTime);
     const worlds = await deleteResolvedCounterfactualWorlds(lock.conn, simulationId, mysqlSimulationTime);
+    const traitHistory = await deleteOldTraitHistory(lock.conn, simulationId, mysqlSimulationTime);
+    const geminiDecisionTelemetry = await deleteOldGeminiDecisionTelemetry(lock.conn, simulationId, mysqlSimulationTime);
+    const decisions = await deleteOldDecisions(lock.conn, simulationId, mysqlSimulationTime);
     observability.increment(simulationId,"memory_archived_total",Number(memoryArchive.archived||0)+Number(episodicMemoryCap.archived||0));
     observability.increment(simulationId,"memory_deduplicated_total",Number(duplicateMemories.deleted||0));
     await recordMemoryStatusDistribution(simulationId);
@@ -1297,7 +1430,7 @@ async function runSafeRetention(simulationId, simulationTime) {
       decisionContextsCompacted: Number(context.updated || 0),
       decisionContextsArchived: Number(context.archived || 0),
       decisionContextArchivesDeleted: Number(contextArchive.deleted || 0),
-      decisionOptionsDeleted: Number(options.deleted || 0),
+      decisionOptionsDeleted: Number(options.deleted || 0) + Number(decisionOptions.deleted || 0),
       eventsDeleted: Number(events.deleted || 0),
       actionDecisionSummariesUpdated: Number(actionSummaries.updated || 0),
       actionDecisionSummaryCandidates: Number(actionSummaries.candidates || 0),
@@ -1316,6 +1449,10 @@ async function runSafeRetention(simulationId, simulationTime) {
       counterfactualsCapped: Number(cognitiveActorCaps.counterfactuals || 0),
       counterfactualWorldsCapped: Number(cognitiveActorCaps.counterfactualWorlds || 0),
       relationshipHistoryDeleted: Number(relationshipHistory.deleted || 0),
+      intentionsDeleted: Number(intentions.deleted || 0),
+      traitHistoryDeleted: Number(traitHistory.deleted || 0),
+      geminiDecisionTelemetryDeleted: Number(geminiDecisionTelemetry.deleted || 0),
+      decisionsDeleted: Number(decisions.deleted || 0),
       memoryDedupeBackfilled: Number(memoryDedupeBackfilled || 0),
       memoriesArchived: Number(memoryArchive.archived || 0),
       memoriesDeleted: Number(memories.deleted || 0),
@@ -1323,7 +1460,7 @@ async function runSafeRetention(simulationId, simulationTime) {
       counterfactualsDeleted: Number(counterfactuals.deleted || 0),
       counterfactualWorldsDeleted: Number(worlds.deleted || 0),
       decisionContextCandidates: Number(context.candidates || 0),
-      decisionOptionCandidates: Number(options.candidates || 0),
+      decisionOptionCandidates: Number(options.candidates || 0) + Number(decisionOptions.candidates || 0),
       decisionContextArchiveCandidates: Number(contextArchive.candidates || 0),
       decisionContextArchiveBacklog: Number(contextArchive.remainingCandidates || 0),
       eventCandidates: Number(events.candidates || 0),
@@ -1359,7 +1496,12 @@ async function runSafeRetention(simulationId, simulationTime) {
         Number(expectations.remainingCandidates || 0) +
         Number(counterfactuals.remainingCandidates || 0) +
         Number(worlds.remainingCandidates || 0) +
-        Number(contextArchive.remainingCandidates || 0),
+        Number(contextArchive.remainingCandidates || 0) +
+        Number(intentions.remainingCandidates || 0) +
+        Number(decisionOptions.remainingCandidates || 0) +
+        Number(traitHistory.remainingCandidates || 0) +
+        Number(geminiDecisionTelemetry.remainingCandidates || 0) +
+        Number(decisions.remainingCandidates || 0),
       retentionBudgetMs: adaptiveProfile.timeBudgetMs,
       retentionBudgetRemainingMs: retentionBudgetRemainingMs(simulationId),
       adaptiveRetentionLevel: adaptiveProfile.level,
@@ -1465,6 +1607,10 @@ async function runSafeRetention(simulationId, simulationTime) {
         ["counterfactualCaps",summary.counterfactualsCapped],
         ["counterfactualWorldCaps",summary.counterfactualWorldsCapped],
         ["relationshipHistory",summary.relationshipHistoryDeleted],
+        ["intentions",summary.intentionsDeleted],
+        ["traitHistory",summary.traitHistoryDeleted],
+        ["geminiDecisionTelemetry",summary.geminiDecisionTelemetryDeleted],
+        ["decisions",summary.decisionsDeleted],
         ["dedupeBackfilled",summary.memoryDedupeBackfilled],
         ["memoriesArchived",summary.memoriesArchived],
         ["memoriesDeleted",summary.memoriesDeleted],
