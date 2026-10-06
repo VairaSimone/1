@@ -23,7 +23,18 @@ async function getInnoDBAllocatedSizeBytes(db = pool) {
   const [rows] = await db.query(
     `SELECT COALESCE(SUM(allocated_size), 0) AS bytes
      FROM information_schema.innodb_tablespaces
-     WHERE name LIKE CONCAT(?, '/%')`,
+     WHERE name LIKE CONCAT(?, '/%')
+       AND name NOT LIKE CONCAT(?, '/#innodb_temp%')`,
+    [env.DB_NAME, env.DB_NAME]
+  );
+  return Number(rows[0]?.bytes || 0);
+}
+
+async function getInnoDBDataAndIndexSizeBytes(db = pool) {
+  const [rows] = await db.query(
+    `SELECT COALESCE(SUM(data_length + index_length), 0) AS bytes
+     FROM information_schema.tables
+     WHERE table_schema = ?`,
     [env.DB_NAME]
   );
   return Number(rows[0]?.bytes || 0);
@@ -39,12 +50,14 @@ async function getBinaryLogSizeBytes(db = pool) {
 }
 
 async function getDatabaseSizeBreakdown(db = pool) {
-  const [innodbAllocatedBytes, binaryLogBytes] = await Promise.all([
+  const [innodbAllocatedBytes, innodbDataAndIndexBytes, binaryLogBytes] = await Promise.all([
     getInnoDBAllocatedSizeBytes(db),
+    getInnoDBDataAndIndexSizeBytes(db),
     getBinaryLogSizeBytes(db)
   ]);
   return {
     innodbAllocatedBytes,
+    innodbDataAndIndexBytes,
     binaryLogBytes,
     sizeBytes: innodbAllocatedBytes + binaryLogBytes
   };
@@ -67,6 +80,7 @@ async function checkDatabaseSizeLimit(db = pool) {
       reached: false,
       storage: {
         innodbAllocatedBytes: 0,
+        innodbDataAndIndexBytes: 0,
         binaryLogBytes: 0
       }
     };
@@ -90,6 +104,7 @@ module.exports = {
   getDatabaseSizeLimitBytes,
   isDatabaseSizeLimitReached,
   getInnoDBAllocatedSizeBytes,
+  getInnoDBDataAndIndexSizeBytes,
   getBinaryLogSizeBytes,
   getDatabaseSizeBreakdown,
   getDatabaseSizeBytes,
