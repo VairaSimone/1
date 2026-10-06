@@ -318,3 +318,24 @@ test("retention prioritizes high-growth event/action cleanup before slower compa
   assert.ok(run.indexOf("deleteOldActions(lock.conn, simulationId, mysqlSimulationTime)")<run.indexOf("compactOldCognitiveStates(lock.conn, simulationId, mysqlSimulationTime)"));
   assert.ok(run.indexOf("deleteOldRelationshipHistory(lock.conn, simulationId, mysqlSimulationTime)")<run.indexOf("compactOldCognitiveStates(lock.conn, simulationId, mysqlSimulationTime)"));
 });
+
+test("retention treats blank numeric environment values as unspecified",()=>{
+  const fs=require("node:fs");
+  const path=require("node:path");
+  const source=fs.readFileSync(path.join(__dirname,"../src/services/safe-retention-service.js"),"utf8");
+  assert.match(source,/value === undefined \|\| value === null \|\| String\(value\)\.trim\(\) === ""/);
+});
+
+test("decision context archival preserves invalid raw context and never overwrites an existing archive",()=>{
+  const normalized=retention.normalizeArchiveJson("{invalid");
+  assert.equal(normalized._invalidJson,true);
+  assert.equal(normalized._rawContext,"{invalid");
+
+  const fs=require("node:fs");
+  const path=require("node:path");
+  const source=fs.readFileSync(path.join(__dirname,"../src/services/safe-retention-service.js"),"utf8");
+  assert.match(source,/ON DUPLICATE KEY UPDATE decision_id=decision_id/);
+  assert.match(source,/JSON\.stringify\(archiveContext\)/);
+  assert.match(source,/BIN_TO_UUID\(d\.selected_option_id\) AS selectedOptionId/);
+  assert.doesNotMatch(source,/JSON_SET\([\s\S]*JSON_EXTRACT\(context,'\\$\.chosenAction'\)/);
+});
