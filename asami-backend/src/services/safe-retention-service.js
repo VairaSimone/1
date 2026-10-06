@@ -1160,6 +1160,25 @@ async function deleteOldGeminiDecisionTelemetry(conn, simulationId, simulationTi
   };
 }
 
+async function deleteOldDecisionOutcomes(conn, simulationId, simulationTime) {
+  const cutoff = cutoffDateTime(simulationTime, POLICY.decisionDays);
+  const selectSql =
+    "SELECT BIN_TO_UUID(o.decision_id) AS id FROM decision_outcomes o " +
+    "JOIN decisions d ON d.id=o.decision_id " +
+    "WHERE d.simulation_id=UUID_TO_BIN(?) AND d.status IN ('EXECUTED','FAILED','CANCELLED') " +
+    "AND d.simulation_time < ? ORDER BY d.simulation_time ASC LIMIT " + POLICY.batchSize;
+  const countSql =
+    "SELECT COUNT(*) AS candidates FROM decision_outcomes o " +
+    "JOIN decisions d ON d.id=o.decision_id " +
+    "WHERE d.simulation_id=UUID_TO_BIN(?) AND d.status IN ('EXECUTED','FAILED','CANCELLED') " +
+    "AND d.simulation_time < ?";
+  return deleteSelectedRows(conn,{
+    selectSql,selectParams:[simulationId,cutoff],
+    countSql,countParams:[simulationId,cutoff],
+    deleteTable:"decision_outcomes",deleteKeyColumn:"decision_id",resultKey:"deleted"
+  });
+}
+
 async function deleteOldDecisions(conn, simulationId, simulationTime) {
   const cutoff = cutoffDateTime(simulationTime, POLICY.decisionDays);
   const selectSql =
@@ -1169,6 +1188,7 @@ async function deleteOldDecisions(conn, simulationId, simulationTime) {
     "AND NOT EXISTS (SELECT 1 FROM actions a WHERE a.decision_id=d.id) " +
     "AND NOT EXISTS (SELECT 1 FROM intentions i WHERE i.decision_id=d.id) " +
     "AND NOT EXISTS (SELECT 1 FROM decision_options dopt WHERE dopt.decision_id=d.id) " +
+    "AND NOT EXISTS (SELECT 1 FROM decision_outcomes ddo WHERE ddo.decision_id=d.id) " +
     "AND NOT EXISTS (SELECT 1 FROM cognitive_expectations ce WHERE ce.decision_id=d.id) " +
     "AND NOT EXISTS (SELECT 1 FROM counterfactuals cf WHERE cf.decision_id=d.id) " +
     "AND NOT EXISTS (SELECT 1 FROM counterfactual_worlds cw WHERE cw.decision_id=d.id) " +
@@ -1181,6 +1201,7 @@ async function deleteOldDecisions(conn, simulationId, simulationTime) {
     "AND NOT EXISTS (SELECT 1 FROM actions a WHERE a.decision_id=d.id) " +
     "AND NOT EXISTS (SELECT 1 FROM intentions i WHERE i.decision_id=d.id) " +
     "AND NOT EXISTS (SELECT 1 FROM decision_options dopt WHERE dopt.decision_id=d.id) " +
+    "AND NOT EXISTS (SELECT 1 FROM decision_outcomes ddo WHERE ddo.decision_id=d.id) " +
     "AND NOT EXISTS (SELECT 1 FROM cognitive_expectations ce WHERE ce.decision_id=d.id) " +
     "AND NOT EXISTS (SELECT 1 FROM counterfactuals cf WHERE cf.decision_id=d.id) " +
     "AND NOT EXISTS (SELECT 1 FROM counterfactual_worlds cw WHERE cw.decision_id=d.id) " +
@@ -1452,6 +1473,7 @@ async function runSafeRetention(simulationId, simulationTime) {
     const worlds = await deleteResolvedCounterfactualWorlds(lock.conn, simulationId, mysqlSimulationTime);
     const traitHistory = await deleteOldTraitHistory(lock.conn, simulationId, mysqlSimulationTime);
     const geminiDecisionTelemetry = await deleteOldGeminiDecisionTelemetry(lock.conn, simulationId, mysqlSimulationTime);
+    const decisionOutcomes = await deleteOldDecisionOutcomes(lock.conn, simulationId, mysqlSimulationTime);
     const decisions = await deleteOldDecisions(lock.conn, simulationId, mysqlSimulationTime);
     observability.increment(simulationId,"memory_archived_total",Number(memoryArchive.archived||0)+Number(episodicMemoryCap.archived||0));
     observability.increment(simulationId,"memory_deduplicated_total",Number(duplicateMemories.deleted||0));
@@ -1485,6 +1507,7 @@ async function runSafeRetention(simulationId, simulationTime) {
       intentionsDeleted: Number(intentions.deleted || 0),
       traitHistoryDeleted: Number(traitHistory.deleted || 0),
       geminiDecisionTelemetryDeleted: Number(geminiDecisionTelemetry.deleted || 0),
+      decisionOutcomesDeleted: Number(decisionOutcomes.deleted || 0),
       decisionsDeleted: Number(decisions.deleted || 0),
       memoryDedupeBackfilled: Number(memoryDedupeBackfilled || 0),
       memoriesArchived: Number(memoryArchive.archived || 0),
@@ -1534,6 +1557,7 @@ async function runSafeRetention(simulationId, simulationTime) {
         Number(decisionOptions.remainingCandidates || 0) +
         Number(traitHistory.remainingCandidates || 0) +
         Number(geminiDecisionTelemetry.remainingCandidates || 0) +
+        Number(decisionOutcomes.remainingCandidates || 0) +
         Number(decisions.remainingCandidates || 0),
       retentionBudgetMs: adaptiveProfile.timeBudgetMs,
       retentionBudgetRemainingMs: retentionBudgetRemainingMs(simulationId),
@@ -1643,6 +1667,7 @@ async function runSafeRetention(simulationId, simulationTime) {
         ["intentions",summary.intentionsDeleted],
         ["traitHistory",summary.traitHistoryDeleted],
         ["geminiDecisionTelemetry",summary.geminiDecisionTelemetryDeleted],
+        ["decisionOutcomes",summary.decisionOutcomesDeleted],
         ["decisions",summary.decisionsDeleted],
         ["dedupeBackfilled",summary.memoryDedupeBackfilled],
         ["memoriesArchived",summary.memoriesArchived],
