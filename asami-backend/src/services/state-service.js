@@ -25,11 +25,11 @@ const NEED_HISTORY_MIN_DELTA = nonNegativeEnvNumber(process.env.NEED_HISTORY_MIN
 const EMOTION_HISTORY_MIN_DELTA = nonNegativeEnvNumber(process.env.EMOTION_HISTORY_MIN_DELTA, 0.01);
 const NEED_HISTORY_MIN_SIMULATION_INTERVAL_MINUTES = nonNegativeEnvNumber(
   process.env.NEED_HISTORY_MIN_SIMULATION_INTERVAL_MINUTES,
-  15
+  360
 );
 const EMOTION_HISTORY_MIN_SIMULATION_INTERVAL_MINUTES = nonNegativeEnvNumber(
   process.env.EMOTION_HISTORY_MIN_SIMULATION_INTERVAL_MINUTES,
-  15
+  360
 );
 const pendingNeedHistory = new Map();
 const pendingEmotionHistory = new Map();
@@ -122,15 +122,14 @@ async function accumulateNeedHistory({ entityId, needId, code, oldValue, newValu
   const forcePersist = Boolean(significant || critical);
   const backgroundHistory = !pending.causeActionId && !pending.causeEventId;
   if (!shouldPersistHistory({ delta: pending.delta, significant, critical, threshold: NEED_HISTORY_MIN_DELTA })) return false;
-  if (
-    backgroundHistory &&
-    !forcePersist &&
-    !historyIntervalElapsed(
+  if (!forcePersist) {
+    if (!backgroundHistory) return false;
+    if (!historyIntervalElapsed(
       lastNeedHistoryPersistedAt.get(key),
       pending.simulationTime,
       NEED_HISTORY_MIN_SIMULATION_INTERVAL_MINUTES
-    )
-  ) return false;
+    )) return false;
+  }
 
   const matchCondition = pending.causeActionId
     ? `entity_id=UUID_TO_BIN(?) AND need_id=UUID_TO_BIN(?) AND cause_action_id=UUID_TO_BIN(?)`
@@ -224,15 +223,14 @@ async function accumulateEmotionHistory({ entityId, emotionId, code, oldIntensit
   const forcePersist = Boolean(significant);
   const backgroundHistory = !pending.causeActionId && !pending.causeEventId;
   if (!shouldPersistHistory({ delta: pending.delta, significant, threshold: EMOTION_HISTORY_MIN_DELTA })) return false;
-  if (
-    backgroundHistory &&
-    !forcePersist &&
-    !historyIntervalElapsed(
+  if (!forcePersist) {
+    if (!backgroundHistory) return false;
+    if (!historyIntervalElapsed(
       lastEmotionHistoryPersistedAt.get(key),
       pending.simulationTime,
       EMOTION_HISTORY_MIN_SIMULATION_INTERVAL_MINUTES
-    )
-  ) return false;
+    )) return false;
+  }
 
   const matchCondition = pending.causeActionId
     ? `entity_id=UUID_TO_BIN(?) AND emotion_id=UUID_TO_BIN(?) AND cause_action_id=UUID_TO_BIN(?)`
