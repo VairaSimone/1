@@ -30,3 +30,10 @@ test("entity state lock delegates through transaction retry support for deadlock
   assert.match(source,/const \{ pool, withTransaction \} = require\("\.\.\/db\/pool"\)/);
   assert.match(source,/withTransaction\(fn, \{ connection: conn \}\)/);
 });
+
+test("state history helpers treat blank env values as defaults and enforce background intervals",()=>{
+  const state=require("../src/services/state-service");
+  assert.equal(state.historyIntervalElapsed(null,"2026-01-01T00:00:00.000Z",15),true);
+  assert.equal(state.historyIntervalElapsed("2026-01-01T00:00:00.000Z","2026-01-01T00:10:00.000Z",15),false);
+  assert.equal(state.historyIntervalElapsed("2026-01-01T00:00:00.000Z","2026-01-01T00:15:00.000Z",15),true);
+});
