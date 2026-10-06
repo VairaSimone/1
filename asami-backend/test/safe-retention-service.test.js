@@ -327,6 +327,20 @@ test("retention treats blank numeric environment values as unspecified",()=>{
   assert.equal(retention.boundedNumber("",0.82,0,1),0.82);
 });
 
+test("retention detaches event provenance before deleting old simulation ticks",()=>{
+  const fs=require("node:fs");
+  const path=require("node:path");
+  const source=fs.readFileSync(path.join(__dirname,"../src/services/safe-retention-service.js"),"utf8");
+  const start=source.indexOf("async function deleteOldSimulationTicks");
+  const end=source.indexOf("\nasync function deleteOldEvents",start);
+  const helperBlock=source.slice(start,end);
+  assert.match(helperBlock,/UPDATE events/);
+  assert.match(helperBlock,/SET source_tick_id=NULL/);
+  assert.match(helperBlock,/source_tick_id IN/);
+  assert.match(helperBlock,/DELETE FROM simulation_ticks/);
+  assert.match(helperBlock,/eventsDetached/);
+});
+
 test("retention bounds simulation tick history without deleting active ticks",()=>{
   const fs=require("node:fs");
   const path=require("node:path");
