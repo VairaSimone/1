@@ -547,9 +547,15 @@ class GeminiService {
     const configuredMaxLatencyMs=kind==="dialogue"
       ?Number(env.GEMINI_DIALOGUE_MAX_LATENCY_MS)
       :Number(env.GEMINI_AUTONOMY_MAX_LATENCY_MS);
+    // Autonomy may need one provider retry after a transient failure. Keep
+    // enough total budget for the primary request plus the bounded fallback.
+    const minimumAutonomyLatencyMs=MIN_PROVIDER_DEADLINE_MS*2;
+    const effectiveMaxLatencyMs=kind==="autonomy"
+      ?Math.max(minimumAutonomyLatencyMs,Number.isFinite(configuredMaxLatencyMs)?configuredMaxLatencyMs:minimumAutonomyLatencyMs)
+      :Math.max(MIN_PROVIDER_DEADLINE_MS,Number.isFinite(configuredMaxLatencyMs)?configuredMaxLatencyMs:12000);
     const requestDeadlineAt=Number.isFinite(Number(deadlineAt))&&Number(deadlineAt)>Date.now()
       ?Number(deadlineAt)
-      :Date.now()+Math.max(MIN_PROVIDER_DEADLINE_MS,Number.isFinite(configuredMaxLatencyMs)?configuredMaxLatencyMs:12000);
+      :Date.now()+effectiveMaxLatencyMs;
 
     const configuredOutputTokenCeiling=Number(outputTokenCeilingOverride)||(
       kind==="dialogue"
