@@ -13,6 +13,12 @@ const actionSource=fs.readFileSync(path.join(__dirname,"../src/services/action-s
 const perceptionSource=fs.readFileSync(path.join(__dirname,"../src/services/perception-service.js"),"utf8");
 const entityRepoSource=fs.readFileSync(path.join(__dirname,"../src/repositories/entity-repo.js"),"utf8");
 
+test("Gemini strips unsupported JSON Schema string formats before provider submission",()=>{
+  assert.match(geminiSource,/const providerSupportedStringFormats = new Set\(\["date-time","date","time"\]\)/);
+  assert.match(geminiSource,/if \(key === "format" && !providerSupportedStringFormats\.has\(String\(value\)\)\) continue/);
+  assert.match(geminiSource,/z\.string\(\)\.uuid\(\)/);
+});
+
 test("Gemini uses a stable multi-model fallback chain",()=>{
   assert.match(envSource,/GEMINI_MODEL[\s\S]*default\("gemini-3\.8-flash"\)/);
   assert.match(envSource,/GEMINI_FALLBACK_MODELS/);
