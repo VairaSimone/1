@@ -11,6 +11,7 @@ test("retention policy protects against aggressive windows", () => {
   assert.ok(policy.needHistoryDays >= 1);
   assert.ok(policy.emotionHistoryDays >= 1);
   assert.ok(policy.actionDays >= 1);
+  assert.ok(policy.simulationTickDays >= 1);
   assert.ok(policy.eventDays >= 1);
   assert.ok(policy.importantEventDays >= 7);
   assert.ok(policy.memoryArchiveDays >= 7);
@@ -52,6 +53,7 @@ test("retention wires all high-growth tables and deletes events before actions",
   for (const helper of [
     "deleteOldNeedHistory",
     "deleteOldEmotionHistory",
+    "deleteOldSimulationTicks",
     "deleteOldEvents",
     "compactOldActionDecisionSummaries",
     "deleteOldActions",
@@ -314,6 +316,7 @@ test("retention prioritizes high-growth event/action cleanup before slower compa
   const path=require("node:path");
   const source=fs.readFileSync(path.join(__dirname,"../src/services/safe-retention-service.js"),"utf8");
   const run=source.slice(source.indexOf("async function runSafeRetention"),source.indexOf("async function maybeRunSafeRetention"));
+  assert.ok(run.indexOf("deleteOldSimulationTicks(lock.conn, simulationId, mysqlSimulationTime)")<run.indexOf("compactOldCognitiveStates(lock.conn, simulationId, mysqlSimulationTime)"));
   assert.ok(run.indexOf("deleteOldEvents(lock.conn, simulationId, mysqlSimulationTime)")<run.indexOf("compactOldCognitiveStates(lock.conn, simulationId, mysqlSimulationTime)"));
   assert.ok(run.indexOf("deleteOldActions(lock.conn, simulationId, mysqlSimulationTime)")<run.indexOf("compactOldCognitiveStates(lock.conn, simulationId, mysqlSimulationTime)"));
   assert.ok(run.indexOf("deleteOldRelationshipHistory(lock.conn, simulationId, mysqlSimulationTime)")<run.indexOf("compactOldCognitiveStates(lock.conn, simulationId, mysqlSimulationTime)"));
@@ -322,6 +325,21 @@ test("retention prioritizes high-growth event/action cleanup before slower compa
 test("retention treats blank numeric environment values as unspecified",()=>{
   assert.equal(retention.positiveInt("",7500,250),7500);
   assert.equal(retention.boundedNumber("",0.82,0,1),0.82);
+});
+
+test("retention bounds simulation tick history without deleting active ticks",()=>{
+  const fs=require("node:fs");
+  const path=require("node:path");
+  const source=fs.readFileSync(path.join(__dirname,"../src/services/safe-retention-service.js"),"utf8");
+  const policy=retention.getRetentionPolicy();
+  assert.ok(policy.simulationTickDays>=1);
+  assert.match(source,/async function deleteOldSimulationTicks/);
+  const start=source.indexOf("async function deleteOldSimulationTicks");
+  const end=source.indexOf("\nasync function deleteOldEvents",start);
+  const helperBlock=source.slice(start,end);
+  assert.match(helperBlock,/status IN ('COMPLETED','FAILED','SKIPPED')/);
+  assert.doesNotMatch(helperBlock,/status='RUNNING'/);
+  assert.match(source,/RETENTION_SIMULATION_TICK_DAYS/);
 });
 
 test("decision context archival preserves invalid raw context and never overwrites an existing archive",()=>{
