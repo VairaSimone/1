@@ -60,9 +60,16 @@ async function getBinaryLogSizeBytes(db = pool) {
   return rows.reduce((total, row) => total + Math.max(0, Number(row.File_size || 0)), 0);
 }
 
-function estimateDumpSizeBytes(logicalDataBytes) {
+function getDumpEstimateSafetyFactor() {
+  const configured = Number(env.DB_DUMP_ESTIMATE_FACTOR);
+  if (!Number.isFinite(configured) || configured < 1) return DUMP_ESTIMATE_SAFETY_FACTOR;
+  return configured;
+}
+
+function estimateDumpSizeBytes(logicalDataBytes, safetyFactor = getDumpEstimateSafetyFactor()) {
   const dataBytes = Math.max(0, Number(logicalDataBytes) || 0);
-  return Math.ceil(dataBytes * DUMP_ESTIMATE_SAFETY_FACTOR);
+  const factor = Number.isFinite(Number(safetyFactor)) ? Math.max(1, Number(safetyFactor)) : DUMP_ESTIMATE_SAFETY_FACTOR;
+  return Math.ceil(dataBytes * factor);
 }
 
 async function getDatabaseSizeBreakdown(db = pool) {
@@ -125,6 +132,7 @@ async function checkDatabaseSizeLimit(db = pool) {
 module.exports = {
   BYTES_PER_MB,
   DUMP_ESTIMATE_SAFETY_FACTOR,
+  getDumpEstimateSafetyFactor,
   megabytesToBytes,
   isDatabaseSizeLimitReached,
   getDatabaseSizeLimitBytes,
