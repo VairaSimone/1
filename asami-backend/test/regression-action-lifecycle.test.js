@@ -22,3 +22,34 @@ test("event effect insert remains inside the retried transaction",()=>{
   const block=source.slice(start,end);
   assert.ok(block.indexOf("withTransaction")<block.indexOf("INSERT INTO event_effects"));
 });
+
+test("simulation engine completes active actions before stale decision reconciliation",()=>{
+  const fs=require("node:fs");
+  const path=require("node:path");
+  const source=fs.readFileSync(path.join(__dirname,"../src/simulation/engine.js"),"utf8");
+  const entityLoop=source.indexOf("for (const id of actors)");
+  const completion=source.indexOf("actionService.completeAction",entityLoop);
+  const reconciliation=source.indexOf("reconcileStaleEvaluatedDecisions");
+  assert.ok(entityLoop>=0);
+  assert.ok(completion>entityLoop);
+  assert.ok(reconciliation>completion);
+  assert.equal(source.indexOf('setPhase("action.reconcile");',0)>entityLoop,true);
+});
+
+test("autonomy actor selection prioritizes entities with active actions",()=>{
+  const fs=require("node:fs");
+  const path=require("node:path");
+  const source=fs.readFileSync(path.join(__dirname,"../src/services/autonomy-service.js"),"utf8");
+  assert.match(
+    source,
+    /ORDER BY CASE WHEN EXISTS\(SELECT 1 FROM actions a WHERE a\.simulation_id=e\.simulation_id AND a\.entity_id=e\.id AND a\.status='ACTIVE'\) THEN 0 ELSE 1 END/
+  );
+});
+
+test("stale decision logs distinguish decision time from reconciliation time",()=>{
+  const fs=require("node:fs");
+  const path=require("node:path");
+  const source=fs.readFileSync(path.join(__dirname,"../src/services/action-reconciliation-service.js"),"utf8");
+  assert.match(source,/decisionSimulationTime:row\.simulationTime/);
+  assert.match(source,/reconciliationSimulationTime:simulationTime/);
+});
