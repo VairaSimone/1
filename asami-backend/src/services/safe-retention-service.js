@@ -1531,5 +1531,8 @@ module.exports = {
   maybeRunSafeRetention,
   getAdaptiveRetentionProfile,
   ensureRetentionTelemetryTable,
-  getOldestRetentionDebtAt
+  getOldestRetentionDebtAt,
+  normalizeArchiveJson,
+  positiveInt,
+  boundedNumber
 };
