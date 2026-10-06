@@ -658,9 +658,11 @@ async function developTraits(entityId, simulationTime, evidence = {}, causeEvent
     const [updated] = await pool.query(`UPDATE entity_traits_current SET value=?,updated_simulation_at=?,version=version+1
        WHERE entity_id=UUID_TO_BIN(?) AND trait_id=UUID_TO_BIN(?) AND version=?`, [next, simulationTime, entityId, trait.traitId, trait.version]);
     if (!updated.affectedRows) continue;
-    await pool.query(`INSERT INTO entity_trait_history
-        (id,entity_id,trait_id,old_value,new_value,delta,changed_simulation_at,cause_event_id,cause_action_id,change_reason)
-       VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,?,UUID_TO_BIN(?),UUID_TO_BIN(?),?)`, [uuid(), entityId, trait.traitId, old, next, historyDelta, simulationTime, causeEventId, causeActionId, "repeated " + actionType + " experience: outcome=" + traitEvidence.outcomeValence.toFixed(2) + ", evidence=" + traitEvidence.evidenceStrength.toFixed(3) + ", repetition=" + sameAction.length]);
+    if (Math.abs(historyDelta) >= TRAIT_HISTORY_MIN_DELTA) {
+      await pool.query(`INSERT INTO entity_trait_history
+          (id,entity_id,trait_id,old_value,new_value,delta,changed_simulation_at,cause_event_id,cause_action_id,change_reason)
+         VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,?,UUID_TO_BIN(?),UUID_TO_BIN(?),?)`, [uuid(), entityId, trait.traitId, old, next, historyDelta, simulationTime, causeEventId, causeActionId, "repeated " + actionType + " experience: outcome=" + traitEvidence.outcomeValence.toFixed(2) + ", evidence=" + traitEvidence.evidenceStrength.toFixed(3) + ", repetition=" + sameAction.length]);
+    }
     out.push({ code: trait.code, old, next, delta: historyDelta, evidence: { actionType, targetEntityId, repetition: sameAction.length, successRate: traitEvidence.successRate, failureRate: traitEvidence.failureRate, partialRate: traitEvidence.partialRate, outcomeValence: traitEvidence.outcomeValence, evidenceStrength: traitEvidence.evidenceStrength, relationshipQuality, selfPerception: traitEvidence.selfPerception } });
   }
   return out;
