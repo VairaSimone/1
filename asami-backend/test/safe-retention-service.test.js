@@ -320,10 +320,8 @@ test("retention prioritizes high-growth event/action cleanup before slower compa
 });
 
 test("retention treats blank numeric environment values as unspecified",()=>{
-  const fs=require("node:fs");
-  const path=require("node:path");
-  const source=fs.readFileSync(path.join(__dirname,"../src/services/safe-retention-service.js"),"utf8");
-  assert.match(source,/value === undefined \|\| value === null \|\| String\(value\)\.trim\(\) === ""/);
+  assert.equal(retention.positiveInt("",7500,250),7500);
+  assert.equal(retention.boundedNumber("",0.82,0,1),0.82);
 });
 
 test("decision context archival preserves invalid raw context and never overwrites an existing archive",()=>{
@@ -337,5 +335,4 @@ test("decision context archival preserves invalid raw context and never overwrit
   assert.match(source,/ON DUPLICATE KEY UPDATE decision_id=decision_id/);
   assert.match(source,/JSON\.stringify\(archiveContext\)/);
   assert.match(source,/BIN_TO_UUID\(d\.selected_option_id\) AS selectedOptionId/);
-  assert.doesNotMatch(source,/JSON_SET\([\s\S]*JSON_EXTRACT\(context,'\\$\.chosenAction'\)/);
-});
+  assert.match(source,/UPDATE decisions SET context=\? WHERE id=UUID_TO_BIN\(\?\)/);\n  assert.match(source,/JSON_VALID\(d\.context\)/);\n});
