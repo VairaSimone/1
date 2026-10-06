@@ -32,6 +32,14 @@ const EMOTION_HISTORY_MIN_SIMULATION_INTERVAL_MINUTES = nonNegativeEnvNumber(
   360
 );
 const TRAIT_HISTORY_MIN_DELTA = nonNegativeEnvNumber(process.env.TRAIT_HISTORY_MIN_DELTA, 0.001);
+const NEED_HISTORY_SIGNIFICANT_MIN_DELTA = nonNegativeEnvNumber(
+  process.env.NEED_HISTORY_SIGNIFICANT_MIN_DELTA,
+  0.03
+);
+const EMOTION_HISTORY_SIGNIFICANT_MIN_DELTA = nonNegativeEnvNumber(
+  process.env.EMOTION_HISTORY_SIGNIFICANT_MIN_DELTA,
+  0.03
+);
 const pendingNeedHistory = new Map();
 const pendingEmotionHistory = new Map();
 const lastNeedHistoryPersistedAt = new Map();
@@ -120,9 +128,15 @@ async function accumulateNeedHistory({ entityId, needId, code, oldValue, newValu
   pendingNeedHistory.set(key, pending);
 
   const critical = crossesCriticalNeedThreshold(code, pending.oldValue, pending.newValue);
-  const forcePersist = Boolean(significant || critical);
+  const significantDelta = Math.abs(Number(pending.delta) || 0) >= NEED_HISTORY_SIGNIFICANT_MIN_DELTA;
+  const forcePersist = Boolean(critical || (significant && significantDelta));
   const backgroundHistory = !pending.causeActionId && !pending.causeEventId;
-  if (!shouldPersistHistory({ delta: pending.delta, significant, critical, threshold: NEED_HISTORY_MIN_DELTA })) return false;
+  if (!shouldPersistHistory({
+    delta: pending.delta,
+    significant: significant && significantDelta,
+    critical,
+    threshold: NEED_HISTORY_MIN_DELTA
+  })) return false;
   if (!forcePersist) {
     if (!backgroundHistory) return false;
     if (!historyIntervalElapsed(
@@ -221,9 +235,14 @@ async function accumulateEmotionHistory({ entityId, emotionId, code, oldIntensit
   pending.causeActionId = causeActionId || pending.causeActionId || null;
   pendingEmotionHistory.set(key, pending);
 
-  const forcePersist = Boolean(significant);
+  const significantDelta = Math.abs(Number(pending.delta) || 0) >= EMOTION_HISTORY_SIGNIFICANT_MIN_DELTA;
+  const forcePersist = Boolean(significant && significantDelta);
   const backgroundHistory = !pending.causeActionId && !pending.causeEventId;
-  if (!shouldPersistHistory({ delta: pending.delta, significant, threshold: EMOTION_HISTORY_MIN_DELTA })) return false;
+  if (!shouldPersistHistory({
+    delta: pending.delta,
+    significant: significant && significantDelta,
+    threshold: EMOTION_HISTORY_MIN_DELTA
+  })) return false;
   if (!forcePersist) {
     if (!backgroundHistory) return false;
     if (!historyIntervalElapsed(
