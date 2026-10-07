@@ -3,9 +3,24 @@ const { env } = require("../config/env");
 const { advancePlanForAction } = require("./planning-service");
 const { markActionPostProcessingComplete, getActionDurationMinutes } = require("./action-service");
 const { markDecisionActionCreated, markDecisionActionOutcome } = require("./decision-service");
+const { finalizeDecisionCognitiveArtifacts } = require("./decision-cognitive-finalization-service");
 const observability = require("./simulation-observability");
 function parseJson(value,fallback={}){if(value===null||value===undefined)return fallback;if(typeof value==="object")return value;try{return JSON.parse(value);}catch{return fallback;}}
-const logger = require("../lib/logger");
+async function finalizeRecoveredDecisionCognition({simulationId,decisionId,entityId,simulationTime,outcome=null,actionType=null}={}){
+  if(!simulationId||!decisionId||!simulationTime)return false;
+  try{
+    const result=await finalizeDecisionCognitiveArtifacts({simulationId,decisionId,entityId,simulationTime,outcome,actionType});
+    return Boolean(result?.repaired);
+  }catch(error){
+    logger.warnThrottled(
+      `decision:cognitive-reconcile:${decisionId}`,
+      60000,
+      {simulationId,decisionId,entityId,simulationTime,error:String(error?.message||error)},
+      "decision cognitive finalization deferred to terminal reconciliation"
+    );
+    return false;
+  }
+}
 
 async function reconcileStaleEvaluatedDecisions(simulationId,simulationTime,{limit=null}={}){
   if(!simulationId||!simulationTime)return{checked:0,repaired:0,kept:0,stale:0,remainingStale:0,invariantViolations:0};
@@ -127,6 +142,7 @@ async function reconcileStaleEvaluatedDecisions(simulationId,simulationTime,{lim
           );
         }
         repaired+=1;
+        await finalizeRecoveredDecisionCognition({simulationId,decisionId:row.decisionId,entityId:row.entityId,simulationTime:row.simulationTime,outcome:String(actionResult.outcome||"SUCCESS").toUpperCase(),actionType:row.actionType});
       }
       continue;
     }
@@ -168,6 +184,7 @@ async function reconcileStaleEvaluatedDecisions(simulationId,simulationTime,{lim
           );
         }
         repaired+=1;
+        await finalizeRecoveredDecisionCognition({simulationId,decisionId:row.decisionId,entityId:row.entityId,simulationTime:row.simulationTime,outcome:"PARTIAL",actionType:row.actionType});
       }
       continue;
     }
@@ -212,6 +229,7 @@ async function reconcileStaleEvaluatedDecisions(simulationId,simulationTime,{lim
           );
         }
         repaired+=1;
+        await finalizeRecoveredDecisionCognition({simulationId,decisionId:row.decisionId,entityId:row.entityId,simulationTime:row.simulationTime,outcome:nextStatus==="FAILED"?"FAILURE":"CANCELLED",actionType:row.actionType});
       }
       continue;
     }
@@ -466,6 +484,16 @@ async function reconcileCompletedActions(simulationId,{limit=100}={}) {
             }),row.decisionId]
           );
         }
+        if(row.decisionId){
+          await finalizeRecoveredDecisionCognition({
+            simulationId,
+            decisionId:row.decisionId,
+            entityId:row.entityId,
+            simulationTime:row.completedSimulationAt,
+            outcome:String(result.outcome||"PARTIAL").toUpperCase(),
+            actionType:row.actionType
+          });
+        }
         if(row.intentionId && String(row.intentionStatus||"").toUpperCase()==="ACTIVE"){
           await pool.query(
             `UPDATE intentions SET status='CANCELLED',version=version+1
@@ -505,6 +533,16 @@ async function reconcileCompletedActions(simulationId,{limit=100}={}) {
             outcome:terminalStatus==="INTERRUPTED"
               ?String(result.outcome||"PARTIAL").toUpperCase()
               :String(result.outcome||"SUCCESS").toUpperCase()
+          });
+          await finalizeRecoveredDecisionCognition({
+            simulationId,
+            decisionId:row.decisionId,
+            entityId:row.entityId,
+            simulationTime:row.completedSimulationAt,
+            outcome:terminalStatus==="INTERRUPTED"
+              ?String(result.outcome||"PARTIAL").toUpperCase()
+              :String(result.outcome||"SUCCESS").toUpperCase(),
+            actionType:row.actionType
           });
         }
       }
