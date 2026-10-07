@@ -66,6 +66,8 @@ const Env = z.object({
     return Number.isFinite(n)?Math.max(2048,n):value;
   },z.coerce.number().int().min(2048).max(20000).default(2048)),
   GEMINI_AUTONOMY_COMPACT_OUTPUT_TOKEN_CEILING: z.coerce.number().int().min(2048).max(4096).default(2048),
+  GEMINI_AUTONOMY_MIN_OUTPUT_TOKEN_CEILING: z.coerce.number().int().min(512).max(4096).default(768),
+  GEMINI_AUTONOMY_HIGH_VALUE_MIN_OUTPUT_TOKEN_CEILING: z.coerce.number().int().min(768).max(4096).default(1024),
   // The autonomy fallback fan-out is intentionally capped at 2 in GeminiService.
   // Clamp legacy values (for example 3/4 from older .env files) instead of
   // crashing the whole backend during startup after a configuration update.
@@ -94,6 +96,8 @@ const Env = z.object({
     const n=Number(value);
     return Number.isFinite(n)?Math.min(1440,Math.max(60,n)):value;
   },z.coerce.number().nonnegative().default(1440)),
+  GEMINI_AUTONOMY_HIGH_VALUE_RESERVE_USD: z.coerce.number().nonnegative().max(1).default(0.03),
+  GEMINI_AUTONOMY_BUDGET_RETRY_MINUTES: z.coerce.number().int().min(1).max(60).default(5),
   GEMINI_AUTONOMY_HIGH_VALUE_MIN_INTERVAL_MINUTES: z.preprocess((value)=>{
     if(value===undefined||value===null||String(value).trim()==="")return 120;
     const n=Number(value);
