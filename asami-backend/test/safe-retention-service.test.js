@@ -451,3 +451,19 @@ test("retention debt-age query keeps SQL placeholders and bound parameters in sy
   const params=paramsSource.slice(paramsSource.indexOf("[")+1).split(",").map(value=>value.trim()).filter(Boolean);
   assert.equal(placeholderCount,params.length);
 });
+
+test("retention plan-step debt uses the plan timestamp because plan_steps has no creation timestamp",()=>{
+  const fs=require("node:fs");
+  const path=require("node:path");
+  const source=fs.readFileSync(path.join(__dirname,"../src/services/safe-retention-service.js"),"utf8");
+  const start=source.indexOf("async function getOldestRetentionDebtAt");
+  const end=source.indexOf("\nasync function persistRetentionTelemetry",start);
+  const block=source.slice(start,end);
+  assert.match(block,/SELECT p\\.created_simulation_at FROM plan_steps ps JOIN plans p ON p\\.id=ps\\.plan_id/);
+  assert.doesNotMatch(block,/SELECT ps\\.created_simulation_at FROM plan_steps ps/);
+  const compactionStart=source.indexOf("async function compactOldPlanStepResults");
+  const compactionEnd=source.indexOf("\nasync function compactExistingDecisionActionSummaries",compactionStart);
+  const compaction=source.slice(compactionStart,compactionEnd);
+  assert.match(compaction,/p\\.created_simulation_at<\\?/);
+  assert.doesNotMatch(compaction,/ps\\.created_simulation_at/);
+});
