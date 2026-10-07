@@ -109,6 +109,25 @@ function estimateCostUsd(inputTokens, outputTokens) {
   return (Number(inputTokens) / 1_000_000) * env.GEMINI_INPUT_PRICE_USD_PER_1M +
     (Number(outputTokens) / 1_000_000) * env.GEMINI_OUTPUT_PRICE_USD_PER_1M;
 }
+function calculateAffordableOutputTokenCeiling({
+  requestedCeiling,
+  minimumOutputTokenCeiling,
+  inputTokens,
+  dailyRemainingUsd,
+  monthlyRemainingUsd
+}={}) {
+  const requested=Math.max(1,Math.floor(Number(requestedCeiling)||1));
+  const minimum=Math.max(1,Math.min(requested,Math.floor(Number(minimumOutputTokenCeiling)||1)));
+  const inputCost=estimateCostUsd(inputTokens,0);
+  const outputPrice=Number(env.GEMINI_OUTPUT_PRICE_USD_PER_1M)||0;
+  if(outputPrice<=0)return requested;
+  const availableUsd=Math.min(Number(dailyRemainingUsd)||0,Number(monthlyRemainingUsd)||0);
+  const outputBudgetUsd=Math.max(0,availableUsd-inputCost);
+  const affordable=Math.floor(outputBudgetUsd/outputPrice*1_000_000);
+  if(affordable<minimum)return 0;
+  return Math.max(minimum,Math.min(requested,affordable));
+}
+
 
 function wallClockDailyPacedLimitUsd(now = new Date()) {
   const dailyLimit = Number(env.GEMINI_DAILY_BUDGET_USD);
@@ -198,11 +217,11 @@ function emptyUsage(period_type, period_key, kind = null) {
   return { kind, period_type, period_key, requests: 0, input_tokens: 0, output_tokens: 0, estimated_usd: 0, reserved_usd: 0 };
 }
 
-async function reserve({ prompt, outputTokenCeiling, kind, simulationId=null, entityId=null, simulationTime=null }) {
+async function reserve({ prompt, outputTokenCeiling, minimumOutputTokenCeiling=512, highValue=false, kind, simulationId=null, entityId=null, simulationTime=null }) {
   await ensureGeminiUsageTable();
   const budgetKind = kind === "dialogue" ? "DIALOGUE" : "AUTONOMY";
   const cachedBlockMs = Math.max(0, Number(budgetBlockedUntil.get(budgetKind) || 0) - Date.now());
-  if (cachedBlockMs > 0) {
+  if (cachedBlockMs > 0 && !(budgetKind==="AUTONOMY" && highValue)) {
     return { allowed: false, reason: "DAILY_BUDGET", retryAfterMs: cachedBlockMs };
   }
   const now = new Date();
@@ -246,15 +265,32 @@ async function reserve({ prompt, outputTokenCeiling, kind, simulationId=null, en
 
     const dailyCommitted = Number(dayRow?.estimated_usd || 0) + Number(dayRow?.reserved_usd || 0);
     const monthlyCommitted = Number(monthRow?.estimated_usd || 0) + Number(monthRow?.reserved_usd || 0);
+    const routineReserveUsd = budgetKind==="AUTONOMY" && !highValue
+      ? Math.max(0,Number(env.GEMINI_AUTONOMY_HIGH_VALUE_RESERVE_USD)||0)
+      : 0;
+    const effectiveDailyLimit = budgetKind==="AUTONOMY" && !highValue
+      ? Math.max(0,pacedDailyLimit-routineReserveUsd)
+      : pacedDailyLimit;
+    const dynamicOutputTokenCeiling = calculateAffordableOutputTokenCeiling({
+      requestedCeiling:outputTokenCeiling,
+      minimumOutputTokenCeiling,
+      inputTokens,
+      dailyRemainingUsd:effectiveDailyLimit-dailyCommitted,
+      monthlyRemainingUsd:monthlyLimit-monthlyCommitted
+    });
+    const effectiveEstimatedUsd = dynamicOutputTokenCeiling>0
+      ? estimateCostUsd(inputTokens,dynamicOutputTokenCeiling)
+      : Infinity;
     const canSpend =
-      dailyCommitted + estimatedUsd <= pacedDailyLimit + 1e-9 &&
-      monthlyCommitted + estimatedUsd <= monthlyLimit + 1e-9 &&
+      dynamicOutputTokenCeiling>0 &&
+      dailyCommitted + effectiveEstimatedUsd <= effectiveDailyLimit + 1e-9 &&
+      monthlyCommitted + effectiveEstimatedUsd <= monthlyLimit + 1e-9 &&
       Number(dayRow?.requests || 0) < dailyRequests &&
       Number(monthRow?.requests || 0) < monthlyRequests;
 
     if (!canSpend) {
       await conn.rollback();
-      const dailyBlocked = dailyCommitted + estimatedUsd > pacedDailyLimit + 1e-9 || Number(dayRow?.requests || 0) >= dailyRequests;
+      const dailyBlocked = dynamicOutputTokenCeiling===0 || dailyCommitted + effectiveEstimatedUsd > effectiveDailyLimit + 1e-9 || Number(dayRow?.requests || 0) >= dailyRequests;
       let retryAfterMs = 0;
       if (dailyBlocked) {
         if(autonomyPacingEnabled || budgetKind === "DIALOGUE"){
@@ -265,41 +301,43 @@ async function reserve({ prompt, outputTokenCeiling, kind, simulationId=null, en
           const requiredMinutes = Math.max(0, requiredFraction * 1440 - graceMinutes);
           retryAfterMs = Math.max(1000, Math.ceil(Math.max(0, requiredMinutes - nowMinutes) * 60000));
         }else{
-          retryAfterMs = Math.max(1000, 24 * 60 * 60 * 1000 - (Date.now() % (24 * 60 * 60 * 1000)));
+          retryAfterMs = Math.max(60_000, Number(env.GEMINI_AUTONOMY_BUDGET_RETRY_MINUTES||5)*60_000);
         }
         budgetBlockedUntil.set(budgetKind, Date.now() + retryAfterMs);
       } else {
-        retryAfterMs = Math.max(1000, 24 * 60 * 60 * 1000 - (Date.now() % (24 * 60 * 60 * 1000)));
+        retryAfterMs = Math.max(60_000, Number(env.GEMINI_AUTONOMY_BUDGET_RETRY_MINUTES||5)*60_000);
         budgetBlockedUntil.set(budgetKind, Date.now() + retryAfterMs);
       }
       return {
         allowed: false,
         reason: dailyBlocked ? "DAILY_BUDGET" : "MONTHLY_BUDGET",
         retryAfterMs,
-        estimatedUsd,
-        pacedDailyLimit
+        estimatedUsd: Number.isFinite(effectiveEstimatedUsd) ? effectiveEstimatedUsd : estimatedUsd,
+        pacedDailyLimit,
+        effectiveDailyLimit,
+        outputTokenCeiling: dynamicOutputTokenCeiling
       };
     }
 
     await conn.query(
       `UPDATE gemini_usage SET reserved_usd=reserved_usd+?,requests=requests+1 WHERE kind=? AND period_type='DAY' AND period_key=?`,
-      [estimatedUsd, budgetKind, day]
+      [effectiveEstimatedUsd, budgetKind, day]
     );
     await conn.query(
       `UPDATE gemini_usage SET reserved_usd=reserved_usd+?,requests=requests+1 WHERE kind=? AND period_type='MONTH' AND period_key=?`,
-      [estimatedUsd, budgetKind, month]
+      [effectiveEstimatedUsd, budgetKind, month]
     );
     if(simulationId&&simulationDay){
       await conn.query(
         `INSERT INTO gemini_simulation_usage(simulation_id,kind,simulation_day,requests,reserved_usd)
          VALUES(?,?,?,1,?)
          ON DUPLICATE KEY UPDATE requests=requests+1,reserved_usd=reserved_usd+VALUES(reserved_usd)`,
-        [String(simulationId),budgetKind,simulationDay,estimatedUsd]
+        [String(simulationId),budgetKind,simulationDay,effectiveEstimatedUsd]
       );
     }
     await conn.commit();
     budgetBlockedUntil.delete(budgetKind);
-    return { allowed: true, inputTokens, estimatedUsd, day, month, kind, simulationId, entityId, simulationDay };
+    return { allowed: true, inputTokens, estimatedUsd:effectiveEstimatedUsd, outputTokenCeiling:dynamicOutputTokenCeiling, day, month, kind, simulationId, entityId, simulationDay, highValue:Boolean(highValue) };
   } catch (err) {
     try { await conn.rollback(); } catch {}
     throw err;
@@ -452,4 +490,4 @@ async function getSimulationDecisionCoverage(simulationId){
   };
 }
 
-module.exports = { ensureGeminiUsageTable, reserve, finalize, release, restoreRejectedRequest, recordDecisionOutcome, getSimulationDecisionCoverage, getUsage, blockProvider, providerBlockRemainingMs, providerBlockStatus, localBudgetBlockStatus, isLocallyBlocked, estimateInputTokens, estimateCostUsd, dailyPacedLimitUsd, wallClockDailyPacedLimitUsd, simulationDayKey };
+module.exports = { ensureGeminiUsageTable, reserve, finalize, release, restoreRejectedRequest, recordDecisionOutcome, getSimulationDecisionCoverage, getUsage, blockProvider, providerBlockRemainingMs, providerBlockStatus, localBudgetBlockStatus, isLocallyBlocked, estimateInputTokens, estimateCostUsd, dailyPacedLimitUsd, wallClockDailyPacedLimitUsd, simulationDayKey , calculateAffordableOutputTokenCeiling};
