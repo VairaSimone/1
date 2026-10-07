@@ -20,3 +20,12 @@ test('normalization remains deterministic for cognitive keys', () => {
   assert.equal(cognitive.beliefRevisionTarget(1, 2), 1);
   assert.equal(cognitive.beliefRevisionTarget(-1, -2), 1);
 });
+
+
+test("counterfactual worlds keep the shared baseline only on the selected world",()=>{
+  const fs=require("node:fs");
+  const path=require("node:path");
+  const source=fs.readFileSync(path.join(__dirname,"../src/services/cognitive-v3-service.js"),"utf8");
+  assert.match(source,/const isSelectedWorld = worldKey === normalize\(actionType\)/);
+  assert.match(source,/const baselineState = isSelectedWorld \? JSON\.stringify\(baseline\) : null/);
+});

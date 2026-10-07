@@ -390,3 +390,31 @@ test("retention has lifecycle cleanup for operational decision artifacts",()=>{
   assert.match(source,/NOT EXISTS \(SELECT 1 FROM decision_options/);
   assert.match(source,/NOT EXISTS \(SELECT 1 FROM decision_context_archive/);
 });
+
+
+test("forced retention bypasses simulation-time interval checks for database pressure",()=>{
+  const fs=require("node:fs");
+  const path=require("node:path");
+  const source=fs.readFileSync(path.join(__dirname,"../src/services/safe-retention-service.js"),"utf8");
+  assert.match(source,/async function maybeRunSafeRetention\(simulationId, simulationTime, options = \{\}\)/);
+  assert.match(source,/const force = Boolean\(options\?\.force\)/);
+  assert.match(source,/if \(!force && Number\.isFinite\(simulationMs\)/);
+});
+
+test("old plan-step and decision action-summary payloads are compacted safely",()=>{
+  const fs=require("node:fs");
+  const path=require("node:path");
+  const source=fs.readFileSync(path.join(__dirname,"../src/services/safe-retention-service.js"),"utf8");
+  assert.match(source,/async function compactOldPlanStepResults/);
+  assert.match(source,/compactPlanStepResult\(row\.result\)/);
+  assert.match(source,/async function compactExistingDecisionActionSummaries/);
+  assert.match(source,/compactDecisionActualOutcome\(row\.actualOutcome\)/);
+});
+
+test("counterfactual world baseline is deduplicated per decision",()=>{
+  const fs=require("node:fs");
+  const path=require("node:path");
+  const source=fs.readFileSync(path.join(__dirname,"../src/services/safe-retention-service.js"),"utf8");
+  assert.match(source,/async function deduplicateCounterfactualWorldBaselines/);
+  assert.match(source,/ROW_NUMBER\(\) OVER\(PARTITION BY decision_id ORDER BY selected DESC,id ASC\)/);
+});

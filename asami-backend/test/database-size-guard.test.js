@@ -4,6 +4,8 @@ const assert = require("node:assert/strict");
 const {
   BYTES_PER_MB,
   DUMP_ESTIMATE_SAFETY_FACTOR,
+  MIN_DUMP_ESTIMATE_SAFETY_FACTOR,
+  getDumpEstimateSafetyFactor,
   megabytesToBytes,
   isDatabaseSizeLimitReached,
   estimateDumpSizeBytes
@@ -30,8 +32,10 @@ test("database size guard trips at and above the configured limit", () => {
 });
 
 test("dump estimate applies a safety factor to logical table data", () => {
-  assert.equal(DUMP_ESTIMATE_SAFETY_FACTOR, 1.5);
-  assert.equal(estimateDumpSizeBytes(100 * BYTES_PER_MB), 150 * BYTES_PER_MB);
+  assert.equal(DUMP_ESTIMATE_SAFETY_FACTOR, 2.75);
+  assert.equal(MIN_DUMP_ESTIMATE_SAFETY_FACTOR, 2.75);
+  assert.equal(getDumpEstimateSafetyFactor(), 2.75);
+  assert.equal(estimateDumpSizeBytes(100 * BYTES_PER_MB), 275 * BYTES_PER_MB);
   assert.equal(estimateDumpSizeBytes(0), 0);
 });
 
@@ -94,4 +98,10 @@ test("database storage guard ignores binary logs when binary logging is disabled
   assert.equal(breakdown.logicalDataBytes, 2097152);
   assert.equal(breakdown.binaryLogBytes, 0);
   assert.equal(breakdown.sizeBytes, 3145728);
+});
+
+
+test("dump estimate helper clamps unsafe explicit factors to the safety floor",()=>{
+  assert.equal(estimateDumpSizeBytes(100*BYTES_PER_MB,1.0),275*BYTES_PER_MB);
+  assert.equal(estimateDumpSizeBytes(100*BYTES_PER_MB,99),600*BYTES_PER_MB);
 });
