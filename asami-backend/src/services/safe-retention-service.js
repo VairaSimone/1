@@ -618,17 +618,49 @@ async function compactExistingDecisionActionSummaries(conn,simulationId,simulati
 
 async function deduplicateCounterfactualWorldBaselines(conn,simulationId,simulationTime){
   if(POLICY.dryRun)return{candidates:0,updated:0,remainingCandidates:0,dryRun:true};
-  const [result]=await conn.query(
-    "UPDATE counterfactual_worlds cw JOIN (" +
+  let updated=0;
+  let candidates=0;
+  let budgetExhausted=false;
+  while(updated<Math.min(POLICY.maxDeletesPerTable,POLICY.batchSize) && retentionBudgetAvailable(simulationId)){
+    const limit=Math.min(POLICY.batchSize,POLICY.maxDeletesPerTable-updated);
+    const [rows]=await conn.query(
+      "SELECT id FROM (" +
+        "SELECT id,ROW_NUMBER() OVER(PARTITION BY decision_id ORDER BY selected DESC,id ASC) AS rn " +
+        "FROM counterfactual_worlds " +
+        "WHERE simulation_id=UUID_TO_BIN(?) AND baseline_state IS NOT NULL" +
+      ") ranked WHERE ranked.rn>1 LIMIT "+limit,
+      [simulationId]
+    );
+    if(!rows.length)break;
+    candidates+=rows.length;
+    const ids=rows.map(row=>row.id).filter(Boolean);
+    if(!ids.length)break;
+    const placeholders=ids.map(()=> "UUID_TO_BIN(?)").join(",");
+    const [result]=await conn.query(
+      "UPDATE counterfactual_worlds " +
+      "SET baseline_state=NULL,version=version+1 " +
+      "WHERE simulation_id=UUID_TO_BIN(?) AND id IN ("+placeholders+")",
+      [simulationId,...ids]
+    );
+    const affected=Number(result.affectedRows||0);
+    updated+=affected;
+    if(affected<ids.length)break;
+    if(!retentionBudgetAvailable(simulationId))budgetExhausted=true;
+  }
+  const [backlog]=await conn.query(
+    "SELECT COUNT(*) AS candidates FROM (" +
       "SELECT id,ROW_NUMBER() OVER(PARTITION BY decision_id ORDER BY selected DESC,id ASC) AS rn " +
       "FROM counterfactual_worlds " +
       "WHERE simulation_id=UUID_TO_BIN(?) AND baseline_state IS NOT NULL" +
-    ") ranked ON ranked.id=cw.id " +
-    "SET cw.baseline_state=NULL,cw.version=cw.version+1 " +
-    "WHERE ranked.rn>1 AND cw.simulation_id=UUID_TO_BIN(?)",
-    [simulationId,simulationId]
+    ") ranked WHERE ranked.rn>1",
+    [simulationId]
   );
-  return{candidates:Number(result.affectedRows||0),updated:Number(result.affectedRows||0),remainingCandidates:0};
+  return{
+    candidates,
+    updated,
+    remainingCandidates:Number(backlog[0]?.candidates||0),
+    budgetExhausted:budgetExhausted || retentionBudgetRemainingMs(simulationId)<=0
+  };
 }
 
 async function deleteOldRelationshipHistory(conn,simulationId,simulationTime){
