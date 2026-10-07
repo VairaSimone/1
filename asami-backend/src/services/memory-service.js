@@ -164,29 +164,59 @@ function buildMemoryDedupeKey({entityId,locationId,metadata,content}={}) {
     actionType,outcome,String(goalId||""),String(planId||"")
   ].join("|")).digest("hex");
 }
-async function upsertDeduplicatedActionMemory({simulationId,entityId,locationId,simulationAt,content,importance,strength,confidence,emotionalIntensity,metadata,dedupeKey}){
+async function upsertDeduplicatedActionMemory({simulationId,entityId,locationId,simulationAt,content,importance,strength,confidence,emotionalIntensity,metadata,dedupeKey,eventId=null,activityId=null,type="EPISODIC",db=pool}){
   if(!dedupeKey)return null;
-  const [rows]=await pool.query(
-    "SELECT BIN_TO_UUID(id) AS id,version,importance,strength,confidence,emotional_intensity AS emotionalIntensity,created_simulation_at AS createdAt,metadata FROM memories WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND status='ACTIVE' AND memory_dedupe_key=? ORDER BY created_simulation_at DESC LIMIT 1",
-    [simulationId,entityId,dedupeKey]
-  );
-  const existing=rows[0]||null;
-  if(!existing)return null;
-  const previousMetadata=normalizeJson(existing.metadata)||{};
-  const observationCount=Math.max(1,Number(previousMetadata.dedupeObservationCount||1)+1);
-  const nextMetadata={...previousMetadata,...metadata,memory_dedupe_key:dedupeKey,dedupeObservationCount:observationCount,firstObservedSimulationAt:previousMetadata.firstObservedSimulationAt||existing.createdAt,lastObservedSimulationAt:simulationAt,aggregated:true};
-  const nextStrength=Math.min(.94,Math.max(Number(existing.strength||0),Number(strength||0),.52+Math.log1p(observationCount)*.075));
-  const nextConfidence=Math.min(.95,Math.max(Number(existing.confidence||0),Number(confidence||0),.55+Math.log1p(observationCount)*.06));
-  const nextImportance=Math.min(.62,Math.max(Number(existing.importance||0),Number(importance||0)));
-  await pool.query(
-    "UPDATE memories SET content=?,memory_type='SEMANTIC',importance=?,strength=?,confidence=?,emotional_intensity=?,location_id=UUID_TO_BIN(?),created_simulation_at=?,last_recalled_simulation_at=?,metadata=?,version=version+1 WHERE id=UUID_TO_BIN(?) AND version=?",
-    [
-      "Repeated action pattern: "+actionLabel(metadata?.actionType)+" at "+(metadata?.location?.label||metadata?.location?.type||"the same place")+"; observed "+observationCount+" times.",
-      nextImportance,nextStrength,nextConfidence,Math.min(.25,Math.max(.08,Number(emotionalIntensity)||.08)),locationId||metadata?.locationId||metadata?.location?.id||null,
-      simulationAt,simulationAt,JSON.stringify(nextMetadata),existing.id,existing.version
-    ]
-  );
-  return existing.id;
+  const lockName="asami:memory:"+crypto.createHash("sha256").update(
+    [simulationId,entityId,dedupeKey].join("|")
+  ).digest("hex").slice(0,48);
+  const conn= db===pool ? await pool.getConnection() : db;
+  let lockAcquired=false;
+  try{
+    if(db===pool){
+      const [[lockRow]]=await conn.query("SELECT GET_LOCK(?,10) AS acquired",[lockName]);
+      lockAcquired=Number(lockRow?.acquired||0)===1;
+      if(!lockAcquired)throw Object.assign(new Error("Could not acquire memory dedupe lock"),{code:"MEMORY_DEDUPE_LOCK_TIMEOUT"});
+    }
+    const [rows]=await conn.query(
+      "SELECT BIN_TO_UUID(id) AS id,version,importance,strength,confidence,emotional_intensity AS emotionalIntensity,created_simulation_at AS createdAt,metadata "+
+      "FROM memories WHERE simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND status='ACTIVE' AND memory_dedupe_key=? "+
+      "ORDER BY created_simulation_at DESC LIMIT 1 FOR UPDATE",
+      [simulationId,entityId,dedupeKey]
+    );
+    const existing=rows[0]||null;
+    if(existing){
+      const previousMetadata=normalizeJson(existing.metadata)||{};
+      const observationCount=Math.max(1,Number(previousMetadata.dedupeObservationCount||1)+1);
+      const nextMetadata={...previousMetadata,...metadata,memory_dedupe_key:dedupeKey,dedupeObservationCount:observationCount,firstObservedSimulationAt:previousMetadata.firstObservedSimulationAt||existing.createdAt,lastObservedSimulationAt:simulationAt,aggregated:true};
+      const nextStrength=Math.min(.94,Math.max(Number(existing.strength||0),Number(strength||0),.52+Math.log1p(observationCount)*.075));
+      const nextConfidence=Math.min(.95,Math.max(Number(existing.confidence||0),Number(confidence||0),.55+Math.log1p(observationCount)*.06));
+      const nextImportance=Math.min(.62,Math.max(Number(existing.importance||0),Number(importance||0)));
+      await conn.query(
+        "UPDATE memories SET content=?,memory_type='SEMANTIC',importance=?,strength=?,confidence=?,emotional_intensity=?,location_id=UUID_TO_BIN(?),created_simulation_at=?,last_recalled_simulation_at=?,metadata=?,version=version+1 WHERE id=UUID_TO_BIN(?) AND version=?",
+        [
+          "Repeated action pattern: "+actionLabel(metadata?.actionType)+" at "+(metadata?.location?.label||metadata?.location?.type||"the same place")+"; observed "+observationCount+" times.",
+          nextImportance,nextStrength,nextConfidence,Math.min(.25,Math.max(.08,Number(emotionalIntensity)||.08)),
+          locationId||metadata?.locationId||metadata?.location?.id||null,simulationAt,simulationAt,JSON.stringify(nextMetadata),existing.id,existing.version
+        ]
+      );
+      return existing.id;
+    }
+
+    const id=uuid();
+    const nextMetadata={...metadata,memory_dedupe_key:dedupeKey,dedupeObservationCount:1};
+    await conn.query(
+      "INSERT INTO memories (id,simulation_id,entity_id,memory_type,content,importance,strength,confidence,emotional_intensity,source_event_id,source_activity_id,location_id,created_simulation_at,status,metadata,memory_dedupe_key,version) "+
+      "VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?, ?,?,?,?,UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,'ACTIVE',?,?,1)",
+      [id,simulationId,entityId,type,content,importance,strength,confidence,emotionalIntensity,eventId,activityId,locationId,simulationAt,nextMetadata?JSON.stringify(nextMetadata):null,dedupeKey]
+    );
+    observability.increment(simulationId,"memory_created_total");
+    return id;
+  }finally{
+    if(lockAcquired){
+      try{await conn.query("SELECT RELEASE_LOCK(?)",[lockName]);}catch{}
+    }
+    if(db===pool)conn.release();
+  }
 }
 
 function routineLocationKey(locationId, metadata = {}) {
@@ -241,11 +271,10 @@ async function createMemory({ simulationId, entityId, eventId = null, activityId
     } else if (routine) return routine;
   }
   if (dedupeKey && type === "EPISODIC") {
-    const aggregated = await upsertDeduplicatedActionMemory({
-      simulationId,entityId,locationId,simulationAt,content,importance,strength,confidence,emotionalIntensity,metadata,dedupeKey
+    return upsertDeduplicatedActionMemory({
+      simulationId,entityId,locationId,simulationAt,content,importance,strength,confidence,emotionalIntensity,metadata,dedupeKey,
+      eventId,activityId,type
     });
-    if (aggregated) return aggregated;
-    metadata = {...metadata,memory_dedupe_key:dedupeKey,dedupeObservationCount:1};
   }
   if (memoryKind === "resource_failure") {
     const resource = metadata?.resource?.resource || metadata?.resource || null, resourceName = resource ? String(resource).trim().toLowerCase() : null, memoryLocationId = locationId || metadata?.locationId || metadata?.location?.id || null;
