@@ -10,6 +10,7 @@ const actionService = require("./action-service");
 const { ensureGoalPlan, advancePlanForAction, advancePersistentGoalFromAnyAutonomousAction, selectActiveStep, handleGoalStagnation, MAX_GOAL_AGE_HOURS } = require("./planning-service");
 const { refreshMentalStateFromSimulation } = require("./personality-service");
 const observability = require("./simulation-observability");
+const { finalizeDecisionCognitiveArtifacts } = require("./decision-cognitive-finalization-service");
 const { readNeeds } = require("./state-service");
 
 const lastAutonomyDecisionAt=new Map();
@@ -504,6 +505,30 @@ async function markDecisionPipelineFailed({simulationId,entityId,decisionId,inte
       phase:phase||"UNKNOWN",
       errorCode:String(error?.code||"UNKNOWN")
     },"autonomy decision failed because the intention/action pipeline was incomplete");
+  }
+
+  try {
+    await finalizeDecisionCognitiveArtifacts({
+      simulationId,
+      decisionId,
+      entityId,
+      simulationTime,
+      outcome:"FAILURE",
+      actionType:null
+    });
+  } catch (cognitiveFinalizeError) {
+    logger.warnThrottled(
+      `decision:cognitive-pipeline-failure:${decisionId}`,
+      60000,
+      {
+        simulationId,
+        decisionId,
+        entityId,
+        simulationTime,
+        error:String(cognitiveFinalizeError?.message||cognitiveFinalizeError)
+      },
+      "decision cognitive finalization deferred to reconciliation"
+    );
   }
 
   return Boolean(updated.affectedRows);
