@@ -255,6 +255,7 @@ async function getOldestRetentionDebtAt(conn, simulationId, simulationTime) {
       String(simulationId),geminiCutoff,
       simulationIdBinary,memoryArchiveCutoff,POLICY.memoryArchiveImportanceMax,memoryArchiveCutoff,
       simulationIdBinary,memoryDeleteCutoff,
+      simulationIdBinary,memoryDeleteCutoff,
       simulationIdBinary,decisionCutoff
     ]
   );
