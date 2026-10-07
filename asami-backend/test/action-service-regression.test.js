@@ -72,3 +72,34 @@ test("action reconciler finalizes terminal cognitive artifacts after recovering 
   assert.match(source,/finalizeRecoveredDecisionCognition/);
   assert.match(source,/terminal reconciliation/);
 });
+
+
+test("critical action interruption finalizes terminal decision cognition immediately",()=>{
+  const fs=require("node:fs");
+  const path=require("node:path");
+  const source=fs.readFileSync(path.join(__dirname,"../src/simulation/engine.js"),"utf8");
+  assert.match(source,/finalizeDecisionCognitiveArtifacts/);
+  assert.match(source,/decision:cognitive-interrupt/);
+  assert.match(source,/outcome:"PARTIAL"/);
+});
+
+test("autonomy pipeline failure attempts terminal cognitive finalization even when decision was already terminalized",()=>{
+  const fs=require("node:fs");
+  const path=require("node:path");
+  const source=fs.readFileSync(path.join(__dirname,"../src/services/autonomy-service.js"),"utf8");
+  assert.match(source,/async function markDecisionPipelineFailed/);
+  assert.match(source,/finalizeDecisionCognitiveArtifacts/);
+  assert.match(source,/decision:cognitive-pipeline-failure/);
+});
+
+test("integrity check runs after stale decision reconciliation",()=>{
+  const fs=require("node:fs");
+  const path=require("node:path");
+  const source=fs.readFileSync(path.join(__dirname,"../src/simulation/engine.js"),"utf8");
+  const reconcile=source.indexOf("const staleDecisionReconciliation = await reconcileStaleEvaluatedDecisions");
+  const integrity=source.indexOf("const integrity = await runSimulationIntegrityCheck",reconcile);
+  const oldIntegrity=source.indexOf("const integrity = await runSimulationIntegrityCheck",0);
+  assert.ok(reconcile>=0);
+  assert.ok(integrity>reconcile);
+  assert.equal(oldIntegrity,integrity);
+});
