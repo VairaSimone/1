@@ -1050,6 +1050,9 @@ class SimulationEngine {
           }, "stale evaluated decisions reconciled");
         }
 
+        this.tickCounter.set(sim.id, Number(this.tickCounter.get(sim.id) || 0) + 1);
+        const count = Number(this.tickCounter.get(sim.id) || 0);
+
         if (count % 30 === 0) {
           try {
             const cognitiveReconciliation = await reconcileTerminalDecisionCognition(sim.id,nextTime.toISOString(),{limit:500,graceMinutes:5});
@@ -1082,8 +1085,7 @@ class SimulationEngine {
           }
         }
 
-        setPhase("world.decay"); await decayMemories(sim.id, nextTime); this.tickCounter.set(sim.id, Number(this.tickCounter.get(sim.id) || 0) + 1);
-        const count = Number(this.tickCounter.get(sim.id) || 0);
+        setPhase("world.decay"); await decayMemories(sim.id, nextTime);
         if (count % env.GEMINI_PROACTIVE_EVERY_TICKS === 0) {
           try {
             const asami = await getAsamiCandidate(sim.id);
