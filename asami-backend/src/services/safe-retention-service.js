@@ -84,6 +84,13 @@ function serializeArchiveJson(value) {
 }
 
 function simulationTimestampMs(value) {
+  if (value instanceof Date) {
+    const time = value.getTime();
+    return Number.isFinite(time) ? time : NaN;
+  }
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : NaN;
+  }
   const normalized = normalizeSimulationTimestamp(value);
   if (typeof normalized !== "string") return NaN;
   const date = new Date(normalized.replace(" ", "T") + "Z");
@@ -104,14 +111,14 @@ function getAdaptiveRetentionProfile(overloadStreak = 0) {
   if (streak >= 6) {
     return {
       level: 2,
-      timeBudgetMs: Math.min(30000, Math.max(baseBudget, 20000)),
+      timeBudgetMs: Math.min(30000, Math.max(baseBudget, 22500)),
       simulationIntervalHours: Math.max(0.25, baseInterval / 3)
     };
   }
   if (streak >= 3) {
     return {
       level: 1,
-      timeBudgetMs: Math.min(30000, Math.max(baseBudget, 12000)),
+      timeBudgetMs: Math.min(30000, Math.max(baseBudget, 15000)),
       simulationIntervalHours: Math.max(0.5, baseInterval / 2)
     };
   }
