@@ -117,3 +117,13 @@ test("critical interruption uses the function simulation time for cognitive fina
   assert.ok(end>finalization);
   assert.match(source.slice(finalization,end),/simulationTime,/);
 });
+
+test("autonomy selects the active NEED goal before lower-priority persistent goals",()=>{
+  const fs=require("node:fs");
+  const path=require("node:path");
+  const source=fs.readFileSync(path.join(__dirname,"../src/services/autonomy-service.js"),"utf8");
+  assert.match(
+    source,
+    /const knownGoal=context\.goals\?\.find\(goal=>String\(goal\?\.goalType\|\|\\"\\"\)\.toUpperCase\(\)==\\"NEED\\"\)\|\|context\.goals\?\.\[0\]\|\|null;/
+  );
+});
