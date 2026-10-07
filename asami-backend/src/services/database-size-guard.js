@@ -141,6 +141,7 @@ async function checkDatabaseSizeLimit(db = pool) {
 module.exports = {
   BYTES_PER_MB,
   DUMP_ESTIMATE_SAFETY_FACTOR,
+  MIN_DUMP_ESTIMATE_SAFETY_FACTOR,
   getDumpEstimateSafetyFactor,
   megabytesToBytes,
   isDatabaseSizeLimitReached,
