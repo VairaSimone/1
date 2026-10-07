@@ -820,7 +820,7 @@ async function advancePlanForAction({simulationId,entityId,goalId,actionType,out
   if(plan.status==="BLOCKED")return{changed:false,completed:false,progress:null,planId:plan.id,blocked:true};
 
   const [goalRows]=await pool.query(
-    `SELECT goal_type AS goalType,progress,status,result,version
+    `SELECT goal_type AS goalType,progress,status,result,motivation,version
      FROM goals
      WHERE id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?)
      LIMIT 1`,
@@ -841,6 +841,74 @@ async function advancePlanForAction({simulationId,entityId,goalId,actionType,out
   const partial=normalizedOutcome==="PARTIAL";
   const failed=normalizedOutcome==="FAILURE";
   let changed=false;
+
+  const motivation=parseJson(goal.motivation,{})||{};
+  const goalNeed=normalizeAction(motivation.need);
+  const goalTemplate=GOAL_TEMPLATES[goalNeed];
+  const terminalGoalAction=normalizeAction(
+    goalTemplate?.steps?.[goalTemplate.steps.length-1]?.actionType
+  );
+
+  // A NEED goal may be satisfied directly before its planned movement step.
+  // For example, an actor can already be at a water source and successfully
+  // DRINKING makes the THIRST goal true even though WALKING was still the
+  // active plan step. Do not count that as stagnation: complete the goal and
+  // cancel the now-obsolete route plan.
+  const directNeedCompletion=
+    goalType==="NEED" &&
+    successful &&
+    normalizedAction===terminalGoalAction &&
+    expectedAction!==normalizedAction;
+
+  if(directNeedCompletion){
+    const goalResult=parseJson(goal.result,{})||{};
+    const directCompletionResult={
+      ...goalResult,
+      completionSource:"NEED_SATISFIED_DIRECTLY",
+      satisfiedByAction:normalizedAction,
+      satisfiedAt:simulationTime,
+      lastProgressAt:simulationTime,
+      progressModel:"DIRECT_NEED_SATISFACTION"
+    };
+
+    await pool.query(
+      `UPDATE plan_steps
+       SET status='CANCELLED',
+           result=JSON_SET(COALESCE(result,JSON_OBJECT()),
+             '$.cancelledReason','GOAL_SATISFIED_DIRECTLY',
+             '$.satisfiedByAction',?,
+             '$.satisfiedAt',?),
+           version=version+1
+       WHERE plan_id=UUID_TO_BIN(?) AND status IN ('PENDING','ACTIVE','BLOCKED')`,
+      [normalizedAction,simulationTime,plan.id]
+    );
+    await pool.query(
+      `UPDATE plans
+       SET status='CANCELLED',version=version+1
+       WHERE id=UUID_TO_BIN(?) AND status IN ('DRAFT','ACTIVE','PAUSED','BLOCKED')`,
+      [plan.id]
+    );
+    const mysqlTime=mysqlSimulationDateTime(simulationTime);
+    const [goalUpdated]=await pool.query(
+      `UPDATE goals
+       SET progress=1,status='COMPLETED',completed_simulation_at=?,result=?,version=version+1
+       WHERE id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND version=? AND status IN ('ACTIVE','DRAFT','PAUSED')`,
+      [
+        mysqlTime,
+        JSON.stringify(directCompletionResult),
+        goalId,
+        entityId,
+        Number(goal.version)
+      ]
+    );
+    return{
+      changed:goalUpdated.affectedRows===1,
+      completed:goalUpdated.affectedRows===1,
+      progress:1,
+      planId:plan.id,
+      directNeedCompletion:true
+    };
+  }
 
   const resourceBlock=isResourceBlockedFailure(normalizedAction,outcome,actionResult);
 
