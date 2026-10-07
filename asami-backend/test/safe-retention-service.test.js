@@ -467,3 +467,14 @@ test("retention plan-step debt uses the plan timestamp because plan_steps has no
   assert.match(compaction,/p\\.created_simulation_at<\\?/);
   assert.doesNotMatch(compaction,/ps\\.created_simulation_at/);
 });
+
+test("retention decision-option debt uses the parent decision timestamp because decision_options has no creation timestamp",()=>{
+  const fs=require("node:fs");
+  const path=require("node:path");
+  const source=fs.readFileSync(path.join(__dirname,"../src/services/safe-retention-service.js"),"utf8");
+  const start=source.indexOf("async function getOldestRetentionDebtAt");
+  const end=source.indexOf("\nasync function persistRetentionTelemetry",start);
+  const block=source.slice(start,end);
+  assert.match(block,/SELECT d\\.simulation_time FROM decision_options dopt JOIN decisions d ON d\\.id=dopt\\.decision_id/);
+  assert.doesNotMatch(block,/SELECT dopt\\.created_simulation_at FROM decision_options dopt/);
+});
