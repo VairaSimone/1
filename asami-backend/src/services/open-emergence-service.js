@@ -49,7 +49,7 @@ const ProposalSchema = z.object({
     name: z.string().min(3).max(120),
     category: z.string().min(1).max(48),
     unit: z.string().min(1).max(24),
-    basePrice: z.number().positive().max(100)
+    basePrice: z.number().min(0.01).max(100)
   })).max(3).optional(),
   resourceCosts: z.record(z.string(), z.number()).optional(),
   targetNeeds: z.array(z.object({ code: z.string(), weight: z.number() })).max(8).optional(),
