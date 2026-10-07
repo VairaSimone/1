@@ -332,7 +332,7 @@ async function interruptActiveAction({ simulationId, entityId, active, simulatio
         simulationId,
         decisionId:active.decisionId,
         entityId,
-        simulationTime:updateTime,
+        simulationTime,
         outcome:"PARTIAL",
         actionType
       });
@@ -344,7 +344,7 @@ async function interruptActiveAction({ simulationId, entityId, active, simulatio
           simulationId,
           decisionId:active.decisionId,
           entityId,
-          simulationTime:updateTime,
+          simulationTime,
           error:String(cognitiveFinalizeError?.message||cognitiveFinalizeError)
         },
         "decision cognitive finalization deferred to reconciliation"
