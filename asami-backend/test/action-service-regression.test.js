@@ -122,8 +122,6 @@ test("autonomy selects the active NEED goal before lower-priority persistent goa
   const fs=require("node:fs");
   const path=require("node:path");
   const source=fs.readFileSync(path.join(__dirname,"../src/services/autonomy-service.js"),"utf8");
-  assert.match(
-    source,
-    /const knownGoal=context\.goals\?\.find\(goal=>String\(goal\?\.goalType\|\|\\"\\"\)\.toUpperCase\(\)==\\"NEED\\"\)\|\|context\.goals\?\.\[0\]\|\|null;/
-  );
+  const expected='const knownGoal=context.goals?.find(goal=>String(goal?.goalType||"").toUpperCase()==="NEED")||context.goals?.[0]||null;';
+  assert.ok(source.includes(expected));
 });
