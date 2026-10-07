@@ -5,6 +5,7 @@ const { markActionPostProcessingComplete, getActionDurationMinutes } = require("
 const { markDecisionActionCreated, markDecisionActionOutcome } = require("./decision-service");
 const { finalizeDecisionCognitiveArtifacts } = require("./decision-cognitive-finalization-service");
 const observability = require("./simulation-observability");
+const logger = require("../lib/logger");
 function parseJson(value,fallback={}){if(value===null||value===undefined)return fallback;if(typeof value==="object")return value;try{return JSON.parse(value);}catch{return fallback;}}
 async function finalizeRecoveredDecisionCognition({simulationId,decisionId,entityId,simulationTime,outcome=null,actionType=null}={}){
   if(!simulationId||!decisionId||!simulationTime)return false;
