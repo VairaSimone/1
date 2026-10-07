@@ -40,3 +40,12 @@ test("interrupted movement update binds only movementId",()=>{
 });
 
 test("expected entity conditions are not simulation-level faults",()=>{assert.equal(isExpectedEntityCondition({code:"CRITICAL_RESOURCE_RECOVERY_UNAVAILABLE"}),true);assert.equal(isExpectedEntityCondition({code:"MOVEMENT_DESTINATION_UNREACHABLE"}),true);assert.equal(isExpectedEntityCondition({code:"DATABASE_ERROR"}),false);});
+
+
+test("action reconciliation reads tick count only after it is initialized",()=>{
+  const source=fs.readFileSync(path.join(__dirname,"../src/simulation/engine.js"),"utf8");
+  const reconcileIndex=source.indexOf("if (count % 30 === 0)");
+  const declarationIndex=source.indexOf("const count = Number(this.tickCounter.get(sim.id) || 0);");
+  assert.ok(reconcileIndex>=0&&declarationIndex>=0);
+  assert.ok(declarationIndex<reconcileIndex);
+});
