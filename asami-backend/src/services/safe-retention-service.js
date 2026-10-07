@@ -2010,6 +2010,7 @@ module.exports = {
   getAdaptiveRetentionProfile,
   ensureRetentionTelemetryTable,
   getOldestRetentionDebtAt,
+  simulationTimestampMs,
   normalizeArchiveJson,
   positiveInt,
   boundedNumber,
