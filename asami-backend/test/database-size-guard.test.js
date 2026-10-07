@@ -57,8 +57,8 @@ test("database storage breakdown keeps physical storage diagnostic but uses esti
   assert.equal(breakdown.innodbDataAndIndexBytes, 262144000);
   assert.equal(breakdown.logicalDataBytes, 157286400);
   assert.equal(breakdown.binaryLogBytes, 0);
-  assert.equal(breakdown.estimatedDumpBytes, 235929600);
-  assert.equal(breakdown.sizeBytes, 235929600);
+  assert.equal(breakdown.estimatedDumpBytes, 432537600);
+  assert.equal(breakdown.sizeBytes, 432537600);
 });
 
 test("database storage guard scopes InnoDB allocation to the Asami schema", () => {
@@ -97,7 +97,7 @@ test("database storage guard ignores binary logs when binary logging is disabled
   assert.equal(breakdown.innodbAllocatedBytes, 4194304);
   assert.equal(breakdown.logicalDataBytes, 2097152);
   assert.equal(breakdown.binaryLogBytes, 0);
-  assert.equal(breakdown.sizeBytes, 3145728);
+  assert.equal(breakdown.sizeBytes, 5767168);
 });
 
 

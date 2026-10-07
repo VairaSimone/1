@@ -432,7 +432,7 @@ class SimulationEngine {
       }
 
       const simulations = await simRepo.listSimulations();
-      const pressureSimulation = simulations.find(sim => sim.status === "RUNNING");
+      const pressureSimulation = simulations.find(sim => sim.status === "RUNNING" || sim.status === "PAUSED");
       if (pressureSimulation) {
         const databaseLimitReached = await enforceDatabaseSizeLimit({
           simulationId: pressureSimulation.id,
