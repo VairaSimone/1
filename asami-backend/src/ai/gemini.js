@@ -538,7 +538,7 @@ class GeminiService {
     this.lastAutonomyDecisionAt.set(entityId,new Date(simulationTime).getTime());
     return true;
   }
-  async generateJson(prompt,schema,{kind="autonomy",thinkingLevel="low",maxModels=null,timeoutMsOverride=null,outputTokenCeilingOverride=null,deadlineAt=null,simulationId=null,entityId=null,simulationTime=null}={}){
+  async generateJson(prompt,schema,{kind="autonomy",thinkingLevel="low",maxModels=null,timeoutMsOverride=null,outputTokenCeilingOverride=null,deadlineAt=null,simulationId=null,entityId=null,simulationTime=null,highValue=false,minimumOutputTokenCeiling=512}={}){
     if(!this.client||this.shuttingDown){
       this.lastRequestStatus={status:"FALLBACK",source:"DETERMINISTIC_FALLBACK",reason:this.shuttingDown?"ENGINE_SHUTDOWN":"GEMINI_DISABLED",attempted:false,retryAfterMs:0,kind};
       return null;
@@ -565,8 +565,8 @@ class GeminiService {
     // Gemini 3 thinking tokens share the maxOutputTokens budget with the
     // structured response. Keep compact autonomy responses above a safe floor
     // so JSON cannot be truncated merely because the thinking budget consumed it.
-    const outputTokenCeiling=kind==="autonomy"
-      ?Math.max(2048,configuredOutputTokenCeiling)
+    const requestedOutputTokenCeiling=kind==="autonomy"
+      ?Math.max(512,configuredOutputTokenCeiling)
       :configuredOutputTokenCeiling;
     const configuredModels=kind==="dialogue"?this.dialogueModels:this.models;
     const availableModels=this._availableModels(kind);
@@ -647,7 +647,7 @@ class GeminiService {
         );
         return null;
       }
-      const reservation=await budget.reserve({prompt,outputTokenCeiling,kind,simulationId,entityId,simulationTime});
+      const reservation=await budget.reserve({prompt,outputTokenCeiling:requestedOutputTokenCeiling,minimumOutputTokenCeiling,highValue,kind,simulationId,entityId,simulationTime});
       if(!reservation.allowed){
         this.lastRequestStatus={
           status:"FALLBACK",
@@ -672,6 +672,7 @@ class GeminiService {
         return null;
       }
 
+      const outputTokenCeiling=Math.max(1,Number(reservation.outputTokenCeiling)||requestedOutputTokenCeiling);
       const configuredTimeoutMs=Number(timeoutMsOverride)||Number(env.GEMINI_TIMEOUT_MS)||30000;
       const timeoutBudgetMs=requestDeadlineAt-Date.now();
       if(timeoutBudgetMs<MIN_PROVIDER_DEADLINE_MS){
@@ -1000,6 +1001,10 @@ class GeminiService {
       thinkingLevel,
       maxModels:autonomyMaxModels,
       outputTokenCeilingOverride:outputTokenCeiling,
+      highValue:context?.geminiTrigger?.priority==="HIGH",
+      minimumOutputTokenCeiling:context?.geminiTrigger?.priority==="HIGH"
+        ?Number(env.GEMINI_AUTONOMY_HIGH_VALUE_MIN_OUTPUT_TOKEN_CEILING)
+        :Number(env.GEMINI_AUTONOMY_MIN_OUTPUT_TOKEN_CEILING),
       simulationId,
       entityId,
       simulationTime
