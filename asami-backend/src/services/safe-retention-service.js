@@ -4,6 +4,16 @@ const { recordMemoryStatusDistribution } = require("./memory-service");
 const logger = require("../lib/logger");
 const { withEventWriteLock } = require("./event-service");
 const { compactActionResult, compactActionTarget, compactActionParameters, compactPlanStepResult, compactDecisionActualOutcome } = require("./storage-compaction");
+
+function uuidBinaryParam(value) {
+  if (Buffer.isBuffer(value)) return value;
+  const normalized = String(value || "").trim();
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(normalized)) {
+    throw new Error("Invalid simulation UUID for retention telemetry");
+  }
+  return Buffer.from(normalized.replaceAll("-", ""), "hex");
+}
+
 function parseJson(value,fallback={}){if(value===null||value===undefined)return fallback;if(typeof value==="object")return value;try{return JSON.parse(value);}catch{return fallback;}}
 
 
@@ -181,6 +191,7 @@ function retentionBacklogTotalFromSummary(summary={}) {
 }
 
 async function getOldestRetentionDebtAt(conn, simulationId, simulationTime) {
+  const simulationIdBinary = uuidBinaryParam(simulationId);
   const needCutoff=cutoffDateTime(simulationTime,POLICY.needHistoryDays);
   const emotionCutoff=cutoffDateTime(simulationTime,POLICY.emotionHistoryDays);
   const relationshipCutoff=cutoffDateTime(simulationTime,POLICY.relationshipHistoryDays);
@@ -202,49 +213,49 @@ async function getOldestRetentionDebtAt(conn, simulationId, simulationTime) {
 
   const [rows]=await conn.query(
     "SELECT MIN(candidate_at) AS oldest_at FROM ("+
-      "SELECT h.simulation_time AS candidate_at FROM entity_need_history h JOIN entities e ON e.id=h.entity_id WHERE e.simulation_id=UUID_TO_BIN(?) AND h.simulation_time < ? "+
-      "UNION ALL SELECT h.simulation_time FROM entity_emotion_history h JOIN entities e ON e.id=h.entity_id WHERE e.simulation_id=UUID_TO_BIN(?) AND h.simulation_time < ? "+
-      "UNION ALL SELECT rh.simulation_time FROM relationship_history rh JOIN relationships r ON r.id=rh.relationship_id WHERE rh.simulation_id=UUID_TO_BIN(?) AND rh.simulation_time < ? AND r.status IN ('ACTIVE','ENDED') "+
-      "UNION ALL SELECT e.simulation_at FROM events e WHERE e.simulation_id=UUID_TO_BIN(?) AND ((e.importance < ? AND e.simulation_at < ?) OR e.simulation_at < ?) "+
-      "UNION ALL SELECT a.completed_simulation_at FROM actions a WHERE a.simulation_id=UUID_TO_BIN(?) AND a.status IN ('COMPLETED','CANCELLED','INTERRUPTED','FAILED') AND a.completed_simulation_at IS NOT NULL AND a.completed_simulation_at < ? AND (a.decision_id IS NULL OR EXISTS (SELECT 1 FROM decisions d WHERE d.id=a.decision_id AND JSON_EXTRACT(d.actual_outcome,'$.actionSummary') IS NOT NULL)) AND NOT EXISTS (SELECT 1 FROM event_effects ee WHERE ee.target_action_id=a.id) "+
-      "UNION ALL SELECT a.completed_simulation_at FROM actions a JOIN decisions d ON d.id=a.decision_id WHERE a.simulation_id=UUID_TO_BIN(?) AND a.decision_id IS NOT NULL AND a.status IN ('COMPLETED','CANCELLED','INTERRUPTED','FAILED') AND a.completed_simulation_at IS NOT NULL AND a.completed_simulation_at < ? AND JSON_EXTRACT(d.actual_outcome,'$.actionSummary') IS NULL "+
-      "UNION ALL SELECT t.simulation_time FROM simulation_ticks t WHERE t.simulation_id=UUID_TO_BIN(?) AND t.status IN ('COMPLETED','FAILED','SKIPPED') AND t.simulation_time < ? "+
-      "UNION ALL SELECT dca.simulation_time FROM decision_context_archive dca WHERE dca.simulation_id=UUID_TO_BIN(?) AND dca.simulation_time < ? "+
-      "UNION ALL SELECT d.simulation_time FROM decisions d WHERE d.simulation_id=UUID_TO_BIN(?) AND d.status IN ('EXECUTED','FAILED','CANCELLED') AND d.simulation_time < ? AND d.context IS NOT NULL AND COALESCE(IF(JSON_VALID(d.context),JSON_UNQUOTE(JSON_EXTRACT(d.context,'$.operational')),'false'),'false') <> 'true' "+
-      "UNION ALL SELECT ps.created_simulation_at FROM plan_steps ps JOIN plans p ON p.id=ps.plan_id WHERE p.simulation_id=UUID_TO_BIN(?) AND p.created_simulation_at < ? AND ps.status IN ('COMPLETED','FAILED','CANCELLED') AND ps.result IS NOT NULL "+
-      "UNION ALL SELECT i.created_simulation_at FROM intentions i WHERE i.simulation_id=UUID_TO_BIN(?) AND i.status IN ('COMPLETED','CANCELLED') AND i.created_simulation_at < ? AND NOT EXISTS (SELECT 1 FROM actions a WHERE a.source_intention_id=i.id) "+
-      "UNION ALL SELECT dopt.created_simulation_at FROM decision_options dopt JOIN decisions d ON d.id=dopt.decision_id WHERE d.simulation_id=UUID_TO_BIN(?) AND d.status IN ('EXECUTED','FAILED','CANCELLED') AND d.simulation_time < ? "+
-      "UNION ALL SELECT ce.created_simulation_at FROM cognitive_expectations ce JOIN decisions d ON d.id=ce.decision_id WHERE ce.simulation_id=UUID_TO_BIN(?) AND ce.status='RESOLVED' AND d.status IN ('EXECUTED','FAILED','CANCELLED') AND d.simulation_time < ? AND ce.resolved_simulation_at < ? "+
-      "UNION ALL SELECT cf.created_simulation_at FROM counterfactuals cf JOIN decisions d ON d.id=cf.decision_id WHERE cf.simulation_id=UUID_TO_BIN(?) AND d.status IN ('EXECUTED','FAILED','CANCELLED') AND d.simulation_time < ? "+
-      "UNION ALL SELECT cw.created_simulation_at FROM counterfactual_worlds cw JOIN decisions d ON d.id=cw.decision_id WHERE cw.simulation_id=UUID_TO_BIN(?) AND cw.status='RESOLVED' AND d.status IN ('EXECUTED','FAILED','CANCELLED') AND d.simulation_time < ? AND cw.resolved_simulation_at < ? "+
-      "UNION ALL SELECT th.changed_simulation_at FROM entity_trait_history th JOIN entities e ON e.id=th.entity_id WHERE e.simulation_id=UUID_TO_BIN(?) AND th.changed_simulation_at < ? "+
+      "SELECT h.simulation_time AS candidate_at FROM entity_need_history h JOIN entities e ON e.id=h.entity_id WHERE e.simulation_id=? AND h.simulation_time < ? "+
+      "UNION ALL SELECT h.simulation_time FROM entity_emotion_history h JOIN entities e ON e.id=h.entity_id WHERE e.simulation_id=? AND h.simulation_time < ? "+
+      "UNION ALL SELECT rh.simulation_time FROM relationship_history rh JOIN relationships r ON r.id=rh.relationship_id WHERE rh.simulation_id=? AND rh.simulation_time < ? AND r.status IN ('ACTIVE','ENDED') "+
+      "UNION ALL SELECT e.simulation_at FROM events e WHERE e.simulation_id=? AND ((e.importance < ? AND e.simulation_at < ?) OR e.simulation_at < ?) "+
+      "UNION ALL SELECT a.completed_simulation_at FROM actions a WHERE a.simulation_id=? AND a.status IN ('COMPLETED','CANCELLED','INTERRUPTED','FAILED') AND a.completed_simulation_at IS NOT NULL AND a.completed_simulation_at < ? AND (a.decision_id IS NULL OR EXISTS (SELECT 1 FROM decisions d WHERE d.id=a.decision_id AND JSON_EXTRACT(d.actual_outcome,'$.actionSummary') IS NOT NULL)) AND NOT EXISTS (SELECT 1 FROM event_effects ee WHERE ee.target_action_id=a.id) "+
+      "UNION ALL SELECT a.completed_simulation_at FROM actions a JOIN decisions d ON d.id=a.decision_id WHERE a.simulation_id=? AND a.decision_id IS NOT NULL AND a.status IN ('COMPLETED','CANCELLED','INTERRUPTED','FAILED') AND a.completed_simulation_at IS NOT NULL AND a.completed_simulation_at < ? AND JSON_EXTRACT(d.actual_outcome,'$.actionSummary') IS NULL "+
+      "UNION ALL SELECT t.simulation_time FROM simulation_ticks t WHERE t.simulation_id=? AND t.status IN ('COMPLETED','FAILED','SKIPPED') AND t.simulation_time < ? "+
+      "UNION ALL SELECT dca.simulation_time FROM decision_context_archive dca WHERE dca.simulation_id=? AND dca.simulation_time < ? "+
+      "UNION ALL SELECT d.simulation_time FROM decisions d WHERE d.simulation_id=? AND d.status IN ('EXECUTED','FAILED','CANCELLED') AND d.simulation_time < ? AND d.context IS NOT NULL AND COALESCE(IF(JSON_VALID(d.context),JSON_UNQUOTE(JSON_EXTRACT(d.context,'$.operational')),'false'),'false') <> 'true' "+
+      "UNION ALL SELECT ps.created_simulation_at FROM plan_steps ps JOIN plans p ON p.id=ps.plan_id WHERE p.simulation_id=? AND p.created_simulation_at < ? AND ps.status IN ('COMPLETED','FAILED','CANCELLED') AND ps.result IS NOT NULL "+
+      "UNION ALL SELECT i.created_simulation_at FROM intentions i WHERE i.simulation_id=? AND i.status IN ('COMPLETED','CANCELLED') AND i.created_simulation_at < ? AND NOT EXISTS (SELECT 1 FROM actions a WHERE a.source_intention_id=i.id) "+
+      "UNION ALL SELECT dopt.created_simulation_at FROM decision_options dopt JOIN decisions d ON d.id=dopt.decision_id WHERE d.simulation_id=? AND d.status IN ('EXECUTED','FAILED','CANCELLED') AND d.simulation_time < ? "+
+      "UNION ALL SELECT ce.created_simulation_at FROM cognitive_expectations ce JOIN decisions d ON d.id=ce.decision_id WHERE ce.simulation_id=? AND ce.status='RESOLVED' AND d.status IN ('EXECUTED','FAILED','CANCELLED') AND d.simulation_time < ? AND ce.resolved_simulation_at < ? "+
+      "UNION ALL SELECT cf.created_simulation_at FROM counterfactuals cf JOIN decisions d ON d.id=cf.decision_id WHERE cf.simulation_id=? AND d.status IN ('EXECUTED','FAILED','CANCELLED') AND d.simulation_time < ? "+
+      "UNION ALL SELECT cw.created_simulation_at FROM counterfactual_worlds cw JOIN decisions d ON d.id=cw.decision_id WHERE cw.simulation_id=? AND cw.status='RESOLVED' AND d.status IN ('EXECUTED','FAILED','CANCELLED') AND d.simulation_time < ? AND cw.resolved_simulation_at < ? "+
+      "UNION ALL SELECT th.changed_simulation_at FROM entity_trait_history th JOIN entities e ON e.id=th.entity_id WHERE e.simulation_id=? AND th.changed_simulation_at < ? "+
       "UNION ALL SELECT gdt.simulation_at FROM gemini_decision_telemetry gdt WHERE gdt.simulation_id=? AND gdt.simulation_at < ? "+
-      "UNION ALL SELECT m.created_simulation_at FROM memories m WHERE m.simulation_id=UUID_TO_BIN(?) AND m.memory_type='EPISODIC' AND m.status IN ('ACTIVE','FADING') AND m.created_simulation_at < ? AND m.importance < ? AND (m.last_recalled_simulation_at IS NULL OR m.last_recalled_simulation_at < ?) AND COALESCE(JSON_UNQUOTE(JSON_EXTRACT(m.metadata,'$.kind')),'') <> 'resource_failure' "+
-      "UNION ALL SELECT m.created_simulation_at FROM memories m WHERE m.simulation_id=UUID_TO_BIN(?) AND m.status='ACTIVE' AND m.memory_dedupe_key IS NOT NULL AND m.created_simulation_at < ? AND m.importance<=0.55 AND m.emotional_intensity<=0.30 "+
-      "UNION ALL SELECT COALESCE(m.forgotten_simulation_at,m.created_simulation_at) FROM memories m WHERE m.simulation_id=UUID_TO_BIN(?) AND m.status IN ('ARCHIVED','FORGOTTEN') AND COALESCE(m.forgotten_simulation_at,m.created_simulation_at) < ? AND NOT EXISTS (SELECT 1 FROM event_effects ee WHERE ee.target_memory_id=m.id) "+
-      "UNION ALL SELECT d.simulation_time FROM decisions d WHERE d.simulation_id=UUID_TO_BIN(?) AND d.status IN ('EXECUTED','FAILED','CANCELLED') AND d.simulation_time < ? AND NOT EXISTS (SELECT 1 FROM actions a WHERE a.decision_id=d.id) AND NOT EXISTS (SELECT 1 FROM intentions i WHERE i.decision_id=d.id) AND NOT EXISTS (SELECT 1 FROM decision_options dopt WHERE dopt.decision_id=d.id) AND NOT EXISTS (SELECT 1 FROM cognitive_expectations ce WHERE ce.decision_id=d.id) AND NOT EXISTS (SELECT 1 FROM counterfactuals cf WHERE cf.decision_id=d.id) AND NOT EXISTS (SELECT 1 FROM counterfactual_worlds cw WHERE cw.decision_id=d.id) AND NOT EXISTS (SELECT 1 FROM decision_context_archive dca WHERE dca.decision_id=d.id)"+
+      "UNION ALL SELECT m.created_simulation_at FROM memories m WHERE m.simulation_id=? AND m.memory_type='EPISODIC' AND m.status IN ('ACTIVE','FADING') AND m.created_simulation_at < ? AND m.importance < ? AND (m.last_recalled_simulation_at IS NULL OR m.last_recalled_simulation_at < ?) AND COALESCE(JSON_UNQUOTE(JSON_EXTRACT(m.metadata,'$.kind')),'') <> 'resource_failure' "+
+      "UNION ALL SELECT m.created_simulation_at FROM memories m WHERE m.simulation_id=? AND m.status='ACTIVE' AND m.memory_dedupe_key IS NOT NULL AND m.created_simulation_at < ? AND m.importance<=0.55 AND m.emotional_intensity<=0.30 "+
+      "UNION ALL SELECT COALESCE(m.forgotten_simulation_at,m.created_simulation_at) FROM memories m WHERE m.simulation_id=? AND m.status IN ('ARCHIVED','FORGOTTEN') AND COALESCE(m.forgotten_simulation_at,m.created_simulation_at) < ? AND NOT EXISTS (SELECT 1 FROM event_effects ee WHERE ee.target_memory_id=m.id) "+
+      "UNION ALL SELECT d.simulation_time FROM decisions d WHERE d.simulation_id=? AND d.status IN ('EXECUTED','FAILED','CANCELLED') AND d.simulation_time < ? AND NOT EXISTS (SELECT 1 FROM actions a WHERE a.decision_id=d.id) AND NOT EXISTS (SELECT 1 FROM intentions i WHERE i.decision_id=d.id) AND NOT EXISTS (SELECT 1 FROM decision_options dopt WHERE dopt.decision_id=d.id) AND NOT EXISTS (SELECT 1 FROM cognitive_expectations ce WHERE ce.decision_id=d.id) AND NOT EXISTS (SELECT 1 FROM counterfactuals cf WHERE cf.decision_id=d.id) AND NOT EXISTS (SELECT 1 FROM counterfactual_worlds cw WHERE cw.decision_id=d.id) AND NOT EXISTS (SELECT 1 FROM decision_context_archive dca WHERE dca.decision_id=d.id)"+
     ") debt",
     [
-      simulationId,needCutoff,
-      simulationId,emotionCutoff,
-      simulationId,relationshipCutoff,
-      simulationId,importantThreshold,eventCutoff,importantEventCutoff,
-      simulationId,actionCutoff,
-      simulationId,actionCutoff,
-      simulationId,tickCutoff,
-      simulationId,contextArchiveCutoff,
-      simulationId,contextCutoff,
-      simulationId,actionCutoff,
-      simulationId,intentionCutoff,
-      simulationId,optionCutoff,
-      simulationId,cognitiveCutoff,cognitiveCutoff,
-      simulationId,cognitiveCutoff,
-      simulationId,cognitiveCutoff,cognitiveCutoff,
-      simulationId,traitCutoff,
+      simulationIdBinary,needCutoff,
+      simulationIdBinary,emotionCutoff,
+      simulationIdBinary,relationshipCutoff,
+      simulationIdBinary,importantThreshold,eventCutoff,importantEventCutoff,
+      simulationIdBinary,actionCutoff,
+      simulationIdBinary,actionCutoff,
+      simulationIdBinary,tickCutoff,
+      simulationIdBinary,contextArchiveCutoff,
+      simulationIdBinary,contextCutoff,
+      simulationIdBinary,actionCutoff,
+      simulationIdBinary,intentionCutoff,
+      simulationIdBinary,optionCutoff,
+      simulationIdBinary,cognitiveCutoff,cognitiveCutoff,
+      simulationIdBinary,cognitiveCutoff,
+      simulationIdBinary,cognitiveCutoff,cognitiveCutoff,
+      simulationIdBinary,traitCutoff,
       String(simulationId),geminiCutoff,
-      simulationId,memoryArchiveCutoff,POLICY.memoryArchiveImportanceMax,memoryArchiveCutoff,
-      simulationId,memoryDeleteCutoff,
-      simulationId,decisionCutoff
+      simulationIdBinary,memoryArchiveCutoff,POLICY.memoryArchiveImportanceMax,memoryArchiveCutoff,
+      simulationIdBinary,memoryDeleteCutoff,
+      simulationIdBinary,decisionCutoff
     ]
   );
   return rows[0]?.oldest_at||null;
