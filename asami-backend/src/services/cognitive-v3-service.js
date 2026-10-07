@@ -210,12 +210,14 @@ async function branchCounterfactuals({ simulationId, entityId, simulationTime, d
     const worldKey = normalize(candidate.alternativeAction || 'UNKNOWN');
     const [existing] = await pool.query(`SELECT BIN_TO_UUID(id) AS id FROM counterfactual_worlds WHERE simulation_id=UUID_TO_BIN(?) AND decision_id=UUID_TO_BIN(?) AND world_key=? LIMIT 1`, [simulationId,decisionId,worldKey]);
     const predictedState = parseJson(candidate.predictedOutcome,{}) || {};
+    const isSelectedWorld = worldKey === normalize(actionType);
+    const baselineState = isSelectedWorld ? JSON.stringify(baseline) : null;
     if (existing.length) {
-      await pool.query(`UPDATE counterfactual_worlds SET baseline_state=?,predicted_state=?,predicted_utility=?,selected=?,version=version+1 WHERE id=UUID_TO_BIN(?)`, [JSON.stringify(baseline),JSON.stringify(predictedState),clamp01(candidate.predictedUtility),worldKey===normalize(actionType)?1:0,existing[0].id]);
+      await pool.query(`UPDATE counterfactual_worlds SET baseline_state=?,predicted_state=?,predicted_utility=?,selected=?,version=version+1 WHERE id=UUID_TO_BIN(?)`, [baselineState,JSON.stringify(predictedState),clamp01(candidate.predictedUtility),isSelectedWorld?1:0,existing[0].id]);
       worlds.push(existing[0].id);
     } else {
       const id = uuid();
-      await pool.query(`INSERT INTO counterfactual_worlds(id,simulation_id,entity_id,decision_id,world_key,selected,baseline_state,predicted_state,predicted_utility,status,created_simulation_at,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?, ?,?,'OPEN',?,1)`, [id,simulationId,entityId,decisionId,worldKey,worldKey===normalize(actionType)?1:0,JSON.stringify(baseline),JSON.stringify(predictedState),clamp01(candidate.predictedUtility),simulationTime]);
+      await pool.query(`INSERT INTO counterfactual_worlds(id,simulation_id,entity_id,decision_id,world_key,selected,baseline_state,predicted_state,predicted_utility,status,created_simulation_at,version) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?, ?,?,'OPEN',?,1)`, [id,simulationId,entityId,decisionId,worldKey,isSelectedWorld?1:0,baselineState,JSON.stringify(predictedState),clamp01(candidate.predictedUtility),simulationTime]);
       worlds.push(id);
     }
   }

@@ -2,7 +2,9 @@ const { pool } = require("../db/pool");
 const { env } = require("../config/env");
 
 const BYTES_PER_MB = 1024 * 1024;
-const DUMP_ESTIMATE_SAFETY_FACTOR = 1.5;
+const DUMP_ESTIMATE_SAFETY_FACTOR = 2.75;
+const MIN_DUMP_ESTIMATE_SAFETY_FACTOR = 2.75;
+const MAX_DUMP_ESTIMATE_SAFETY_FACTOR = 6;
 
 function megabytesToBytes(megabytes) {
   const value = Number(megabytes);
@@ -62,13 +64,19 @@ async function getBinaryLogSizeBytes(db = pool) {
 
 function getDumpEstimateSafetyFactor() {
   const configured = Number(env.DB_DUMP_ESTIMATE_FACTOR);
-  if (!Number.isFinite(configured) || configured < 1) return DUMP_ESTIMATE_SAFETY_FACTOR;
-  return configured;
+  if (!Number.isFinite(configured)) return DUMP_ESTIMATE_SAFETY_FACTOR;
+  return Math.min(
+    MAX_DUMP_ESTIMATE_SAFETY_FACTOR,
+    Math.max(MIN_DUMP_ESTIMATE_SAFETY_FACTOR, configured)
+  );
 }
 
 function estimateDumpSizeBytes(logicalDataBytes, safetyFactor = getDumpEstimateSafetyFactor()) {
   const dataBytes = Math.max(0, Number(logicalDataBytes) || 0);
-  const factor = Number.isFinite(Number(safetyFactor)) ? Math.max(1, Number(safetyFactor)) : DUMP_ESTIMATE_SAFETY_FACTOR;
+  const rawFactor = Number(safetyFactor);
+  const factor = Number.isFinite(rawFactor)
+    ? Math.min(MAX_DUMP_ESTIMATE_SAFETY_FACTOR, Math.max(MIN_DUMP_ESTIMATE_SAFETY_FACTOR, rawFactor))
+    : DUMP_ESTIMATE_SAFETY_FACTOR;
   return Math.ceil(dataBytes * factor);
 }
 
@@ -88,6 +96,7 @@ async function getDatabaseSizeBreakdown(db = pool) {
     logicalDataBytes,
     binaryLogBytes,
     estimatedDumpBytes,
+    dumpEstimateSafetyFactor: getDumpEstimateSafetyFactor(),
     sizeBytes: estimatedDumpBytes
   };
 }

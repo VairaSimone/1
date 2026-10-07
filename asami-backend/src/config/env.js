@@ -23,7 +23,9 @@ const Env = z.object({
   DB_RETRY_BASE_MS: z.coerce.number().int().min(25).max(10000).default(250),
   DB_RETRY_MAX_MS: z.coerce.number().int().min(100).max(30000).default(5000),
   DB_MAX_SIZE_MB: z.coerce.number().nonnegative().default(250),
-  DB_DUMP_ESTIMATE_FACTOR: z.preprocess((value)=>blankAsDefault(value,1.5),z.coerce.number().min(1).max(3).default(1.5)),
+  DB_DUMP_ESTIMATE_FACTOR: z.preprocess((value)=>blankAsDefault(value,2.75),z.coerce.number().min(1).max(6).default(2.75)),
+  DB_RETENTION_PRESSURE_RATIO: z.coerce.number().min(0.50).max(0.95).default(0.80),
+  MAX_COUNTERFACTUAL_ALTERNATIVES: z.coerce.number().int().min(1).max(4).default(2),
   GEMINI_API_KEY: z.string().optional().default(""),
   GEMINI_MODEL: z.string().default("gemini-3.8-flash"),
   GEMINI_FALLBACK_MODELS: z.preprocess((value)=>{

@@ -329,9 +329,25 @@ async function interruptActiveAction({ simulationId, entityId, active, simulatio
   return true;
 }
 
-async function enforceDatabaseSizeLimit({ simulationId = null, hub, phase }) {
-  const limit = await checkDatabaseSizeLimit();
+async function enforceDatabaseSizeLimit({ simulationId = null, hub, phase, simulationTime = null, attemptRetention = false }) {
+  let limit = await checkDatabaseSizeLimit();
   if (!limit.enabled) return false;
+
+  if (
+    attemptRetention &&
+    simulationId &&
+    maybeRunSafeRetention &&
+    limit.limitBytes > 0 &&
+    limit.sizeBytes >= limit.limitBytes * Number(env.DB_RETENTION_PRESSURE_RATIO || 0.80)
+  ) {
+    await maybeRunSafeRetention(
+      simulationId,
+      simulationTime || new Date().toISOString(),
+      { force: true, reason: "database_pressure" }
+    );
+    limit = await checkDatabaseSizeLimit();
+    if (!limit.enabled) return false;
+  }
 
   if (simulationId) {
     observability.setGauge(simulationId, "database_size_bytes", limit.sizeBytes);
@@ -415,16 +431,19 @@ class SimulationEngine {
         return;
       }
 
-      // Hard database-cap preflight: do this before loading/scheduling any
-      // simulation so an already-over-limit database cannot receive another tick.
-      const databaseLimitReached = await enforceDatabaseSizeLimit({
-        simulationId: null,
-        hub: this.hub,
-        phase: "pulse.preflight"
-      });
-      if (databaseLimitReached) return;
-
       const simulations = await simRepo.listSimulations();
+      const pressureSimulation = simulations.find(sim => sim.status === "RUNNING");
+      if (pressureSimulation) {
+        const databaseLimitReached = await enforceDatabaseSizeLimit({
+          simulationId: pressureSimulation.id,
+          hub: this.hub,
+          phase: "pulse.preflight",
+          simulationTime: pressureSimulation.currentSimulationAt || null,
+          attemptRetention: true
+        });
+        if (databaseLimitReached) return;
+      }
+
       const maxConcurrent=Math.max(1,Number(env.MAX_CONCURRENT_SIMULATIONS)||1);
       let queueDepth=0;
       for (const sim of simulations) {
@@ -450,7 +469,13 @@ class SimulationEngine {
   }
   async runSimulation(sim) {
     if (this.stopping) return;
-    const databaseLimitReached = await enforceDatabaseSizeLimit({ simulationId: sim.id, hub: this.hub, phase: "tick.preflight" });
+    const databaseLimitReached = await enforceDatabaseSizeLimit({
+      simulationId: sim.id,
+      hub: this.hub,
+      phase: "tick.preflight",
+      simulationTime: sim.currentSimulationAt || null,
+      attemptRetention: true
+    });
     if (databaseLimitReached) return;
     const runtimeContext={simulationId:sim.id,tickId:null,tickQueryCount:0};
     return observability.runWithContext(runtimeContext,async()=>{

@@ -3,6 +3,7 @@ const observability = require("./simulation-observability");
 const { recordMemoryStatusDistribution } = require("./memory-service");
 const logger = require("../lib/logger");
 const { withEventWriteLock } = require("./event-service");
+const { compactActionResult, compactActionTarget, compactActionParameters, compactPlanStepResult, compactDecisionActualOutcome } = require("./storage-compaction");
 function parseJson(value,fallback={}){if(value===null||value===undefined)return fallback;if(typeof value==="object")return value;try{return JSON.parse(value);}catch{return fallback;}}
 
 
@@ -551,6 +552,85 @@ async function deleteActorCognitiveArtifacts(conn,simulationId,simulationTime){
   }
   return totals;
 }
+
+async function compactOldPlanStepResults(conn,simulationId,simulationTime){
+  const cutoff=cutoffDateTime(simulationTime,POLICY.actionDays);
+  const [rows]=await conn.query(
+    "SELECT BIN_TO_UUID(ps.id) AS id,ps.result " +
+    "FROM plan_steps ps JOIN plans p ON p.id=ps.plan_id " +
+    "WHERE p.simulation_id=UUID_TO_BIN(?) AND p.created_simulation_at<? " +
+    "AND ps.status IN ('COMPLETED','FAILED','CANCELLED') " +
+    "AND ps.result IS NOT NULL ORDER BY ps.id ASC LIMIT "+POLICY.batchSize,
+    [simulationId,cutoff]
+  );
+  if(POLICY.dryRun)return{candidates:rows.length,updated:0,remainingCandidates:rows.length,dryRun:true};
+  let updated=0;
+  for(const row of rows){
+    if(!retentionBudgetAvailable(simulationId))break;
+    const compacted=compactPlanStepResult(row.result);
+    if(JSON.stringify(parseJson(row.result,null))===JSON.stringify(compacted))continue;
+    const [result]=await conn.query(
+      "UPDATE plan_steps SET result=?,version=version+1 WHERE id=UUID_TO_BIN(?)",
+      [JSON.stringify(compacted),row.id]
+    );
+    updated+=Number(result.affectedRows||0);
+  }
+  const [backlog]=await conn.query(
+    "SELECT COUNT(*) AS candidates FROM plan_steps ps JOIN plans p ON p.id=ps.plan_id " +
+    "WHERE p.simulation_id=UUID_TO_BIN(?) AND p.created_simulation_at<? " +
+    "AND ps.status IN ('COMPLETED','FAILED','CANCELLED') AND ps.result IS NOT NULL",
+    [simulationId,cutoff]
+  );
+  return{candidates:rows.length,updated,remainingCandidates:Number(backlog[0]?.candidates||0)};
+}
+
+async function compactExistingDecisionActionSummaries(conn,simulationId,simulationTime){
+  const cutoff=cutoffDateTime(simulationTime,POLICY.actionDays);
+  const [rows]=await conn.query(
+    "SELECT BIN_TO_UUID(id) AS id,actual_outcome AS actualOutcome FROM decisions " +
+    "WHERE simulation_id=UUID_TO_BIN(?) AND status IN ('EXECUTED','FAILED','CANCELLED') " +
+    "AND simulation_time<? AND actual_outcome IS NOT NULL " +
+    "AND JSON_CONTAINS_PATH(actual_outcome,'one','$.actionSummary') " +
+    "ORDER BY simulation_time ASC LIMIT "+POLICY.batchSize,
+    [simulationId,cutoff]
+  );
+  if(POLICY.dryRun)return{candidates:rows.length,updated:0,remainingCandidates:rows.length,dryRun:true};
+  let updated=0;
+  for(const row of rows){
+    if(!retentionBudgetAvailable(simulationId))break;
+    const compacted=compactDecisionActualOutcome(row.actualOutcome);
+    if(JSON.stringify(parseJson(row.actualOutcome,null))===JSON.stringify(compacted))continue;
+    const [result]=await conn.query(
+      "UPDATE decisions SET actual_outcome=? WHERE id=UUID_TO_BIN(?)",
+      [JSON.stringify(compacted),row.id]
+    );
+    updated+=Number(result.affectedRows||0);
+  }
+  const [backlog]=await conn.query(
+    "SELECT COUNT(*) AS candidates FROM decisions " +
+    "WHERE simulation_id=UUID_TO_BIN(?) AND status IN ('EXECUTED','FAILED','CANCELLED') " +
+    "AND simulation_time<? AND actual_outcome IS NOT NULL " +
+    "AND JSON_CONTAINS_PATH(actual_outcome,'one','$.actionSummary')",
+    [simulationId,cutoff]
+  );
+  return{candidates:rows.length,updated,remainingCandidates:Number(backlog[0]?.candidates||0)};
+}
+
+async function deduplicateCounterfactualWorldBaselines(conn,simulationId,simulationTime){
+  if(POLICY.dryRun)return{candidates:0,updated:0,remainingCandidates:0,dryRun:true};
+  const [result]=await conn.query(
+    "UPDATE counterfactual_worlds cw JOIN (" +
+      "SELECT id,ROW_NUMBER() OVER(PARTITION BY decision_id ORDER BY selected DESC,id ASC) AS rn " +
+      "FROM counterfactual_worlds " +
+      "WHERE simulation_id=UUID_TO_BIN(?) AND baseline_state IS NOT NULL" +
+    ") ranked ON ranked.id=cw.id " +
+    "SET cw.baseline_state=NULL,cw.version=cw.version+1 " +
+    "WHERE ranked.rn>1 AND cw.simulation_id=UUID_TO_BIN(?)",
+    [simulationId,simulationId]
+  );
+  return{candidates:Number(result.affectedRows||0),updated:Number(result.affectedRows||0),remainingCandidates:0};
+}
+
 async function deleteOldRelationshipHistory(conn,simulationId,simulationTime){
   const cutoff=cutoffDateTime(simulationTime,POLICY.relationshipHistoryDays);
   const selectSql="SELECT BIN_TO_UUID(rh.id) AS id FROM relationship_history rh JOIN relationships r ON r.id=rh.relationship_id WHERE rh.simulation_id=UUID_TO_BIN(?) AND rh.simulation_time<? AND r.status IN ('ACTIVE','ENDED') ORDER BY rh.simulation_time ASC LIMIT "+POLICY.batchSize;
@@ -1086,7 +1166,7 @@ async function compactOldActionDecisionSummaries(conn, simulationId, simulationT
     for (const row of rows) {
       if (!retentionBudgetAvailable(simulationId) || updated >= maxUpdates) break;
       const actionSummary = {
-        schemaVersion: 1,
+        schemaVersion: 2,
         actionId: row.actionId,
         decisionId: row.decisionId,
         actionType: row.actionType,
@@ -1094,9 +1174,9 @@ async function compactOldActionDecisionSummaries(conn, simulationId, simulationT
         status: row.status,
         startedSimulationAt: row.startedAt || null,
         completedSimulationAt: row.completedAt || null,
-        target: parseJson(row.target, null),
-        parameters: parseJson(row.parameters, null),
-        result: parseJson(row.result, null)
+        target: compactActionTarget(row.target),
+        parameters: compactActionParameters(row.parameters),
+        result: compactActionResult(row.result)
       };
       const [result] = await conn.query(
         `UPDATE decisions
@@ -1527,6 +1607,7 @@ async function runSafeRetention(simulationId, simulationTime) {
       lock.conn
     );
     const actionSummaries = await compactOldActionDecisionSummaries(lock.conn, simulationId, mysqlSimulationTime);
+    const planStepCompaction = await compactOldPlanStepResults(lock.conn, simulationId, mysqlSimulationTime);
     const actions = await deleteOldActions(lock.conn, simulationId, mysqlSimulationTime);
     const intentions = await deleteOldIntentions(lock.conn, simulationId, mysqlSimulationTime);
     const relationshipHistory = await deleteOldRelationshipHistory(lock.conn, simulationId, mysqlSimulationTime);
@@ -1537,6 +1618,8 @@ async function runSafeRetention(simulationId, simulationTime) {
     const snapshots = await compactOldSnapshots(lock.conn, simulationId, mysqlSimulationTime);
     const context = await compactOldDecisionContexts(lock.conn, simulationId, mysqlSimulationTime);
     const contextArchive = await deleteOldDecisionContextArchives(lock.conn, simulationId, mysqlSimulationTime);
+    const compactedActionSummaries = await compactExistingDecisionActionSummaries(lock.conn, simulationId, mysqlSimulationTime);
+    const counterfactualBaselineDedupe = await deduplicateCounterfactualWorldBaselines(lock.conn, simulationId, mysqlSimulationTime);
     const options = await deleteUnselectedDecisionOptions(lock.conn, simulationId, mysqlSimulationTime);
     const decisionOptions = await deleteOldDecisionOptions(lock.conn, simulationId, mysqlSimulationTime);
     const memoryDedupeBackfilled = await backfillMemoryDedupeKeys(lock.conn, simulationId);
@@ -1566,6 +1649,11 @@ async function runSafeRetention(simulationId, simulationTime) {
       actionDecisionSummariesUpdated: Number(actionSummaries.updated || 0),
       actionDecisionSummaryCandidates: Number(actionSummaries.candidates || 0),
       actionDecisionSummaryBacklog: Number(actionSummaries.remainingCandidates || 0),
+      planStepResultsCompacted: Number(planStepCompaction.updated || 0),
+      planStepResultCandidates: Number(planStepCompaction.candidates || 0),
+      planStepResultBacklog: Number(planStepCompaction.remainingCandidates || 0),
+      actionSummariesCompacted: Number(compactedActionSummaries.updated || 0),
+      counterfactualBaselineDuplicatesRemoved: Number(counterfactualBaselineDedupe.updated || 0),
       actionsDeleted: Number(actions.deleted || 0),
       needHistoryDeleted: Number(needs.deleted || 0),
       emotionHistoryDeleted: Number(emotions.deleted || 0),
@@ -1649,6 +1737,9 @@ async function runSafeRetention(simulationId, simulationTime) {
       Number(simulationTicks.deleted || 0) +
       Number(events.deleted || 0) +
       Number(actionSummaries.updated || 0) +
+      Number(planStepCompaction.updated || 0) +
+      Number(compactedActionSummaries.updated || 0) +
+      Number(counterfactualBaselineDedupe.updated || 0) +
       Number(actions.deleted || 0) +
       Number(relationshipHistory.deleted || 0) +
       Number(memoryArchive.archived || 0) +
@@ -1737,6 +1828,9 @@ async function runSafeRetention(simulationId, simulationTime) {
         ["options",summary.decisionOptionsDeleted],
         ["events",summary.eventsDeleted],
         ["actionSummaries",summary.actionDecisionSummariesUpdated],
+        ["planStepResultsCompacted",summary.planStepResultsCompacted],
+        ["actionSummariesCompacted",summary.actionSummariesCompacted],
+        ["counterfactualBaselineDuplicatesRemoved",summary.counterfactualBaselineDuplicatesRemoved],
         ["actions",summary.actionsDeleted],
         ["needHistory",summary.needHistoryDeleted],
         ["emotionHistory",summary.emotionHistoryDeleted],
@@ -1779,8 +1873,9 @@ async function runSafeRetention(simulationId, simulationTime) {
   }
 }
 
-async function maybeRunSafeRetention(simulationId, simulationTime) {
+async function maybeRunSafeRetention(simulationId, simulationTime, options = {}) {
   if (!POLICY.enabled || !simulationId || !simulationTime) return { skipped: true, reason: "disabled" };
+  const force = Boolean(options?.force);
   const now = Date.now();
   const lastWall = lastRunAt.get(simulationId);
   if (lastWall !== undefined && now - lastWall < Math.min(POLICY.intervalMs, 5000)) return { skipped: true, reason: "wall_interval" };
@@ -1789,7 +1884,7 @@ async function maybeRunSafeRetention(simulationId, simulationTime) {
   const lastSimulationMs = lastRunSimulationAt.get(simulationId);
   const overloadStreak = adaptiveStateBySimulation.get(simulationId)?.overloadStreak || 0;
   const adaptiveProfile = getAdaptiveRetentionProfile(overloadStreak);
-  if (Number.isFinite(simulationMs) && lastSimulationMs !== undefined && simulationMs - lastSimulationMs < adaptiveProfile.simulationIntervalHours * 3600000) {
+  if (!force && Number.isFinite(simulationMs) && lastSimulationMs !== undefined && simulationMs - lastSimulationMs < adaptiveProfile.simulationIntervalHours * 3600000) {
     return { skipped: true, reason: "simulation_interval" };
   }
   running.add(simulationId);

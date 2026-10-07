@@ -4,6 +4,7 @@ const { isCriticalResourceReachable } = require("./physical-world-service");
 const observability = require("./simulation-observability");
 const logger = require("../lib/logger");
 const { assertTransition } = require("./state-machine");
+const { compactActionResult } = require("./storage-compaction");
 const GOAL_PRESSURE_CODES=new Set(["HUNGER","THIRST","SLEEPINESS","SOCIAL_NEED","FUN","CURIOSITY","ACHIEVEMENT","BELONGING"]);
 const GOAL_TEMPLATES={HUNGER:{title:"Find food",description:"Get food and satisfy the current hunger pressure.",goalType:"NEED",steps:[{title:"Go somewhere with food",description:"Travel to a reachable place where food is available.",actionType:"WALKING"},{title:"Eat",description:"Consume available food and verify the result.",actionType:"EATING"}]},THIRST:{title:"Find water",description:"Find accessible water and satisfy the current thirst pressure.",goalType:"NEED",steps:[{title:"Go somewhere with water",description:"Travel to a reachable place where water is available.",actionType:"WALKING"},{title:"Drink",description:"Consume available water and verify the result.",actionType:"DRINKING"}]},SOCIAL_NEED:{title:"Connect with someone",description:"Have a meaningful social interaction to reduce social pressure.",goalType:"NEED",steps:[{title:"Talk with someone",description:"Find an appropriate person and have a social interaction.",actionType:"TALKING"}]},BELONGING:{title:"Strengthen belonging",description:"Build or reinforce a meaningful social connection.",goalType:"NEED",steps:[{title:"Talk with someone",description:"Have an interaction that can contribute to belonging.",actionType:"TALKING"}]},FUN:{title:"Do something enjoyable",description:"Choose an enjoyable activity and follow through with it.",goalType:"NEED",steps:[{title:"Go somewhere interesting",description:"Travel to a suitable place for leisure.",actionType:"WALKING"},{title:"Have fun",description:"Perform an activity that meaningfully satisfies fun.",actionType:"PLAYING"}]},CURIOSITY:{title:"Learn something new",description:"Seek a novel experience and turn it into learning.",goalType:"NEED",steps:[{title:"Explore somewhere new",description:"Visit a location that is interesting and not recently visited.",actionType:"EXPLORING"},{title:"Learn from the experience",description:"Read or study something connected to the experience.",actionType:"READING"}]},ACHIEVEMENT:{title:"Accomplish something",description:"Complete a meaningful productive activity.",goalType:"NEED",steps:[{title:"Work toward the objective",description:"Perform a productive activity that advances the objective.",actionType:"STUDYING"},{title:"Complete the objective",description:"Continue with a productive activity until the goal is complete.",actionType:"WORKING"}]},SLEEPINESS:{title:"Get enough sleep",description:"Restore sleep and energy when sleep pressure is high.",goalType:"NEED",steps:[{title:"Sleep",description:"Get enough uninterrupted sleep and verify recovery.",actionType:"SLEEPING"}]}};
 const MAX_STEP_ATTEMPTS=1,MAX_GOAL_AGE_HOURS=24,MAX_PLAN_REPLANS=3;
@@ -879,7 +880,7 @@ async function advancePlanForAction({simulationId,entityId,goalId,actionType,out
         requiredCompletions,
         progressModel:"CUMULATIVE_ACTIONS",
         lastCompletedAt:simulationTime,
-        lastActionResult:actionResult||null
+        lastActionResult:compactActionResult(actionResult)
       };
 
       if(completions>=requiredCompletions){
@@ -918,7 +919,7 @@ async function advancePlanForAction({simulationId,entityId,goalId,actionType,out
         `UPDATE plan_steps
          SET status='COMPLETED',result=?,version=version+1
          WHERE id=UUID_TO_BIN(?) AND version=? AND status IN ('ACTIVE','PENDING')`,
-        [JSON.stringify({actionType:normalizedAction,outcome,completedAt:simulationTime,actionResult}),step.id,step.version]
+        [JSON.stringify({actionType:normalizedAction,outcome,completedAt:simulationTime,actionResult:compactActionResult(actionResult)}),step.id,step.version]
       );
       changed=updated.affectedRows===1;
 
@@ -961,7 +962,7 @@ async function advancePlanForAction({simulationId,entityId,goalId,actionType,out
             outcome,
             attempts,
             lastAttemptAt:simulationTime,
-            lastActionResult:actionResult||null,
+            lastActionResult:compactActionResult(actionResult),
             ...(resourceBlock?{
               blockedReason:"RESOURCE_UNAVAILABLE_REQUIRES_REPLAN",
               resource:resourceBlock.resource,
