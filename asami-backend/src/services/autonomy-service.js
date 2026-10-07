@@ -542,7 +542,7 @@ async function actForEntity({simulationId,entityId,simulationTime,gemini,tickId=
       context={...context,needs:latestNeeds,recoveryBlocks,candidates:decisionService.rebuildDecisionCandidates({...context,recoveryBlocks},entityId,latestNeeds),needPriority:decisionService.needPriorityState?decisionService.needPriorityState(latestNeeds):context.needPriority};
     }
   }
-  const knownGoal=context.goals?.[0]||null;
+  const knownGoal=context.goals?.find(goal=>String(goal?.goalType||\"\").toUpperCase()===\"NEED\")||context.goals?.[0]||null;
   const knownPlan=(context.cognitiveProfile?.plans||[]).find(item=>String(item.goalId||"")===String(knownGoal?.id||""))||null;
   let goalState=goalNeedsValidation(knownGoal,knownPlan,context.needs,simulationTime)
     ?await ensureGoalPlan({simulationId,entityId,simulationTime,needs:context.needs})
