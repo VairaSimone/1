@@ -416,5 +416,6 @@ test("counterfactual world baseline is deduplicated per decision",()=>{
   const path=require("node:path");
   const source=fs.readFileSync(path.join(__dirname,"../src/services/safe-retention-service.js"),"utf8");
   assert.match(source,/async function deduplicateCounterfactualWorldBaselines/);
-  assert.match(source,/ROW_NUMBER\\(\\) OVER\\(PARTITION BY decision_id ORDER BY selected DESC,id ASC\\)/);\n  assert.match(source,/while\\(updated<Math\\.min\\(POLICY\\.maxDeletesPerTable,POLICY\\.batchSize\\)/);
+  assert.match(source,/ROW_NUMBER\\(\\) OVER\\(PARTITION BY decision_id ORDER BY selected DESC,id ASC\\)/);
+  assert.match(source,/while\\(updated<Math\\.min\\(POLICY\\.maxDeletesPerTable,POLICY\\.batchSize\\)/);
 });
