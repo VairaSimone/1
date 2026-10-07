@@ -62,3 +62,13 @@ test("reconciler increments its counter only after post-processing is actually f
   const source=fs.readFileSync(path.join(__dirname,"../src/services/action-reconciliation-service.js"),"utf8");
   assert.match(source,/if\(await markActionPostProcessingComplete\(row\.actionId\)\) reconciled\+=1/);
 });
+
+
+test("action reconciler finalizes terminal cognitive artifacts after recovering a decision",()=>{
+  const fs=require("node:fs");
+  const path=require("node:path");
+  const source=fs.readFileSync(path.join(__dirname,"../src/services/action-reconciliation-service.js"),"utf8");
+  assert.match(source,/finalizeDecisionCognitiveArtifacts/);
+  assert.match(source,/finalizeRecoveredDecisionCognition/);
+  assert.match(source,/terminal reconciliation/);
+});
