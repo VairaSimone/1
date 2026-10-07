@@ -6,6 +6,7 @@ const { resolveActionResource } = require("./physical-world-service");
 const { createMemory } = require("./memory-service");
 const { upsertKnowledge } = require("./personality-service");
 const { validateCriticalDecision,markDecisionActionCreated,markDecisionActionOutcome } = require("./decision-service");
+const { finalizeDecisionCognitiveArtifacts } = require("./decision-cognitive-finalization-service");
 const observability = require("./simulation-observability");
 const { assertTransition } = require("./state-machine");
 const { calculateOutcomeDependentNeedDelta, persistNeedTransition, OUTCOME_DEPENDENT_NEED_EFFECTS } = require("./state-service");
@@ -609,6 +610,11 @@ await addEffect({simulationId,eventId,effectType:"ACTION_COMPLETED",targetAction
 );
   await markDecisionActionCreated({decisionId,simulationId,entityId,actionId});
   await markDecisionActionOutcome({decisionId,simulationId,entityId,actionId,outcome:committed.outcome.outcome});
+  try {
+    await finalizeDecisionCognitiveArtifacts({simulationId,decisionId,entityId,simulationTime,outcome:committed.outcome.outcome,actionType});
+  } catch (cognitiveFinalizeError) {
+    logger.warnThrottled(`decision:cognitive-finalize:${decisionId}`,60000,{simulationId,decisionId,entityId,error:String(cognitiveFinalizeError?.message||cognitiveFinalizeError)},"decision cognitive finalization deferred to reconciliation");
+  }
 return{completed:true,outcome:committed.outcome.outcome,success:committed.outcome.success,failureReason:committed.outcome.failureReason,resource:committed.physical,needEffect:committed.needEffect||null,resourceLearning:learning,socialInteraction};}}
 async function markActionPostProcessingComplete(actionId,db=pool){
   if(!actionId)return false;
