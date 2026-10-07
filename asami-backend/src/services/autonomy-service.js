@@ -350,8 +350,6 @@ function getGeminiTrigger(entity,context,memories=[]){
 function shouldAskGemini(entity,context,memories=[]){return Boolean(getGeminiTrigger(entity,context,memories));}
 function canUseGeminiDecision(entityId,simulationTime,{highValue=false,periodic=false,triggerKey=null}={}){
   if(geminiBudget.providerBlockRemainingMs()>0)return false;
-  if(geminiBudget.isLocallyBlocked("AUTONOMY"))return false;
-
   const now=new Date(simulationTime).getTime();
   if(!Number.isFinite(now))return false;
 
@@ -592,7 +590,7 @@ async function actForEntity({simulationId,entityId,simulationTime,gemini,tickId=
 
   const memories=batchContext?.contexts?.has(entityId)?(context.memories||[]):await recallContext(simulationId,entityId,8,{simulationTime,goalIds:(context.goals||[]).map(goal=>goal.id).filter(Boolean),locationId:context.location?.locationId||null,locationType:context.location?.locationType||null,candidateActionTypes:(context.candidates||[]).map(candidate=>candidate.action).filter(Boolean)});
   const localBudgetBlocked=geminiBudget.isLocallyBlocked("AUTONOMY");
-  const geminiTrigger=localBudgetBlocked?null:getGeminiTrigger(entity,context,memories);
+  const geminiTrigger=getGeminiTrigger(entity,context,memories);
 
   if(geminiTrigger&&geminiTrigger.key===lastGeminiTriggerKeyByEntity.get(entity.id)){
     context.geminiTrigger=null;
