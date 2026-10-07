@@ -22,7 +22,7 @@ const safeRetentionService = require("../services/safe-retention-service");
 const { checkDatabaseSizeLimit } = require("../services/database-size-guard");
 const maybeRunSafeRetention = typeof safeRetentionService.maybeRunSafeRetention === "function" ? safeRetentionService.maybeRunSafeRetention : null;
 const { reconcileCompletedActions, reconcileStaleEvaluatedDecisions } = require("../services/action-reconciliation-service");
-const { reconcileTerminalDecisionCognition } = require("../services/decision-cognitive-finalization-service");
+const { reconcileTerminalDecisionCognition, finalizeDecisionCognitiveArtifacts } = require("../services/decision-cognitive-finalization-service");
 const { revalidateBlockedResourceGoals } = require("../services/planning-service");
 const { runSimulationIntegrityCheck } = require("../services/integrity-check-service");
 const { calibrateDecisionOutcome } = require("../services/decision-service");
@@ -325,7 +325,32 @@ async function interruptActiveAction({ simulationId, entityId, active, simulatio
   await applyEmotions(entityId, simulationTime, needChanges, eventId, actionId, actionType, 0, { event: true, outcome: "PARTIAL", expectedOutcome: null, targetEntityId: active.metadata?.targetEntityId || null, targetLocationId: active.metadata?.targetLocationId || null, relationshipIntent: active.metadata?.relationshipIntent || "NONE", failureReason: "ACTION_INTERRUPTED" });
   await flushPendingNeedHistory(entityId, actionId);
   await autonomyService.completeGoalForAction(active.metadata?.goalId || null, actionType, simulationTime, "PARTIAL", result);
-  if(active.decisionId) await calibrateDecisionOutcome(active.decisionId,"PARTIAL");
+  if(active.decisionId) {
+    await calibrateDecisionOutcome(active.decisionId,"PARTIAL");
+    try {
+      await finalizeDecisionCognitiveArtifacts({
+        simulationId,
+        decisionId:active.decisionId,
+        entityId,
+        simulationTime:updateTime,
+        outcome:"PARTIAL",
+        actionType
+      });
+    } catch (cognitiveFinalizeError) {
+      logger.warnThrottled(
+        `decision:cognitive-interrupt:${active.decisionId}`,
+        60000,
+        {
+          simulationId,
+          decisionId:active.decisionId,
+          entityId,
+          simulationTime:updateTime,
+          error:String(cognitiveFinalizeError?.message||cognitiveFinalizeError)
+        },
+        "decision cognitive finalization deferred to reconciliation"
+      );
+    }
+  }
   await actionService.markActionPostProcessingComplete(actionId);
   return true;
 }
@@ -542,12 +567,6 @@ class SimulationEngine {
 
           setPhase("world.relationships");
           await evolveRelationships(sim.id, nextTime);
-          setPhase("integrity.check");
-          const integrity = await runSimulationIntegrityCheck(sim.id,nextTime.toISOString());
-          if(!integrity.skipped && !integrity.healthy){
-            const violations=Array.isArray(integrity.violations)?integrity.violations:[];
-            observability.increment(sim.id,"integrity_violation_total",violations.reduce((sum,item)=>sum+Number(item.count||0),0));
-          }
           setPhase("world.emergence");
           await progressEmergence(sim.id, nextTime.toISOString(), { gemini: this.gemini });
           setPhase("world.society");
@@ -1048,6 +1067,19 @@ class SimulationEngine {
             checked: staleDecisionReconciliation.checked,
             repaired: staleDecisionReconciliation.repaired
           }, "stale evaluated decisions reconciled");
+        }
+
+        if (this.worldMaintenanceAt.has(sim.id)) {
+          setPhase("integrity.check");
+          const integrity = await runSimulationIntegrityCheck(sim.id,nextTime.toISOString());
+          if(!integrity.skipped && !integrity.healthy){
+            const violations=Array.isArray(integrity.violations)?integrity.violations:[];
+            observability.increment(
+              sim.id,
+              "integrity_violation_total",
+              violations.reduce((sum,item)=>sum+Number(item.count||0),0)
+            );
+          }
         }
 
         this.tickCounter.set(sim.id, Number(this.tickCounter.get(sim.id) || 0) + 1);
