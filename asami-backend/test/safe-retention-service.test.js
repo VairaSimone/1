@@ -419,3 +419,17 @@ test("counterfactual world baseline is deduplicated per decision",()=>{
   assert.match(source,/ROW_NUMBER\(\) OVER\(PARTITION BY decision_id ORDER BY selected DESC,id ASC\)/);
   assert.match(source,/while\(updated<Math\.min\(POLICY\.maxDeletesPerTable,POLICY\.batchSize\)/);
 });
+
+
+test("retention debt-age query binds binary simulation ids instead of embedding UUID functions around placeholders",()=>{
+  const fs=require("node:fs");
+  const path=require("node:path");
+  const source=fs.readFileSync(path.join(__dirname,"../src/services/safe-retention-service.js"),"utf8");
+  const start=source.indexOf("async function getOldestRetentionDebtAt");
+  const end=source.indexOf("\nasync function persistRetentionTelemetry",start);
+  const block=source.slice(start,end);
+  assert.match(source,/function uuidBinaryParam\(value\)/);
+  assert.match(block,/const simulationIdBinary = uuidBinaryParam\(simulationId\)/);
+  assert.doesNotMatch(block,/simulation_id=UUID_TO_BIN\(\?\)/);
+  assert.match(block,/simulation_id=\?/);
+});
