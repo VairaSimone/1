@@ -191,11 +191,12 @@ test("Autonomy failure reflection consumes real interruptions instead of an unus
   assert.match(autonomySource,/SOCIAL_CONFLICT/);
 });
 
-test("Autonomy stops re-entering Gemini while the local budget cooldown is active",()=>{
+test("Autonomy budget cooldown no longer suppresses high-value Gemini opportunities",()=>{
   const budgetSource=fs.readFileSync(path.join(__dirname,"../src/services/gemini-budget-service.js"),"utf8");
   assert.match(budgetSource,/function isLocallyBlocked\(kind="AUTONOMY"\)/);
-  assert.match(autonomySource,/geminiBudget\.isLocallyBlocked\("AUTONOMY"\)/);
-  assert.match(autonomySource,/LOCAL_BUDGET_COOLDOWN/);
+  assert.match(budgetSource,/budgetKind==="AUTONOMY" && highValue/);
+  assert.match(autonomySource,/getGeminiTrigger\(entity,context,memories\)/);
+  assert.doesNotMatch(autonomySource,/geminiTrigger=localBudgetBlocked\?null/);
 });
 
 test("Autonomy caps provider fallback fanout to two models",()=>{
@@ -239,7 +240,7 @@ test("Memory recall updates are performed in one query",()=>{
 
 test("simulation identity reaches Gemini budget reservation",()=>{
   assert.match(geminiSource,/async generateJson\(prompt,schema,[\s\S]*simulationId=null,entityId=null,simulationTime=null/);
-  assert.match(geminiSource,/budget\.reserve\(\{prompt,outputTokenCeiling,kind,simulationId,entityId,simulationTime\}\)/);
+  assert.match(geminiSource,/budget\.reserve\(\{prompt,outputTokenCeiling:requestedOutputTokenCeiling,[\s\S]*minimumOutputTokenCeiling,[\s\S]*highValue,[\s\S]*simulationId,entityId,simulationTime\}\)/);
   assert.match(geminiSource,/async chooseDecision\(context,\{simulationId=null,entityId=null,simulationTime=null\}/);
   assert.match(geminiSource,/async dialogue\(context,\{simulationId=null,entityId=null,simulationTime=null\}/);
 });
