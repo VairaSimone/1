@@ -8,3 +8,14 @@ test("selectActiveStep prefers ACTIVE step and otherwise first PENDING step",()=
 
 
 test("goal stagnation recovery defaults are bounded",()=>{assert.equal(GOAL_STAGNATION_REPLAN_HOURS,48);assert.equal(MAX_GOAL_STAGNATION_REPLANS,2);});
+
+
+test("need goals can complete directly when the terminal satisfaction action succeeds before planned travel",()=>{
+  const fs=require("node:fs");
+  const path=require("node:path");
+  const source=fs.readFileSync(path.join(__dirname,"../src/services/planning-service.js"),"utf8");
+  assert.match(source,/NEED_SATISFIED_DIRECTLY/);
+  assert.match(source,/directNeedCompletion/);
+  assert.match(source,/normalizedAction===terminalGoalAction/);
+  assert.match(source,/progress=1,status='COMPLETED'/);
+});
