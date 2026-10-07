@@ -94,7 +94,7 @@ function normalizeProviderSchemaNode(node, root, resolving = new Set()) {
   const allowed = new Set([
     "type","nullable","properties","required","additionalProperties","items","anyOf","allOf","oneOf",
     "enum","const","description","format","pattern","minLength","maxLength","minimum","maximum",
-    "exclusiveMinimum","exclusiveMaximum","multipleOf","minItems","maxItems","uniqueItems"
+    "multipleOf","minItems","maxItems","uniqueItems"
   ]);
   const providerSupportedStringFormats = new Set(["date-time","date","time"]);
   const out = {};
