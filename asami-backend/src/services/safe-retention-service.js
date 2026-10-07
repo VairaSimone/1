@@ -1763,26 +1763,28 @@ async function runSafeRetention(simulationId, simulationTime) {
       expectationBacklog: Number(expectations.remainingCandidates || 0),
       counterfactualBacklog: Number(counterfactuals.remainingCandidates || 0),
       counterfactualWorldBacklog: Number(worlds.remainingCandidates || 0),
-      retentionBacklogTotal:
-        Number(needs.remainingCandidates || 0) +
-        Number(emotions.remainingCandidates || 0) +
-        Number(simulationTicks.remainingCandidates || 0) +
-        Number(events.remainingCandidates || 0) +
-        Number(actions.remainingCandidates || 0) +
-        Number(actionSummaries.remainingCandidates || 0) +
-        Number(memoryArchive.remainingCandidates || 0) +
-        Number(duplicateMemories.remainingCandidates || 0) +
-        Number(memories.remainingCandidates || 0) +
-        Number(relationshipHistory.remainingCandidates || 0) +
-        Number(expectations.remainingCandidates || 0) +
-        Number(counterfactuals.remainingCandidates || 0) +
-        Number(worlds.remainingCandidates || 0) +
-        Number(contextArchive.remainingCandidates || 0) +
-        Number(intentions.remainingCandidates || 0) +
-        Number(decisionOptions.remainingCandidates || 0) +
-        Number(traitHistory.remainingCandidates || 0) +
-        Number(geminiDecisionTelemetry.remainingCandidates || 0) +
-        Number(decisions.remainingCandidates || 0),
+      retentionBacklogTotal: retentionBacklogTotalFromSummary({
+        needHistoryBacklog:Number(needs.remainingCandidates||0),
+        emotionHistoryBacklog:Number(emotions.remainingCandidates||0),
+        simulationTickBacklog:Number(simulationTicks.remainingCandidates||0),
+        eventBacklog:Number(events.remainingCandidates||0),
+        actionBacklog:Number(actions.remainingCandidates||0),
+        actionDecisionSummaryBacklog:Number(actionSummaries.remainingCandidates||0),
+        planStepResultBacklog:Number(planStepCompaction.remainingCandidates||0),
+        memoryArchiveBacklog:Number(memoryArchive.remainingCandidates||0),
+        memoryDedupeBacklog:Number(duplicateMemories.remainingCandidates||0),
+        memoryDeleteBacklog:Number(memories.remainingCandidates||0),
+        relationshipHistoryBacklog:Number(relationshipHistory.remainingCandidates||0),
+        expectationBacklog:Number(expectations.remainingCandidates||0),
+        counterfactualBacklog:Number(counterfactuals.remainingCandidates||0),
+        counterfactualWorldBacklog:Number(worlds.remainingCandidates||0),
+        decisionContextArchiveBacklog:Number(contextArchive.remainingCandidates||0),
+        intentionsDeleted:Number(intentions.remainingCandidates||0),
+        decisionOptionCandidates:Number(options.remainingCandidates||0)+Number(decisionOptions.remainingCandidates||0),
+        traitHistoryCandidates:Number(traitHistory.remainingCandidates||0),
+        geminiDecisionTelemetryCandidates:Number(geminiDecisionTelemetry.remainingCandidates||0),
+        decisions:Number(decisions.remainingCandidates||0)
+      }),
       retentionBudgetMs: adaptiveProfile.timeBudgetMs,
       retentionBudgetRemainingMs: retentionBudgetRemainingMs(simulationId),
       adaptiveRetentionLevel: adaptiveProfile.level,
@@ -1991,5 +1993,6 @@ module.exports = {
   getOldestRetentionDebtAt,
   normalizeArchiveJson,
   positiveInt,
-  boundedNumber
+  boundedNumber,
+  retentionBacklogTotalFromSummary
 };
