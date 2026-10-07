@@ -103,3 +103,17 @@ test("integrity check runs after stale decision reconciliation",()=>{
   assert.ok(integrity>reconcile);
   assert.equal(oldIntegrity,integrity);
 });
+
+test("critical interruption uses the function simulation time for cognitive finalization",()=>{
+  const fs=require("node:fs");
+  const path=require("node:path");
+  const source=fs.readFileSync(path.join(__dirname,"../src/simulation/engine.js"),"utf8");
+  assert.doesNotMatch(source,/simulationTime:updateTime/);
+  const interruption=source.indexOf("async function interruptActiveAction");
+  const finalization=source.indexOf("finalizeDecisionCognitiveArtifacts",interruption);
+  const end=source.indexOf("await actionService.markActionPostProcessingComplete(actionId)",finalization);
+  assert.ok(interruption>=0);
+  assert.ok(finalization>interruption);
+  assert.ok(end>finalization);
+  assert.match(source.slice(finalization,end),/simulationTime,/);
+});
