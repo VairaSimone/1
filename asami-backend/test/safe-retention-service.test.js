@@ -442,14 +442,13 @@ test("retention debt-age query keeps SQL placeholders and bound parameters in sy
   const end=source.indexOf("\nasync function persistRetentionTelemetry",start);
   const block=source.slice(start,end);
   const queryStart=block.indexOf('const [rows]=await conn.query(');
-  const paramsStart=block.indexOf("    [",queryStart);
-  const paramsEnd=block.indexOf("\n    ]",paramsStart);
+  const paramsStart=block.indexOf("simulationIdBinary,needCutoff",queryStart);
+  const paramsEnd=block.indexOf("simulationIdBinary,decisionCutoff",paramsStart);
   assert.ok(queryStart>=0 && paramsStart>queryStart && paramsEnd>paramsStart);
   const querySource=block.slice(queryStart,paramsStart);
-  const paramsSource=block.slice(paramsStart,paramsEnd);
+  const paramsSource=block.slice(paramsStart,paramsEnd)+"simulationIdBinary,decisionCutoff";
   const placeholderCount=(querySource.match(/\\?/g)||[]).length;
-  const paramsBody=paramsSource.slice(paramsSource.indexOf("[")+1);
-  const parameterCount=paramsBody.split(",").map(value=>value.trim()).filter(Boolean).length;
+  const parameterCount=paramsSource.split(",").map(value=>value.trim()).filter(Boolean).length;
   assert.equal(placeholderCount,parameterCount);
   assert.equal(placeholderCount,48);
 });
