@@ -175,10 +175,18 @@ async function startAction({simulationId,entityId,decisionId,intentionId=null,go
     const origin=await currentLocation(entityId,simulationId);
     if(origin){
       const locations=await loadLocationGraph(simulationId);
+      let sleepContext=decisionContext||{};
+      if(sleepContext.isAsami===undefined){
+        const [entityRows]=await pool.query(
+          "SELECT LOWER(display_name) AS displayName FROM entities WHERE simulation_id=UUID_TO_BIN(?) AND id=UUID_TO_BIN(?) LIMIT 1",
+          [simulationId,entityId]
+        );
+        sleepContext={...sleepContext,isAsami:String(entityRows[0]?.displayName||"")==="asami"};
+      }
       const sleepPolicy=resolvePreferredSleepLocation({
         locations,
         originId:origin,
-        context:decisionContext||{}
+        context:sleepContext
       });
       if(sleepPolicy.targetLocationId&&!sleepPolicy.allowUnusual){
         targetLocationId=sleepPolicy.targetLocationId;
