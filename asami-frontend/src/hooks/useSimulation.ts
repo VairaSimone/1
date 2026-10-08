@@ -124,12 +124,16 @@ export function useSimulation() {
   const worldLastFetchAt = useRef(0)
   const worldRequestInFlight = useRef<Promise<WorldSnapshot | null> | null>(null)
   const worldRef = useRef<WorldSnapshot | null>(null)
+  const latestDashboardSimulationAt = useRef(0)
+  const latestRealtimeSequence = useRef(0)
 
   const simulation = useMemo(() => simulations.find((s) => s.id === simulationId) || null, [simulations, simulationId])
 
   useEffect(() => { worldRef.current = world }, [world])
 
   const setSimulationId = useCallback((id: string) => {
+    latestDashboardSimulationAt.current = 0
+    latestRealtimeSequence.current = 0
     setSimulationIdState(id)
     localStorage.setItem(ACTIVE_SIM_KEY, id)
     setDashboard(null); setTimeline([]); setEvents([]); setMemories([]); setDevelopment({ current: null, history: [] }); setWorld(null); setWorldActivities([]); setSociety(null); setMessages([]); setConversationId(''); setConversationState(null)
@@ -171,7 +175,13 @@ export function useSimulation() {
       setSimulations((prev) => prev.some((x) => x.id === sim.id) ? prev.map((x) => x.id === sim.id ? sim : x) : [sim, ...prev])
       const observer = await api.observer(simulationId)
       setChatSenderIdState(observer.id); localStorage.setItem(CHAT_SENDER_KEY, observer.id)
-      setAsamiIdState(entity.id); localStorage.setItem(ASAMI_ENTITY_KEY, entity.id); setDashboard(nextDashboard); if (nextWorld) setWorld(nextWorld); setSociety(nextSociety)
+      setAsamiIdState(entity.id); localStorage.setItem(ASAMI_ENTITY_KEY, entity.id)
+      const dashboardAt = nextDashboard?.simulationAt ? new Date(String(nextDashboard.simulationAt)).getTime() : Number.NaN
+      if (!Number.isFinite(latestDashboardSimulationAt.current) || latestDashboardSimulationAt.current <= 0 || !Number.isFinite(dashboardAt) || dashboardAt >= latestDashboardSimulationAt.current) {
+        if (Number.isFinite(dashboardAt)) latestDashboardSimulationAt.current = dashboardAt
+        setDashboard(nextDashboard)
+      }
+      if (nextWorld) setWorld(nextWorld); setSociety(nextSociety)
       const [nextTimeline, nextEvents, nextMemories, nextDevelopment] = await Promise.all([
         api.timeline(simulationId, entity.id, 200), api.events(simulationId, 100), api.memories(simulationId, entity.id, 100), api.development(simulationId, entity.id),
       ])
@@ -191,6 +201,32 @@ export function useSimulation() {
     const timer = window.setInterval(load, 5000)
     return () => { cancelled = true; window.clearInterval(timer) }
   }, [simulationId])
+
+  useEffect(() => {
+    if (!simulationId || !asamiId || !wsConnected) return
+    let cancelled = false
+
+    const loadDashboard = async () => {
+      try {
+        const nextDashboard = await api.dashboard(simulationId, asamiId)
+        if (cancelled) return
+        const nextMs = nextDashboard?.simulationAt ? new Date(String(nextDashboard.simulationAt)).getTime() : Number.NaN
+        if (!Number.isFinite(nextMs) || latestDashboardSimulationAt.current <= 0 || nextMs >= latestDashboardSimulationAt.current) {
+          if (Number.isFinite(nextMs)) latestDashboardSimulationAt.current = nextMs
+          setDashboard(nextDashboard)
+        }
+      } catch {
+        // The websocket remains the live source for fast state updates.
+      }
+    }
+
+    void loadDashboard()
+    const timer = window.setInterval(() => { void loadDashboard() }, 5000)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+    }
+  }, [simulationId, asamiId, wsConnected])
 
   useEffect(() => {
     if (!simulationId) return
@@ -222,6 +258,10 @@ export function useSimulation() {
       const worldState = payload.worldState && typeof payload.worldState === 'object' ? payload.worldState as Record<string, unknown> : null
       setDashboard((prev) => {
         if (!prev) return prev
+        const eventAt = String(payload.simulationAt || fallbackAt)
+        const eventMs = new Date(eventAt).getTime()
+        if (Number.isFinite(eventMs) && latestDashboardSimulationAt.current > 0 && eventMs < latestDashboardSimulationAt.current) return prev
+        if (Number.isFinite(eventMs)) latestDashboardSimulationAt.current = Math.max(latestDashboardSimulationAt.current, eventMs)
         const nextNeeds = needChanges.length
           ? prev.needs.map((need) => {
               const change = needChanges.find((item) => item && typeof item === 'object' && String((item as Record<string, unknown>).code || '') === need.code) as Record<string, unknown> | undefined
@@ -355,6 +395,7 @@ export function useSimulation() {
       const ws = new WebSocket(url)
       wsRef.current = ws
       ws.onopen = () => {
+        latestRealtimeSequence.current = 0
         setWsConnected(true)
         retry = 0
         void refresh(true)
@@ -363,6 +404,11 @@ export function useSimulation() {
         try {
           const msg = JSON.parse(event.data) as WsMessage
           const p = msg.payload || {}
+          const sequence = Number(msg.sequence)
+          if (Number.isFinite(sequence)) {
+            if (sequence <= latestRealtimeSequence.current) return
+            latestRealtimeSequence.current = sequence
+          }
 
           if (msg.type === 'simulation.tick') {
             updateWorldClock(p, msg.occurredAt)

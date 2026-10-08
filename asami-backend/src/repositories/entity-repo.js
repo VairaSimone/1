@@ -69,7 +69,8 @@ async function getAsamiCandidate(simulationId, preferredEntityId = null) {
 async function getDashboard(simulationId, entityId) {
   const entity = await getEntity(simulationId, entityId);
   if (!entity) return null;
-  const [[needs], [emotions], [traits], [skills], [loc], [rels], [goals], [action]] = await Promise.all([
+  const [[simulationRows], [needs], [emotions], [traits], [skills], [loc], [rels], [goals], [action]] = await Promise.all([
+    pool.query(`SELECT current_simulation_at AS simulationAt FROM simulations WHERE id=UUID_TO_BIN(?) LIMIT 1`, [simulationId]),
     pool.query(`
       SELECT nd.code, nd.name, enc.value, nd.priority_weight AS priorityWeight
       FROM entity_needs_current enc JOIN need_definitions nd ON nd.id=enc.need_id
@@ -131,7 +132,18 @@ async function getDashboard(simulationId, entityId) {
       ORDER BY started_simulation_at DESC LIMIT 1
     `, [simulationId, entityId])
   ]);
-  return { entity, needs, emotions, traits, skills, location: loc[0] || null, relationships: rels, goals, currentAction: action[0] || null };
+  return {
+    entity,
+    needs,
+    emotions,
+    traits,
+    skills,
+    location: loc[0] || null,
+    relationships: rels,
+    goals,
+    currentAction: action[0] || null,
+    simulationAt: simulationRows[0]?.simulationAt || null
+  };
 }
 
 async function listDefinitions() {

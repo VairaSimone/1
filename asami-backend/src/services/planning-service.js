@@ -629,126 +629,170 @@ async function ensureGoalPlan({simulationId,entityId,simulationTime,needs}){
 
 function selectActiveStep(plan){const steps=Array.isArray(plan?.steps)?plan.steps.slice().sort((a,b)=>Number(a.sequence)-Number(b.sequence)):[];return steps.find(step=>step.status==="ACTIVE")||steps.find(step=>step.status==="PENDING")||null;}
 
+const PERSISTENT_STRATEGY_VARIANTS = Object.freeze({
+  PERSONAL: {
+    SOCIAL_CONNECTION: [["TALKING"],["EXPLORING","TALKING"],["TALKING","HELPING"]],
+    CREATIVE_EXPLORATION: [["EXPLORING","READING"],["PLAYING","EXPLORING"],["READING","EXPLORING"]],
+    EXPLORATION: [["EXPLORING"],["WALKING","EXPLORING"],["LEARNING","EXPLORING"]]
+  },
+  LONG_TERM: {
+    GROWTH: [["STUDYING","WORKING"],["READING","STUDYING"],["TEACHING","WORKING"]],
+    KNOWLEDGE: [["EXPLORING","READING"],["LEARNING","READING"],["EXPLORING","LEARNING"]],
+    RELATIONSHIPS: [["TALKING","TALKING"],["EXPLORING","TALKING"],["TALKING","HELPING"]]
+  }
+});
+
+function buildPersistentStrategyVariants(goalType,goalKey){
+  const type=String(goalType||"").toUpperCase();
+  const key=String(goalKey||"").toUpperCase();
+  return (PERSISTENT_STRATEGY_VARIANTS[type]?.[key]||[["EXPLORING"]]).map(steps=>steps.map(normalizeAction));
+}
+
+async function createPersistentPlanForGoal({
+  simulationId,entityId,goalId,simulationTime,goalType,goalKey,strategyIndex=0,recoveryCount=0,
+  preservedProgress=0,avoidLocationIds=[],avoidTargetEntityIds=[],db=pool
+}={}){
+  if(!goalId)return null;
+  const existing=await getPlanForGoal(simulationId,entityId,goalId,db);
+  if(existing)return existing;
+  const variants=buildPersistentStrategyVariants(goalType,goalKey);
+  const steps=variants[Math.max(0,Number(strategyIndex)||0)%variants.length];
+  if(!steps.length)return null;
+  const planId=uuid(),mysqlTime=mysqlSimulationDateTime(simulationTime);
+  const safeAvoidLocations=[...new Set((avoidLocationIds||[]).filter(Boolean).map(String))].slice(0,8);
+  const safeAvoidTargets=[...new Set((avoidTargetEntityIds||[]).filter(Boolean).map(String))].slice(0,8);
+  await db.query(
+    "INSERT INTO plans (id,simulation_id,entity_id,goal_id,title,status,strategy,created_simulation_at,version) " +
+    "VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,'ACTIVE',?,?,1)",
+    [
+      planId,simulationId,entityId,goalId,
+      "Persistent strategy "+(Number(recoveryCount)||0),
+      JSON.stringify({source:"AUTONOMOUS_PERSISTENT",goalType:String(goalType||"").toUpperCase(),goalKey:String(goalKey||""),recoveryCount:Number(recoveryCount)||0,strategyIndex:Number(strategyIndex)||0,progressDriven:true,preservedGoalProgress:Number(Number(preservedProgress)||0)}),
+      mysqlTime
+    ]
+  );
+  const requiredCompletions=String(goalType||"").toUpperCase()==="LONG_TERM"?6:3;
+  for(let index=0;index<steps.length;index+=1){
+    const actionType=normalizeAction(steps[index]);
+    let activityTypeId=null;
+    if(actionType){
+      const[activityRows]=await db.query("SELECT id FROM activity_types WHERE code=? AND active=1 LIMIT 1",[actionType]);
+      activityTypeId=activityRows[0]?.id||null;
+    }
+    await db.query(
+      "INSERT INTO plan_steps (id,plan_id,sequence,title,description,status,activity_type_id,intended_start_simulation_at,deadline_simulation_at,result,version) " +
+      "VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,'PENDING',?,NULL,NULL,?,1)",
+      [
+        uuid(),planId,index+1,
+        "Progress: "+actionType.toLowerCase().replaceAll("_"," "),
+        "Use "+actionType.toLowerCase().replaceAll("_"," ")+" as one strategy for this persistent goal.",
+        activityTypeId,
+        JSON.stringify({actionType,attempts:0,completions:0,requiredCompletions,progressModel:"CUMULATIVE_ACTIONS",strategyVariant:Number(strategyIndex)||0,avoidLocationIds:safeAvoidLocations,avoidTargetEntityIds:safeAvoidTargets})
+      ]
+    );
+  }
+  await db.query("UPDATE plan_steps SET status='ACTIVE',version=version+1 WHERE plan_id=UUID_TO_BIN(?) AND sequence=1 AND status='PENDING'",[planId]);
+  return getPlanForGoal(simulationId,entityId,goalId,db);
+}
+
 async function handleGoalStagnation({simulationId,entityId,simulationTime,goalState,currentLocationId=null}={}){
   const goal=goalState?.goal,plan=goalState?.plan;
   if(!goal||!plan||String(goal.status||"").toUpperCase()!=="ACTIVE")return null;
   const now=simulationTimestampMs(simulationTime);
   if(!Number.isFinite(now))return null;
-
   const goalResult=parseJson(goal.result,{})||{};
   const lastProgressMs=simulationTimestampMs(goalResult.lastProgressAt||goal.createdAt);
   const lastRecoveryMs=simulationTimestampMs(goalResult.lastStagnationRecoveryAt);
-  const anchor=Math.max(
-    Number.isFinite(lastProgressMs)?lastProgressMs:now,
-    Number.isFinite(lastRecoveryMs)?lastRecoveryMs:0
-  );
+  const anchor=Math.max(Number.isFinite(lastProgressMs)?lastProgressMs:now,Number.isFinite(lastRecoveryMs)?lastRecoveryMs:0);
   const stagnantHours=Math.max(0,(now-anchor)/3600000);
   if(stagnantHours<GOAL_STAGNATION_REPLAN_HOURS)return null;
-
+  const goalType=String(goal.goalType||"").toUpperCase();
+  const persistent=PERSISTENT_GOAL_TYPES.has(goalType);
   const recoveryCount=Math.max(0,Number(goalResult.stagnationReplans)||0);
-  if(recoveryCount>=MAX_GOAL_STAGNATION_REPLANS||String(goal.goalType||"").toUpperCase()!=="NEED"){
-    const abandoned=await abandonGoal({
-      simulationId,
-      entityId,
-      goalId:goal.id,
-      simulationTime,
-      reason:"GOAL_STAGNATION_REPLAN_LIMIT"
-    });
-    return abandoned?{abandoned:true,recoveryCount,stagnantHours}:null;
-  }
-
   const activeStep=selectActiveStep(plan);
   if(!activeStep)return null;
-
   const motivation=parseJson(goal.motivation,{})||{};
-  const needCode=normalizeAction(motivation.need);
-  if(!GOAL_TEMPLATES[needCode])return null;
-
+  const goalKey=String(motivation.goalKey||goalResult.goalKey||"").trim().toUpperCase();
   const stepResult=parseJson(activeStep.result,{})||{};
   const avoidLocationIds=new Set(Array.isArray(stepResult.avoidLocationIds)?stepResult.avoidLocationIds:[]);
   const avoidTargetEntityIds=new Set(Array.isArray(stepResult.avoidTargetEntityIds)?stepResult.avoidTargetEntityIds:[]);
   const activeAction=normalizeAction(stepResult.actionType||activeStep.actionType);
   if(currentLocationId&&(activeAction==="DRINKING"||activeAction==="EATING"))avoidLocationIds.add(currentLocationId);
 
-  const recovery=await withTransaction(async conn=>{
-    const [goalRows]=await conn.query(
-      "SELECT status,version FROM goals WHERE id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) LIMIT 1 FOR UPDATE",
-      [goal.id,simulationId,entityId]
-    );
-    if(!goalRows.length||String(goalRows[0].status||"").toUpperCase()!=="ACTIVE"||Number(goalRows[0].version)!==Number(goal.version))return null;
+  if(persistent){
+    const recovery=await withTransaction(async conn=>{
+      const [goalRows]=await conn.query(
+        "SELECT status,version,progress FROM goals WHERE id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) LIMIT 1 FOR UPDATE",
+        [goal.id,simulationId,entityId]
+      );
+      if(!goalRows.length||String(goalRows[0].status||"").toUpperCase()!=="ACTIVE"||Number(goalRows[0].version)!==Number(goal.version))return null;
+      const [planRows]=await conn.query(
+        "SELECT status,version FROM plans WHERE id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND goal_id=UUID_TO_BIN(?) LIMIT 1 FOR UPDATE",
+        [plan.id,simulationId,entityId,goal.id]
+      );
+      if(!planRows.length||String(planRows[0].status||"").toUpperCase()!=="ACTIVE"||Number(planRows[0].version)!==Number(plan.version))return null;
+      for(const step of plan.steps||[]){
+        const status=String(step.status||"").toUpperCase();
+        if(["PENDING","ACTIVE","BLOCKED"].includes(status))assertTransition("plan_step",status,"CANCELLED");
+      }
+      assertTransition("plan","ACTIVE","CANCELLED");
+      await conn.query("UPDATE plan_steps SET status='CANCELLED',version=version+1 WHERE plan_id=UUID_TO_BIN(?) AND status IN ('PENDING','ACTIVE','BLOCKED')",[plan.id]);
+      await conn.query("UPDATE plans SET status='CANCELLED',version=version+1 WHERE id=UUID_TO_BIN(?) AND status='ACTIVE'",[plan.id]);
 
-    const [planRows]=await conn.query(
-      "SELECT status,version FROM plans WHERE id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND goal_id=UUID_TO_BIN(?) LIMIT 1 FOR UPDATE",
-      [plan.id,simulationId,entityId,goal.id]
-    );
-    if(!planRows.length||String(planRows[0].status||"").toUpperCase()!=="ACTIVE"||Number(planRows[0].version)!==Number(plan.version))return null;
-
-    for(const step of plan.steps||[]){
-      const status=String(step.status||"").toUpperCase();
-      if(["PENDING","ACTIVE","BLOCKED"].includes(status))assertTransition("plan_step",status,"CANCELLED");
-    }
-    assertTransition("plan","ACTIVE","CANCELLED");
-
-    await conn.query(
-      "UPDATE plan_steps SET status='CANCELLED',version=version+1 WHERE plan_id=UUID_TO_BIN(?) AND status IN ('PENDING','ACTIVE','BLOCKED')",
-      [plan.id]
-    );
-    await conn.query(
-      "UPDATE plans SET status='CANCELLED',version=version+1 WHERE id=UUID_TO_BIN(?) AND status='ACTIVE'",
-      [plan.id]
-    );
-
-    const nextRecoveryCount=recoveryCount+1;
-    const newPlan=await createPlanForGoal({
-      simulationId,
-      entityId,
-      goalId:goal.id,
-      simulationTime,
-      needCode,
-      pressure:Number(motivation.pressure||0),
-      priority:Number(goal.priority||.5),
-      replanCount:Number(goalResult.replanCount||0),
-      avoidLocationIds:[...avoidLocationIds].slice(0,8),
-      avoidTargetEntityIds:[...avoidTargetEntityIds].slice(0,8),
-      db:conn
+      const nextRecoveryCount=recoveryCount+1;
+      const variants=buildPersistentStrategyVariants(goalType,goalKey);
+      const strategyIndex=(nextRecoveryCount-1)%variants.length;
+      const ineffectiveApproaches=Array.isArray(goalResult.ineffectiveApproaches)?goalResult.ineffectiveApproaches.slice(-7):[];
+      ineffectiveApproaches.push({
+        planId:plan.id,stepId:activeStep.id,actionType:activeAction||null,attemptedAt:simulationTime,
+        stagnantHours:Number(stagnantHours.toFixed(2)),recoveryCount:nextRecoveryCount,
+        avoidLocationIds:[...avoidLocationIds].slice(0,8),avoidTargetEntityIds:[...avoidTargetEntityIds].slice(0,8)
+      });
+      const newPlan=await createPersistentPlanForGoal({
+        simulationId,entityId,goalId:goal.id,simulationTime,goalType,goalKey,
+        strategyIndex,recoveryCount:nextRecoveryCount,
+        preservedProgress:Math.max(Number(goalRows[0].progress||0),Number(goal.progress||0)),
+        avoidLocationIds:[...avoidLocationIds],avoidTargetEntityIds:[...avoidTargetEntityIds],db:conn
+      });
+      if(!newPlan)throw Object.assign(new Error("Persistent goal could not be replanned"),{code:"GOAL_PERSISTENT_REPLAN_FAILED"});
+      const nextGoalResult={...goalResult,goalKey:goalKey||null,stagnationReplans:nextRecoveryCount,lastStagnationRecoveryAt:simulationTime,lastStagnationAction:activeAction||null,lastStagnationStrategyIndex:strategyIndex,ineffectiveApproaches};
+      const [updatedGoal]=await conn.query(
+        "UPDATE goals SET progress=GREATEST(progress,?),result=?,version=version+1 WHERE id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND status='ACTIVE' AND version=?",
+        [Number(goal.progress||0),JSON.stringify(nextGoalResult),goal.id,simulationId,entityId,Number(goal.version)]
+      );
+      if(!updatedGoal.affectedRows)throw Object.assign(new Error("Persistent stagnation goal changed during replan"),{code:"GOAL_REPLAN_CONFLICT"});
+      return{replanned:true,abandoned:false,recoveryCount:nextRecoveryCount,stagnantHours,newPlanId:newPlan.id,strategyIndex,preservedProgress:Number(goal.progress||0)};
     });
+    if(!recovery)return null;
+    logger.warn({simulationId,entityId,goalId:goal.id,oldPlanId:plan.id,newPlanId:recovery.newPlanId,simulationTime,stagnantHours:Number(recovery.stagnantHours.toFixed(2)),progress:Number(goal.progress||0),stagnationReplans:recovery.recoveryCount,strategyIndex:recovery.strategyIndex},"persistent goal stagnation triggered strategy change");
+    return recovery;
+  }
+
+  const needCode=normalizeAction(motivation.need);
+  if(!GOAL_TEMPLATES[needCode])return null;
+  if(recoveryCount>=MAX_GOAL_STAGNATION_REPLANS){
+    const abandoned=await abandonGoal({simulationId,entityId,goalId:goal.id,simulationTime,reason:"GOAL_STAGNATION_REPLAN_LIMIT"});
+    return abandoned?{abandoned:true,recoveryCount,stagnantHours}:null;
+  }
+  const recovery=await withTransaction(async conn=>{
+    const [goalRows]=await conn.query("SELECT status,version FROM goals WHERE id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) LIMIT 1 FOR UPDATE",[goal.id,simulationId,entityId]);
+    if(!goalRows.length||String(goalRows[0].status||"").toUpperCase()!=="ACTIVE"||Number(goalRows[0].version)!==Number(goal.version))return null;
+    const [planRows]=await conn.query("SELECT status,version FROM plans WHERE id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND goal_id=UUID_TO_BIN(?) LIMIT 1 FOR UPDATE",[plan.id,simulationId,entityId,goal.id]);
+    if(!planRows.length||String(planRows[0].status||"").toUpperCase()!=="ACTIVE"||Number(planRows[0].version)!==Number(plan.version))return null;
+    for(const step of plan.steps||[]){const status=String(step.status||"").toUpperCase();if(["PENDING","ACTIVE","BLOCKED"].includes(status))assertTransition("plan_step",status,"CANCELLED");}
+    assertTransition("plan","ACTIVE","CANCELLED");
+    await conn.query("UPDATE plan_steps SET status='CANCELLED',version=version+1 WHERE plan_id=UUID_TO_BIN(?) AND status IN ('PENDING','ACTIVE','BLOCKED')",[plan.id]);
+    await conn.query("UPDATE plans SET status='CANCELLED',version=version+1 WHERE id=UUID_TO_BIN(?) AND status='ACTIVE'",[plan.id]);
+    const nextRecoveryCount=recoveryCount+1;
+    const newPlan=await createPlanForGoal({simulationId,entityId,goalId:goal.id,simulationTime,needCode,pressure:Number(motivation.pressure||0),priority:Number(goal.priority||.5),replanCount:Number(goalResult.replanCount||0),avoidLocationIds:[...avoidLocationIds].slice(0,8),avoidTargetEntityIds:[...avoidTargetEntityIds].slice(0,8),db:conn});
     if(!newPlan)throw Object.assign(new Error("Stagnated goal could not be replanned"),{code:"GOAL_REPLAN_FAILED"});
-
-    const nextGoalResult={
-      ...goalResult,
-      stagnationReplans:nextRecoveryCount,
-      lastStagnationRecoveryAt:simulationTime,
-      lastStagnationAction:activeAction||null
-    };
-    const [updatedGoal]=await conn.query(
-      "UPDATE goals SET result=?,version=version+1 WHERE id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND status='ACTIVE' AND version=?",
-      [JSON.stringify(nextGoalResult),goal.id,simulationId,entityId,Number(goal.version)]
-    );
+    const nextGoalResult={...goalResult,stagnationReplans:nextRecoveryCount,lastStagnationRecoveryAt:simulationTime,lastStagnationAction:activeAction||null};
+    const [updatedGoal]=await conn.query("UPDATE goals SET result=?,version=version+1 WHERE id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND status='ACTIVE' AND version=?",[JSON.stringify(nextGoalResult),goal.id,simulationId,entityId,Number(goal.version)]);
     if(!updatedGoal.affectedRows)throw Object.assign(new Error("Stagnated goal changed during replan"),{code:"GOAL_REPLAN_CONFLICT"});
-
-    return{
-      replanned:true,
-      abandoned:false,
-      recoveryCount:nextRecoveryCount,
-      stagnantHours,
-      newPlanId:newPlan.id
-    };
+    return{replanned:true,abandoned:false,recoveryCount:nextRecoveryCount,stagnantHours,newPlanId:newPlan.id};
   });
-
   if(!recovery)return null;
-
-  logger.warn({
-    simulationId,
-    entityId,
-    goalId:goal.id,
-    oldPlanId:plan.id,
-    newPlanId:recovery.newPlanId,
-    simulationTime,
-    stagnantHours:Number(recovery.stagnantHours.toFixed(2)),
-    progress:Number(goal.progress||0),
-    stagnationReplans:recovery.recoveryCount
-  },"goal stagnation triggered bounded replan");
-
+  logger.warn({simulationId,entityId,goalId:goal.id,oldPlanId:plan.id,newPlanId:recovery.newPlanId,simulationTime,stagnantHours:Number(recovery.stagnantHours.toFixed(2)),progress:Number(goal.progress||0),stagnationReplans:recovery.recoveryCount},"goal stagnation triggered bounded replan");
   return recovery;
 }
 async function resolveGoalIdFromAction({simulationId,entityId,actionId}){if(!actionId)return null;const[rows]=await pool.query(`SELECT BIN_TO_UUID(source_goal_id) AS goalId FROM actions WHERE id=UUID_TO_BIN(?) AND simulation_id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) LIMIT 1`,[actionId,simulationId,entityId]);return rows[0]?.goalId||null;}
@@ -1178,7 +1222,8 @@ async function advancePlanForAction({simulationId,entityId,goalId,actionType,out
 
   if(progress<1&&["ACTIVE","DRAFT","PAUSED"].includes(goalStatus)){
     const previousGoalProgress=Number(goal.progress||0);
-    const progressImproved=progress>previousGoalProgress+0.0001;
+    const effectiveProgress=persistent?Math.max(previousGoalProgress,progress):progress;
+    const progressImproved=effectiveProgress>previousGoalProgress+0.0001;
     const previousGoalResult=parseJson(goal.result,{})||{};
     const nextGoalResult={
       ...previousGoalResult,
@@ -1189,7 +1234,7 @@ async function advancePlanForAction({simulationId,entityId,goalId,actionType,out
     };
     const[goalUpdated]=await pool.query(
       "UPDATE goals SET progress=?,result=?,version=version+1 WHERE id=UUID_TO_BIN(?) AND entity_id=UUID_TO_BIN(?) AND version=? AND status IN ('ACTIVE','DRAFT','PAUSED')",
-      [progress,JSON.stringify(nextGoalResult),goalId,entityId,currentGoalVersion]
+      [effectiveProgress,JSON.stringify(nextGoalResult),goalId,entityId,currentGoalVersion]
     );
     if(goalUpdated.affectedRows)goalVersionAfterProgress=currentGoalVersion+1;
   }
@@ -1279,4 +1324,4 @@ async function advancePlanForAction({simulationId,entityId,goalId,actionType,out
 
   return{changed,completed:false,progress,planId:refreshedPlan.id};
 }
-module.exports={GOAL_TEMPLATES,MAX_GOAL_AGE_HOURS,GOAL_STAGNATION_REPLAN_HOURS,MAX_GOAL_STAGNATION_REPLANS,PERSONAL_GOAL_INTERVAL_HOURS,LONG_TERM_GOAL_INTERVAL_HOURS,PERSISTENT_GOAL_TYPES,selectTopNeed,selectActiveStep,createPlanForGoal,ensureGoalPlan,advancePlanForAction,advancePersistentGoalFromAnyAutonomousAction,handleGoalStagnation,abandonGoal,ensurePersistentGoals,unblockBlockedGoal,revalidateBlockedResourceGoals};
+module.exports={GOAL_TEMPLATES,MAX_GOAL_AGE_HOURS,GOAL_STAGNATION_REPLAN_HOURS,MAX_GOAL_STAGNATION_REPLANS,PERSONAL_GOAL_INTERVAL_HOURS,LONG_TERM_GOAL_INTERVAL_HOURS,PERSISTENT_GOAL_TYPES,PERSISTENT_STRATEGY_VARIANTS,buildPersistentStrategyVariants,selectTopNeed,selectActiveStep,createPlanForGoal,createPersistentPlanForGoal,ensureGoalPlan,advancePlanForAction,advancePersistentGoalFromAnyAutonomousAction,handleGoalStagnation,abandonGoal,ensurePersistentGoals,unblockBlockedGoal,revalidateBlockedResourceGoals};

@@ -97,25 +97,28 @@ function simulationTimestampMs(value) {
   return Number.isFinite(date.getTime()) ? date.getTime() : NaN;
 }
 
-function getAdaptiveRetentionProfile(overloadStreak = 0) {
+function getAdaptiveRetentionProfile(overloadStreak = 0, catchUpLevel = 0) {
   const streak = Math.max(0, Math.floor(Number(overloadStreak) || 0));
+  const persistedCatchUpLevel = Math.max(0, Math.min(3, Math.floor(Number(catchUpLevel) || 0)));
+  const adaptiveLevelFromStreak = streak >= 9 ? 3 : streak >= 6 ? 2 : streak >= 3 ? 1 : 0;
+  const effectiveLevel = Math.max(adaptiveLevelFromStreak, persistedCatchUpLevel);
   const baseBudget = POLICY.timeBudgetMs;
   const baseInterval = POLICY.simulationIntervalHours;
-  if (streak >= 9) {
+  if (effectiveLevel >= 3) {
     return {
       level: 3,
       timeBudgetMs: Math.min(30000, Math.max(baseBudget, 30000)),
       simulationIntervalHours: Math.max(0.25, baseInterval / 4)
     };
   }
-  if (streak >= 6) {
+  if (effectiveLevel >= 2) {
     return {
       level: 2,
       timeBudgetMs: Math.min(30000, Math.max(baseBudget, 22500)),
       simulationIntervalHours: Math.max(0.25, baseInterval / 3)
     };
   }
-  if (streak >= 3) {
+  if (effectiveLevel >= 1) {
     return {
       level: 1,
       timeBudgetMs: Math.min(30000, Math.max(baseBudget, 15000)),
@@ -152,18 +155,68 @@ async function ensureRetentionTelemetryTable() {
     "UNIQUE KEY uq_retention_cycle (simulation_id,simulation_at)," +
     "KEY idx_retention_cycle_sim_real (simulation_id,observed_real_at)" +
     ") ENGINE=InnoDB"
-  ).catch(error => {
+  ).then(async () => {
+    const columns = [
+      ["catch_up_active", "TINYINT(1) NOT NULL DEFAULT 0"],
+      ["catch_up_level", "TINYINT UNSIGNED NOT NULL DEFAULT 0"]
+    ];
+    for (const [name, definition] of columns) {
+      const [[column]] = await pool.query(
+        "SELECT COUNT(*) AS count FROM information_schema.COLUMNS " +
+        "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='retention_cycle_metrics' AND COLUMN_NAME=?",
+        [name]
+      );
+      if (!Number(column?.count)) {
+        await pool.query(
+          "ALTER TABLE retention_cycle_metrics ADD COLUMN " + name + " " + definition
+        );
+      }
+    }
+  }).catch(error => {
     retentionTelemetryReady = null;
     throw error;
   });
   return retentionTelemetryReady;
 }
 
+function retentionCatchUpSeverity({backlog,debtAgeHours,producedRows,deletedRows}={}) {
+  const safeBacklog=Math.max(0,Number(backlog||0));
+  const safeAge=Math.max(0,Number(debtAgeHours||0));
+  const safeProduced=Math.max(0,Number(producedRows||0));
+  const safeDeleted=Math.max(0,Number(deletedRows||0));
+  const ratio=safeDeleted>0?safeProduced/safeDeleted:safeProduced>0?Number.POSITIVE_INFINITY:1;
+  let level=1;
+  if(safeBacklog>=POLICY.catchUpEnterBacklog*2||safeAge>=POLICY.catchUpEnterDebtAgeHours*2||ratio>=2)level=2;
+  if(safeBacklog>=POLICY.catchUpEnterBacklog*4||safeAge>=POLICY.catchUpEnterDebtAgeHours*4||ratio>=4)level=3;
+  return Math.max(1,Math.min(3,level));
+}
+function deriveRetentionCatchUpState(previousState={},{
+  backlogAfter=0,debtAgeHours=0,producedRows=0,deletedRows=0
+}={}) {
+  const backlog=Math.max(0,Number(backlogAfter||0));
+  const age=Math.max(0,Number(debtAgeHours||0));
+  const backlogEntry=backlog>=POLICY.catchUpEnterBacklog;
+  const ageEntry=age>=POLICY.catchUpEnterDebtAgeHours;
+  const rateEntry=backlog>POLICY.catchUpExitBacklog&&Number(deletedRows||0)<Number(producedRows||0);
+  const active=Boolean(previousState.catchUpActive)||backlogEntry||ageEntry||rateEntry;
+  if(!active)return {catchUpActive:false,catchUpLevel:0};
+  const exitEligible=backlog<=POLICY.catchUpExitBacklog&&age<=POLICY.catchUpExitDebtAgeHours&&Number(deletedRows||0)>=Number(producedRows||0);
+  if(exitEligible)return {catchUpActive:false,catchUpLevel:0};
+  return {
+    catchUpActive:true,
+    catchUpLevel:Math.max(
+      1,
+      Math.min(3,Number(previousState.catchUpLevel)||1),
+      retentionCatchUpSeverity({backlog,debtAgeHours:age,producedRows,deletedRows})
+    )
+  };
+}
+
 async function loadRetentionTelemetryState(simulationId) {
   try {
     await ensureRetentionTelemetryTable();
     const [rows] = await pool.query(
-      "SELECT id,simulation_at AS simulationAt,backlog_after AS backlogAfter,overload_streak AS overloadStreak " +
+      "SELECT id,simulation_at AS simulationAt,backlog_after AS backlogAfter,overload_streak AS overloadStreak,catch_up_active AS catchUpActive,catch_up_level AS catchUpLevel " +
       "FROM retention_cycle_metrics WHERE simulation_id=UUID_TO_BIN(?) ORDER BY id DESC LIMIT 1",
       [simulationId]
     );
@@ -173,7 +226,9 @@ async function loadRetentionTelemetryState(simulationId) {
       simulationAt: row.simulationAt,
       simulationMs: simulationTimestampMs(row.simulationAt),
       backlogAfter: Number(row.backlogAfter || 0),
-      overloadStreak: Number(row.overloadStreak || 0)
+      overloadStreak: Number(row.overloadStreak || 0),
+      catchUpActive: Boolean(Number(row.catchUpActive || 0)),
+      catchUpLevel: Math.max(0, Math.min(3, Number(row.catchUpLevel || 0)))
     };
   } catch (error) {
     logger.warnThrottled(
@@ -299,32 +354,33 @@ async function persistRetentionTelemetry(conn, simulationId, simulationTime, sum
     const debtAgeHours = Number.isFinite(currentMs) && Number.isFinite(oldestMs) && currentMs >= oldestMs
       ? (currentMs - oldestMs) / 3600000
       : 0;
+    const catchUpState=deriveRetentionCatchUpState(previousState||{},{
+      backlogAfter:Number(summary.retentionBacklogTotal||0),
+      debtAgeHours,producedRows,deletedRows
+    });
+    const nextAdaptiveProfile=getAdaptiveRetentionProfile(overloadStreak,catchUpState.catchUpLevel);
+
     await pool.query(
       "INSERT INTO retention_cycle_metrics " +
-      "(simulation_id,simulation_at,backlog_before,backlog_after,produced_rows,deleted_rows,produced_rows_per_sim_day,deleted_rows_per_sim_day,retention_debt_age_hours,overload_streak,adaptive_level,adaptive_time_budget_ms,adaptive_simulation_interval_hours) " +
-      "VALUES(UUID_TO_BIN(?),?,?,?,?,?,?,?,?,?,?,?,?) " +
+      "(simulation_id,simulation_at,backlog_before,backlog_after,produced_rows,deleted_rows,produced_rows_per_sim_day,deleted_rows_per_sim_day,retention_debt_age_hours,overload_streak,adaptive_level,adaptive_time_budget_ms,adaptive_simulation_interval_hours,catch_up_active,catch_up_level) " +
+      "VALUES(UUID_TO_BIN(?),?,?,?,?,?,?,?,?,?,?,?,?,?,?) " +
       "ON DUPLICATE KEY UPDATE " +
       "backlog_before=VALUES(backlog_before),backlog_after=VALUES(backlog_after),produced_rows=VALUES(produced_rows),deleted_rows=VALUES(deleted_rows)," +
       "produced_rows_per_sim_day=VALUES(produced_rows_per_sim_day),deleted_rows_per_sim_day=VALUES(deleted_rows_per_sim_day)," +
       "retention_debt_age_hours=VALUES(retention_debt_age_hours),overload_streak=VALUES(overload_streak),adaptive_level=VALUES(adaptive_level)," +
-      "adaptive_time_budget_ms=VALUES(adaptive_time_budget_ms),adaptive_simulation_interval_hours=VALUES(adaptive_simulation_interval_hours),observed_real_at=CURRENT_TIMESTAMP(3)",
+      "adaptive_time_budget_ms=VALUES(adaptive_time_budget_ms),adaptive_simulation_interval_hours=VALUES(adaptive_simulation_interval_hours)," +
+      "catch_up_active=VALUES(catch_up_active),catch_up_level=VALUES(catch_up_level),observed_real_at=CURRENT_TIMESTAMP(3)",
       [
-        simulationId,
-        simulationTime,
-        backlogBefore,
-        Number(summary.retentionBacklogTotal || 0),
-        producedRows,
-        deletedRows,
-        producedPerSimDay,
-        deletedPerSimDay,
-        debtAgeHours,
-        overloadStreak,
-        adaptiveProfile.level,
-        adaptiveProfile.timeBudgetMs,
-        adaptiveProfile.simulationIntervalHours
+        simulationId,simulationTime,backlogBefore,Number(summary.retentionBacklogTotal||0),
+        producedRows,deletedRows,producedPerSimDay,deletedPerSimDay,debtAgeHours,overloadStreak,
+        nextAdaptiveProfile.level,nextAdaptiveProfile.timeBudgetMs,nextAdaptiveProfile.simulationIntervalHours,
+        catchUpState.catchUpActive?1:0,catchUpState.catchUpLevel
       ]
     );
-    adaptiveStateBySimulation.set(simulationId, { overloadStreak, simulationMs: currentMs, backlogAfter: Number(summary.retentionBacklogTotal || 0) });
+    adaptiveStateBySimulation.set(simulationId,{
+      overloadStreak,simulationMs:currentMs,backlogAfter:Number(summary.retentionBacklogTotal||0),
+      catchUpActive:catchUpState.catchUpActive,catchUpLevel:catchUpState.catchUpLevel
+    });
     return {
       backlogBefore,
       producedRows,
@@ -337,7 +393,9 @@ async function persistRetentionTelemetry(conn, simulationId, simulationTime, sum
       adaptiveTimeBudgetMs: adaptiveProfile.timeBudgetMs,
       adaptiveSimulationIntervalHours: adaptiveProfile.simulationIntervalHours,
       retentionDebt: Number(summary.retentionBacklogTotal || 0),
-      oldestRetentionDebtSimulationAt: oldestAt
+      oldestRetentionDebtSimulationAt: oldestAt,
+      catchUpActive: catchUpState.catchUpActive,
+      catchUpLevel: catchUpState.catchUpLevel
     };
   } catch (error) {
     logger.warnThrottled(
@@ -367,6 +425,10 @@ const POLICY = Object.freeze({
   enabled: !["0", "false", "no", "off"].includes(String(process.env.RETENTION_ENABLED || "true").trim().toLowerCase()),
   intervalMs: positiveInt(process.env.RETENTION_CHECK_INTERVAL_MS, 15 * 60 * 1000, 60 * 1000),
   simulationIntervalHours: positiveInt(process.env.RETENTION_CHECK_SIMULATION_HOURS, 1, 1),
+  catchUpEnterBacklog: positiveInt(process.env.RETENTION_CATCH_UP_ENTER_BACKLOG, 5000, 500),
+  catchUpExitBacklog: positiveInt(process.env.RETENTION_CATCH_UP_EXIT_BACKLOG, 1000, 100),
+  catchUpEnterDebtAgeHours: boundedNumber(process.env.RETENTION_CATCH_UP_ENTER_DEBT_AGE_HOURS, 24, 1, 24 * 365),
+  catchUpExitDebtAgeHours: boundedNumber(process.env.RETENTION_CATCH_UP_EXIT_DEBT_AGE_HOURS, 6, 0, 24 * 365),
   decisionContextDays: positiveInt(process.env.RETENTION_DECISION_CONTEXT_DAYS, 2, 1),
   decisionContextArchiveDays: positiveInt(process.env.RETENTION_DECISION_CONTEXT_ARCHIVE_DAYS, 2, 2),
   decisionOptionsDays: positiveInt(process.env.RETENTION_DECISION_OPTIONS_DAYS, 3, 2),
@@ -1961,7 +2023,11 @@ async function maybeRunSafeRetention(simulationId, simulationTime, options = {})
   const simulationMs = simulationTimestampMs(simulationTime);
   const lastSimulationMs = lastRunSimulationAt.get(simulationId);
   const overloadStreak = adaptiveStateBySimulation.get(simulationId)?.overloadStreak || 0;
-  const adaptiveProfile = getAdaptiveRetentionProfile(overloadStreak);
+  const persistedState = adaptiveStateBySimulation.get(simulationId) || await loadRetentionTelemetryState(simulationId);
+  const adaptiveProfile = getAdaptiveRetentionProfile(
+    persistedState?.overloadStreak || 0,
+    persistedState?.catchUpLevel || 0
+  );
   if (!force && Number.isFinite(simulationMs) && lastSimulationMs !== undefined && simulationMs - lastSimulationMs < adaptiveProfile.simulationIntervalHours * 3600000) {
     return { skipped: true, reason: "simulation_interval" };
   }
@@ -2014,5 +2080,6 @@ module.exports = {
   normalizeArchiveJson,
   positiveInt,
   boundedNumber,
-  retentionBacklogTotalFromSummary
+  retentionBacklogTotalFromSummary,
+  deriveRetentionCatchUpState
 };

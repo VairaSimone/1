@@ -243,6 +243,12 @@ async function reserve({ prompt, outputTokenCeiling, minimumOutputTokenCeiling=5
         )
       : dailyLimit;
   const simulationDay=simulationDayKey(simulationTime);
+  const simulationDayBudget=budgetKind==="AUTONOMY"
+    ?Number(env.GEMINI_AUTONOMY_SIMULATION_DAY_BUDGET_USD)
+    :Number.POSITIVE_INFINITY;
+  const simulationDayMaxRequests=budgetKind==="AUTONOMY"
+    ?Number(env.GEMINI_AUTONOMY_SIMULATION_DAY_MAX_REQUESTS)
+    :Number.POSITIVE_INFINITY;
   const conn = await pool.getConnection();
 
   try {
@@ -330,9 +336,47 @@ async function reserve({ prompt, outputTokenCeiling, minimumOutputTokenCeiling=5
     if(simulationId&&simulationDay){
       await conn.query(
         `INSERT INTO gemini_simulation_usage(simulation_id,kind,simulation_day,requests,reserved_usd)
-         VALUES(?,?,?,1,?)
-         ON DUPLICATE KEY UPDATE requests=requests+1,reserved_usd=reserved_usd+VALUES(reserved_usd)`,
-        [String(simulationId),budgetKind,simulationDay,effectiveEstimatedUsd]
+         VALUES(?,?,?,0,0)
+         ON DUPLICATE KEY UPDATE simulation_day=VALUES(simulation_day)`,
+        [String(simulationId),budgetKind,simulationDay]
+      );
+      const [[simulationDayRow]] = await conn.query(
+        `SELECT requests,actual_usd AS actualUsd,reserved_usd AS reservedUsd
+         FROM gemini_simulation_usage
+         WHERE simulation_id=? AND kind=? AND simulation_day=?
+         FOR UPDATE`,
+        [String(simulationId),budgetKind,simulationDay]
+      );
+      const simulationCommittedUsd=Number(simulationDayRow?.actualUsd||0)+Number(simulationDayRow?.reservedUsd||0);
+      const simulationRequests=Number(simulationDayRow?.requests||0);
+      const simulationDayBlocked=
+        budgetKind==="AUTONOMY" &&
+        (
+          simulationCommittedUsd+effectiveEstimatedUsd>simulationDayBudget+1e-9 ||
+          simulationRequests>=simulationDayMaxRequests
+        );
+      if(simulationDayBlocked){
+        await conn.rollback();
+        const retryAfterMs=Math.max(60_000,Number(env.GEMINI_AUTONOMY_BUDGET_RETRY_MINUTES||5)*60_000);
+        budgetBlockedUntil.set(budgetKind,Date.now()+retryAfterMs);
+        return {
+          allowed:false,
+          reason:"SIMULATION_DAY_BUDGET",
+          retryAfterMs,
+          estimatedUsd:effectiveEstimatedUsd,
+          simulationDay,
+          simulationDayCommittedUsd,
+          simulationDayRemainingUsd:Math.max(0,simulationDayBudget-simulationCommittedUsd),
+          simulationDayRequests:simulationRequests,
+          simulationDayMaxRequests
+        };
+      }
+
+      await conn.query(
+        `UPDATE gemini_simulation_usage
+         SET requests=requests+1,reserved_usd=reserved_usd+?
+         WHERE simulation_id=? AND kind=? AND simulation_day=?`,
+        [effectiveEstimatedUsd,String(simulationId),budgetKind,simulationDay]
       );
     }
     await conn.commit();
@@ -468,6 +512,10 @@ async function getSimulationDecisionCoverage(simulationId){
     coverage:{
       ...totals,
       aiCoveragePercent:totals.totalDecisions?Number((totals.aiDecisions/totals.totalDecisions*100).toFixed(2)):0,
+      deterministicCoveragePercent:totals.totalDecisions?Number((totals.deterministicDecisions/totals.totalDecisions*100).toFixed(2)):0,
+      fallbackCoveragePercent:totals.totalDecisions?Number((totals.aiFallbacks/totals.totalDecisions*100).toFixed(2)):0,
+      unavailableCoveragePercent:totals.totalDecisions?Number((totals.aiUnavailable/totals.totalDecisions*100).toFixed(2)):0,
+      nonAiCoveragePercent:totals.totalDecisions?Number(((totals.deterministicDecisions+totals.aiFallbacks+totals.aiUnavailable)/totals.totalDecisions*100).toFixed(2)):0,
       degradedModeHours:Number(degradedModeHours.toFixed(2))
     },
     bySimulationDay:[...byDay.values()],
