@@ -1750,7 +1750,10 @@ async function runSafeRetention(simulationId, simulationTime) {
   const lock = await acquireLock(simulationId);
   if (!lock) return { skipped: true, reason: "lock_busy" };
   const previousState = adaptiveStateBySimulation.get(simulationId) || await loadRetentionTelemetryState(simulationId);
-  const adaptiveProfile = getAdaptiveRetentionProfile(previousState?.overloadStreak || 0);
+  const adaptiveProfile = getAdaptiveRetentionProfile(
+    previousState?.overloadStreak || 0,
+    previousState?.catchUpLevel || 0
+  );
   retentionDeadlineAt.set(simulationId, Date.now() + adaptiveProfile.timeBudgetMs);
   try {
     // Prioritize continuous histories and simulation tick cleanup first. Their producers are continuous,
@@ -1932,7 +1935,9 @@ async function runSafeRetention(simulationId, simulationTime) {
     adaptiveStateBySimulation.set(simulationId, {
       overloadStreak: retentionTelemetry.overloadStreak,
       simulationMs: simulationTimestampMs(simulationTime),
-      backlogAfter: summary.retentionBacklogTotal
+      backlogAfter: summary.retentionBacklogTotal,
+      catchUpActive: Boolean(retentionTelemetry.catchUpActive),
+      catchUpLevel: Number(retentionTelemetry.catchUpLevel || 0)
     });
     observability.recordRetentionSummary(simulationId,summary);
     if (summary.retentionBacklogTotal > 0) {
