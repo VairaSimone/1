@@ -104,7 +104,7 @@ export interface WorldActivity {
 export interface Relationship { id: string; type: string; sourceEntityId: string; targetEntityId: string; trustScore: number; affectionScore: number; respectScore: number; familiarityScore: number; attractionScore: number; conflictScore: number; fearScore: number; admirationScore: number; jealousyScore: number; dependenceScore: number; closenessScore: number; irritationScore: number }
 export interface Goal { id: string; title: string; description?: string | null; goalType: string; priority: number; status: string; progress: number; deadline?: string | null; motivation?: unknown; result?: unknown; version: number }
 export interface Action { id: string; actionType: string; sourceType?: string; status: string; target?: unknown; parameters?: unknown; startedAt: string; completedAt?: string | null; result?: unknown }
-export interface Dashboard { entity: Entity; needs: Need[]; emotions: Emotion[]; traits: Trait[]; skills: Skill[]; location: Location | null; relationships: Relationship[]; goals: Goal[]; currentAction: Action | null }
+export interface Dashboard { entity: Entity; needs: Need[]; emotions: Emotion[]; traits: Trait[]; skills: Skill[]; location: Location | null; relationships: Relationship[]; goals: Goal[]; currentAction: Action | null; simulationAt?: string | null }
 export interface Memory { id: string; memoryType?: string; content: string; importance: number; strength: number; confidence: number; emotionalIntensity: number; simulationAt: string; lastRecalledAt?: string | null; metadata?: unknown }
 export interface TimelineItem { at: string; kind: 'EVENT' | 'ACTION' | string; id: string; type: string; summary: string; metadata?: unknown }
 export interface EventItem { id: string; type: string; category: string; title: string; description?: string | null; simulationAt: string; importance: number; status: string; sourceActionId?: string | null; metadata?: unknown }
@@ -145,7 +145,7 @@ export interface ConversationState {
   }
   metadata: Record<string, unknown>
 }
-export interface WsMessage { type: string; simulationId: string; occurredAt: string; payload: Record<string, unknown> }
+export interface WsMessage { type: string; simulationId: string; sequence?: number; occurredAt: string; payload: Record<string, unknown> }
 
 export interface MindValue { id: string; code: string; label: string; importance: number; confidence: number; origin: string; salience: number; updatedAt: string }
 export interface SelfBelief { id: string; beliefKey: string; statement: string; confidence: number; importance: number; sourceType: string; status: string; updatedAt: string }

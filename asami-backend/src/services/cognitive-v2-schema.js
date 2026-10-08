@@ -8,7 +8,7 @@ const SQL = [
   `CREATE TABLE IF NOT EXISTS self_models (id BINARY(16) NOT NULL PRIMARY KEY,simulation_id BINARY(16) NOT NULL,entity_id BINARY(16) NOT NULL,identity_summary VARCHAR(500) NOT NULL,self_concept VARCHAR(1000) NOT NULL,capabilities JSON NULL,aspirations JSON NULL,limitations JSON NULL,current_self_view VARCHAR(1000) NULL,version BIGINT NOT NULL DEFAULT 1,created_simulation_at DATETIME(3) NOT NULL,updated_simulation_at DATETIME(3) NOT NULL,UNIQUE KEY uq_self_models_entity (simulation_id,entity_id),KEY idx_self_models_entity (entity_id)) ENGINE=InnoDB`,
   `CREATE TABLE IF NOT EXISTS identity_values (id BINARY(16) NOT NULL PRIMARY KEY,simulation_id BINARY(16) NOT NULL,entity_id BINARY(16) NOT NULL,code VARCHAR(80) NOT NULL,label VARCHAR(120) NOT NULL,importance DECIMAL(6,5) NOT NULL DEFAULT 0.5,confidence DECIMAL(6,5) NOT NULL DEFAULT 0.5,origin VARCHAR(40) NOT NULL DEFAULT 'INITIAL',salience DECIMAL(6,5) NOT NULL DEFAULT 0.5,version BIGINT NOT NULL DEFAULT 1,created_simulation_at DATETIME(3) NOT NULL,updated_simulation_at DATETIME(3) NOT NULL,UNIQUE KEY uq_identity_value (simulation_id,entity_id,code)) ENGINE=InnoDB`,
   `CREATE TABLE IF NOT EXISTS self_beliefs (id BINARY(16) NOT NULL PRIMARY KEY,simulation_id BINARY(16) NOT NULL,entity_id BINARY(16) NOT NULL,belief_key VARCHAR(80) NOT NULL,statement VARCHAR(500) NOT NULL,confidence DECIMAL(6,5) NOT NULL DEFAULT 0.5,importance DECIMAL(6,5) NOT NULL DEFAULT 0.5,source_type VARCHAR(60) NOT NULL DEFAULT 'EXPERIENCE',source_ref BINARY(16) NULL,status VARCHAR(20) NOT NULL DEFAULT 'ACTIVE',created_simulation_at DATETIME(3) NOT NULL,updated_simulation_at DATETIME(3) NOT NULL,version BIGINT NOT NULL DEFAULT 1,UNIQUE KEY uq_self_belief (simulation_id,entity_id,belief_key)) ENGINE=InnoDB`,
-  `CREATE TABLE IF NOT EXISTS long_term_desires (id BINARY(16) NOT NULL PRIMARY KEY,simulation_id BINARY(16) NOT NULL,entity_id BINARY(16) NOT NULL,desire_key VARCHAR(100) NOT NULL,title VARCHAR(255) NOT NULL,description VARCHAR(1000) NULL,desire_type VARCHAR(60) NOT NULL,priority DECIMAL(6,5) NOT NULL DEFAULT 0.5,persistence DECIMAL(6,5) NOT NULL DEFAULT 0.5,progress DECIMAL(6,5) NOT NULL DEFAULT 0,status VARCHAR(20) NOT NULL DEFAULT 'ACTIVE',origin VARCHAR(60) NOT NULL DEFAULT 'EXPERIENCE',created_simulation_at DATETIME(3) NOT NULL,updated_simulation_at DATETIME(3) NOT NULL,version BIGINT NOT NULL DEFAULT 1,UNIQUE KEY uq_long_term_desire (simulation_id,entity_id,desire_key),KEY idx_long_term_desire_active (simulation_id,entity_id,status,priority)) ENGINE=InnoDB`,
+  `CREATE TABLE IF NOT EXISTS long_term_desires (id BINARY(16) NOT NULL PRIMARY KEY,simulation_id BINARY(16) NOT NULL,entity_id BINARY(16) NOT NULL,desire_key VARCHAR(100) NOT NULL,title VARCHAR(255) NOT NULL,description VARCHAR(1000) NULL,desire_type VARCHAR(60) NOT NULL,priority DECIMAL(6,5) NOT NULL DEFAULT 0.5,persistence DECIMAL(6,5) NOT NULL DEFAULT 0.5,progress DECIMAL(6,5) NOT NULL DEFAULT 0,current_fulfillment DECIMAL(6,5) NOT NULL DEFAULT 0,status VARCHAR(20) NOT NULL DEFAULT 'ACTIVE',origin VARCHAR(60) NOT NULL DEFAULT 'EXPERIENCE',created_simulation_at DATETIME(3) NOT NULL,updated_simulation_at DATETIME(3) NOT NULL,version BIGINT NOT NULL DEFAULT 1,UNIQUE KEY uq_long_term_desire (simulation_id,entity_id,desire_key),KEY idx_long_term_desire_active (simulation_id,entity_id,status,priority)) ENGINE=InnoDB`,
   `CREATE TABLE IF NOT EXISTS life_narratives (id BINARY(16) NOT NULL PRIMARY KEY,simulation_id BINARY(16) NOT NULL,entity_id BINARY(16) NOT NULL,chapter_index INT NOT NULL,title VARCHAR(180) NOT NULL,summary TEXT NOT NULL,importance DECIMAL(6,5) NOT NULL DEFAULT 0.5,event_id BINARY(16) NULL,created_simulation_at DATETIME(3) NOT NULL,updated_simulation_at DATETIME(3) NOT NULL,version BIGINT NOT NULL DEFAULT 1,KEY idx_life_narrative (simulation_id,entity_id,chapter_index)) ENGINE=InnoDB`,
   `CREATE TABLE IF NOT EXISTS cognitive_states (id BINARY(16) NOT NULL PRIMARY KEY,simulation_id BINARY(16) NOT NULL,entity_id BINARY(16) NOT NULL,simulation_time DATETIME(3) NOT NULL,attention JSON NOT NULL,interpretation JSON NOT NULL,conflicts JSON NOT NULL,created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),KEY idx_cognitive_states_latest (simulation_id,entity_id,simulation_time)) ENGINE=InnoDB`,
   `CREATE TABLE IF NOT EXISTS cognitive_conflicts (id BINARY(16) NOT NULL PRIMARY KEY,simulation_id BINARY(16) NOT NULL,entity_id BINARY(16) NOT NULL,fingerprint VARCHAR(255) NOT NULL,left_driver JSON NOT NULL,right_driver JSON NOT NULL,intensity DECIMAL(6,5) NOT NULL DEFAULT 0,resolution JSON NULL,status VARCHAR(20) NOT NULL DEFAULT 'ACTIVE',created_simulation_at DATETIME(3) NOT NULL,updated_simulation_at DATETIME(3) NOT NULL,version BIGINT NOT NULL DEFAULT 1,UNIQUE KEY uq_cognitive_conflict (simulation_id,entity_id,fingerprint),KEY idx_cognitive_conflict_active (simulation_id,entity_id,status,intensity)) ENGINE=InnoDB`,
@@ -51,6 +51,18 @@ async function ensureNormsForSimulation(simulationId, db = pool) {
   return NORMS.length;
 }
 
+async function ensureLongTermDesireColumns() {
+  const [[column]] = await pool.query(
+    "SELECT COUNT(*) AS count FROM information_schema.COLUMNS " +
+    "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='long_term_desires' AND COLUMN_NAME='current_fulfillment'"
+  );
+  if (!Number(column?.count)) {
+    await pool.query(
+      "ALTER TABLE long_term_desires ADD COLUMN current_fulfillment DECIMAL(6,5) NOT NULL DEFAULT 0 AFTER progress"
+    );
+  }
+}
+
 async function ensureNorms() {
   const [simulations] = await pool.query(`SELECT BIN_TO_UUID(id) AS id FROM simulations`);
   for (const sim of simulations) await ensureNormsForSimulation(sim.id);
@@ -70,6 +82,7 @@ function install() {
   return (async () => {
     const started=Date.now();
     for (const statement of SQL) await pool.query(statement);
+    await ensureLongTermDesireColumns();
     await ensureNorms();
     await ensureWorld2Activities();
     logger.info({durationMs:Date.now()-started},'Cognitive v2 schema ready');

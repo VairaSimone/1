@@ -20,6 +20,7 @@ function isExpectedDisconnect(error, ws) {
 class RealtimeHub {
   constructor() {
     this.clients = new Set();
+    this.sequenceBySimulation = new Map();
   }
   attach(ws, simulationId) {
     const client = { ws, simulationId };
@@ -51,9 +52,12 @@ class RealtimeHub {
   }
 
   publish(simulationId, type, payload) {
+    const sequence=(this.sequenceBySimulation.get(simulationId)||0)+1;
+    this.sequenceBySimulation.set(simulationId,sequence);
     const message = JSON.stringify({
       type,
       simulationId,
+      sequence,
       occurredAt: new Date().toISOString(),
       payload
     });

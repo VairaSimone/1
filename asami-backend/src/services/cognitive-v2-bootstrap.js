@@ -95,7 +95,7 @@ function scoreWorldAction(action, context, identity) {
   for (const code of profile.values || []) score += (values.get(code) || 0.5) * 0.16;
   if (profile.locations?.includes(location)) score += 0.22;
   if ((context.cognitiveV2?.conflicts || []).some(c => normalize(c.left?.code) === 'CURIOSITY' || normalize(c.right?.code) === 'CURIOSITY') && ['LEARNING','CREATING','DRAWING','WRITING'].includes(action)) score += 0.12;
-  if (context.cognitiveV2?.identity?.desires?.some(d => normalize(d.desireKey) === normalize(DESIRE_BY_ACTION[action]) && Number(d.progress || 0) < 1)) score += 0.18;
+  if (context.cognitiveV2?.identity?.desires?.some(d => normalize(d.desireKey) === normalize(DESIRE_BY_ACTION[action]) && Number(d.currentFulfillment ?? 0) < 0.92)) score += 0.18;
   return Math.max(0, Math.min(3, score));
 }
 
@@ -214,7 +214,17 @@ async function postCompletionCognition(args, result) {
     if (feedback.length) await applyEmotions(args.entityId,args.simulationTime,feedback,result.eventId || null,args.actionId,args.actionType,0,{ event:true,outcome:result.outcome,targetEntityId:result.targetEntityId || null,meaning:'WORLD2_FEEDBACK' });
     const expectation = await learnCompletion({ simulationId:args.simulationId,entityId:args.entityId,simulationTime:args.simulationTime,result,args });
     const desireKey = DESIRE_BY_ACTION[normalize(args.actionType)];
-    if (desireKey) await cognitive.updateDesireProgress(args.simulationId,args.entityId,args.simulationTime,{ desireKey,delta:result.outcome === 'SUCCESS' ? 0.025 : 0.004,reason:`${normalize(args.actionType)} outcome ${normalize(result.outcome)}` });
+    if (desireKey) await cognitive.updateDesireProgress(
+      args.simulationId,
+      args.entityId,
+      args.simulationTime,
+      {
+        desireKey,
+        delta: result.outcome === 'SUCCESS' ? 0.025 : 0.004,
+        fulfillmentDelta: result.outcome === 'SUCCESS' ? 0.10 : -0.02,
+        reason: `${normalize(args.actionType)} outcome ${normalize(result.outcome)}`
+      }
+    );
     const selfView = result.outcome === 'SUCCESS'
       ? `I learn from ${normalize(args.actionType).toLowerCase().replaceAll('_',' ')} and can improve through experience.`
       : `I am still learning how to handle ${normalize(args.actionType).toLowerCase().replaceAll('_',' ')} when things do not go as expected.`;
