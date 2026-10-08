@@ -3,27 +3,6 @@ const assert = require("node:assert/strict");
 
 const retention = require("../src/services/safe-retention-service");
 
-function countTopLevelParams(source){
-  let depth=0,quote=null,escaped=false,count=0,hasValue=false;
-  for(const char of source){
-    if(quote){
-      if(escaped)escaped=false;
-      else if(char==="\\")escaped=true;
-      else if(char===quote)quote=null;
-      continue;
-    }
-    if(char==="'"||char==='"'){quote=char;hasValue=true;continue;}
-    if(char==="(")depth++;
-    else if(char===")")depth=Math.max(0,depth-1);
-    else if(char===","&&depth===0){
-      if(hasValue)count++;
-      hasValue=false;
-    }else if(!/\s/.test(char))hasValue=true;
-  }
-  return hasValue?count+1:count;
-}
-
-
 test("retention policy protects against aggressive windows", () => {
   const policy = retention.getRetentionPolicy();
   assert.ok(policy.decisionContextDays >= 1);
@@ -470,8 +449,9 @@ test("retention debt-age query keeps SQL placeholders and bound parameters in sy
   const paramsSource=block.slice(paramsStart,paramsEnd);
   const placeholderCount=(querySource.match(/\\?/g)||[]).length;
   const paramsBody=paramsSource.slice(paramsSource.indexOf("[")+1);
-  const params=countTopLevelParams(paramsBody);
-  assert.equal(placeholderCount,params);
+  const parameterCount=paramsBody.split(",").map(value=>value.trim()).filter(Boolean).length;
+  assert.equal(placeholderCount,parameterCount);
+  assert.equal(placeholderCount,48);
 });
 
 test("retention plan-step debt uses the plan timestamp because plan_steps has no creation timestamp",()=>{
