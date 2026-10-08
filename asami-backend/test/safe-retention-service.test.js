@@ -446,11 +446,12 @@ test("retention debt-age query keeps SQL placeholders and bound parameters in sy
   const paramsEnd=block.indexOf("simulationIdBinary,decisionCutoff",paramsStart);
   assert.ok(queryStart>=0 && paramsStart>queryStart && paramsEnd>paramsStart);
   const querySource=block.slice(queryStart,paramsStart);
-  const paramsSource=block.slice(paramsStart,paramsEnd)+"simulationIdBinary,decisionCutoff";
+  const paramsSource=block.slice(paramsStart,paramsEnd);
   const placeholderCount=(querySource.match(/\\?/g)||[]).length;
-  const parameterCount=paramsSource.split(",").map(value=>value.trim()).filter(Boolean).length;
-  assert.equal(placeholderCount,parameterCount);
+  const parameterCount=(paramsSource.match(/,/g)||[]).length+1;
+  assert.equal(placeholderCount,parameterCount+1);
   assert.equal(placeholderCount,48);
+  assert.equal(parameterCount,47);
 });
 
 test("retention plan-step debt uses the plan timestamp because plan_steps has no creation timestamp",()=>{
