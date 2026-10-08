@@ -82,7 +82,7 @@ test("stale evaluated decisions use a simulated-time grace window and only fail 
   assert.match(section,/i\.decision_id=d\.id/);
   assert.match(section,/LEFT JOIN actions/);
   assert.match(section,/a\.decision_id=d\.id/);
-  assert.match(section,/\["ACTIVE","COMPLETED","INTERRUPTED"\]/);
+  assert.match(section,/\["COMPLETED","INTERRUPTED","FAILED","CANCELLED"\]/);
   assert.match(section,/DECISION_PIPELINE_INCOMPLETE/);
   assert.match(section,/UPDATE intentions/);
   assert.match(section,/status='CANCELLED'/);
