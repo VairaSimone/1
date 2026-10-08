@@ -18,10 +18,13 @@ test("sleep location follows HOME -> BEDROOM -> SAFE_PLACE -> OTHER hierarchy",(
     {locationId:"bed",locationType:"BEDROOM",data:{worldCode:"BEDROOM",connections:["home"]}},
     {locationId:"home",locationType:"HOME",data:{worldCode:"HOME",connections:["bed","safe","other"]}}
   ];
-  const policy=resolvePreferredSleepLocation({locations,originId:"other",context:{}});
+  const policy=resolvePreferredSleepLocation({locations,originId:"other",context:{isAsami:true}});
   assert.equal(policy.targetLocationId,"home");
   assert.equal(policy.rank,0);
-  assert.equal(sleepLocationRank(locations[2]),1);
+  const residentPolicy=resolvePreferredSleepLocation({locations,originId:"other",context:{isAsami:false}});
+  assert.equal(residentPolicy.rank,1);
+  assert.equal(residentPolicy.targetLocationId,"bed");
+  assert.equal(sleepLocationRank(locations[2],{isAsami:true}),1);
   assert.equal(sleepLocationRank(locations[1]),2);
   assert.equal(sleepLocationRank(locations[0]),3);
 });
@@ -77,6 +80,7 @@ test("frontend uses pressure rather than raw value and rejects stale realtime st
   assert.match(hook,/msg\.eventSequence \?\? msg\.sequence/);
   assert.match(hook,/simulationVersion/);
   assert.match(hook,/atMs < lastStateAt/);
+  assert.match(hook,/lastEntityStateAt/);
 });
 
 test("sleep guard exists both before planning output becomes action and at action boundary",()=>{

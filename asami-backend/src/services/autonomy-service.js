@@ -198,6 +198,15 @@ async function prepareTickAutonomyContext({simulationId,entityIds=[],simulationT
   for(const id of ids){
     const base=decisionContexts.get(id);if(!base)continue;
     const entity=entities.get(id);if(!entity)continue;
+    base.isAsami=normalize(entity.displayName)==="ASAMI";
+    base.candidates=decisionService.applySleepLocationPreference(
+      base.candidates,
+      {
+        worldLocations,
+        currentLocationId:base.location?.locationId||null,
+        context:{...base,isAsami:base.isAsami}
+      }
+    );
     const socialContext=socialContexts.get(id)||{partner:null,candidates:[],traits:[]};
     base.social={partner:socialContext.partner,candidates:(socialContext.candidates||[]).map(candidate=>({id:candidate.id,name:candidate.name,relationshipType:candidate.relationshipType,compatibility:Number(Number(candidate.compatibility||0).toFixed(3)),romanticScore:Number(Number(candidate.romanticScore||0).toFixed(3)),familiarity:Number(candidate.relationship?.familiarity||0),closeness:Number(candidate.relationship?.closeness||0),affection:Number(candidate.relationship?.affection||0),trust:Number(candidate.relationship?.trust||0),conflict:Number(candidate.relationship?.conflict||0),irritation:Number(candidate.relationship?.irritation||0)}))};
     const currentLocationId=base.location?.locationId||null,visited=visitedByEntity.get(id)||new Map(),recentLocations=recentLocationsByEntity.get(id)||{};
@@ -534,7 +543,7 @@ async function markDecisionPipelineFailed({simulationId,entityId,decisionId,inte
   return Boolean(updated.affectedRows);
 }
 
-async function actForEntity({simulationId,entityId,simulationTime,gemini,tickId=null,batchContext=null,needsOverride=null}){const entity=batchContext?.entities?.get(entityId)||await getEntity(simulationId,entityId);if(!entity)return null;let context=batchContext?.contexts?.get(entityId)||await decisionService.buildDecisionContext(simulationId,entityId,simulationTime);context={...context,simulationTime};
+async function actForEntity({simulationId,entityId,simulationTime,gemini,tickId=null,batchContext=null,needsOverride=null}){const entity=batchContext?.entities?.get(entityId)||await getEntity(simulationId,entityId);if(!entity)return null;let context=batchContext?.contexts?.get(entityId)||await decisionService.buildDecisionContext(simulationId,entityId,simulationTime);context={...context,simulationTime,isAsami:normalize(entity.displayName)==="ASAMI"};
   if(batchContext?.contexts?.has(entityId)){
     const latestNeeds=Array.isArray(needsOverride)&&needsOverride.length?needsOverride:context.needs;
     if(Array.isArray(latestNeeds)&&latestNeeds.length){

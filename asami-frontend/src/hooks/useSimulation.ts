@@ -258,13 +258,16 @@ export function useSimulation() {
     const updateDashboardFromState = (payload: Record<string, unknown>, fallbackAt: string) => {
       const entityId = String(payload.entityId || '')
       if (!entityId || entityId !== asamiId) return
+      const eventAt = String(payload.simulationAt || fallbackAt)
+      const eventMs = new Date(eventAt).getTime()
+      const lastEntityStateAt = latestRealtimeWorldStateAt.current.get(entityId) || 0
+      if (Number.isFinite(eventMs) && lastEntityStateAt > 0 && eventMs < lastEntityStateAt) return
+      if (Number.isFinite(eventMs)) latestRealtimeWorldStateAt.current.set(entityId, Math.max(lastEntityStateAt, eventMs))
       const needChanges = Array.isArray(payload.needChanges) ? payload.needChanges : []
       const emotionChanges = Array.isArray(payload.emotionChanges) ? payload.emotionChanges : []
       const worldState = payload.worldState && typeof payload.worldState === 'object' ? payload.worldState as Record<string, unknown> : null
       setDashboard((prev) => {
         if (!prev) return prev
-        const eventAt = String(payload.simulationAt || fallbackAt)
-        const eventMs = new Date(eventAt).getTime()
         if (Number.isFinite(eventMs) && latestDashboardSimulationAt.current > 0 && eventMs < latestDashboardSimulationAt.current) return prev
         if (Number.isFinite(eventMs)) latestDashboardSimulationAt.current = Math.max(latestDashboardSimulationAt.current, eventMs)
         const nextNeeds = needChanges.length
