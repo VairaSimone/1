@@ -104,6 +104,10 @@ export interface WorldSnapshot {
   locations: WorldLocation[]
   actors: WorldActor[]
   recentEvents: WorldEvent[]
+  realtime?: {
+    eventSequence: number
+    simulationVersion: number | null
+  }
   meta: {
     locationCount: number
     actorCount: number
