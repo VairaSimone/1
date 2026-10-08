@@ -1508,9 +1508,10 @@ async function deleteOldDecisions(conn, simulationId, simulationTime) {
 }
 
 async function deleteOldActions(conn, simulationId, simulationTime) {
-  const cutoff = cutoffDateTime(simulationTime, POLICY.actionDays);
-  const selectSql =
-    "SELECT BIN_TO_UUID(a.id) AS id FROM actions a " +
+  const cutoff=cutoffDateTime(simulationTime,POLICY.actionDays);
+  const selectSql=
+    "SELECT BIN_TO_UUID(a.id) AS id,BIN_TO_UUID(a.decision_id) AS decisionId " +
+    "FROM actions a " +
     "WHERE a.simulation_id=UUID_TO_BIN(?) " +
     "AND a.status IN ('COMPLETED','CANCELLED','INTERRUPTED','FAILED') " +
     "AND a.completed_simulation_at IS NOT NULL " +
@@ -1520,7 +1521,7 @@ async function deleteOldActions(conn, simulationId, simulationTime) {
       "AND JSON_EXTRACT(d.actual_outcome,'$.actionSummary') IS NOT NULL)) " +
     "AND NOT EXISTS (SELECT 1 FROM event_effects ee WHERE ee.target_action_id=a.id) " +
     "ORDER BY a.completed_simulation_at ASC LIMIT " + POLICY.batchSize;
-  const countSql =
+  const countSql=
     "SELECT COUNT(*) AS candidates FROM actions a " +
     "WHERE a.simulation_id=UUID_TO_BIN(?) " +
     "AND a.status IN ('COMPLETED','CANCELLED','INTERRUPTED','FAILED') " +
@@ -1530,13 +1531,32 @@ async function deleteOldActions(conn, simulationId, simulationTime) {
       "SELECT 1 FROM decisions d WHERE d.id=a.decision_id " +
       "AND JSON_EXTRACT(d.actual_outcome,'$.actionSummary') IS NOT NULL)) " +
     "AND NOT EXISTS (SELECT 1 FROM event_effects ee WHERE ee.target_action_id=a.id)";
-  return deleteSelectedRows(conn, {
-    selectSql,
-    selectParams: [simulationId, cutoff],
-    countSql,
-    deleteTable: "actions",
-    resultKey: "deleted"
-  });
+  if(POLICY.dryRun){
+    const [rows]=await conn.query(countSql,[simulationId,cutoff]);
+    return{deleted:0,candidates:Number(rows[0]?.candidates||0),remainingCandidates:Number(rows[0]?.candidates||0),auditReferencesCleared:0,dryRun:true};
+  }
+  const [rows]=await conn.query(selectSql,[simulationId,cutoff]);
+  if(!rows.length)return{deleted:0,remainingCandidates:0,auditReferencesCleared:0};
+  const actionIds=rows.map(row=>row.id).filter(Boolean);
+  let auditReferencesCleared=0;
+  for(const row of rows.filter(item=>item.decisionId)){
+    if(!retentionBudgetAvailable(simulationId))break;
+    const [updated]=await conn.query(
+      "UPDATE decisions d SET d.action_id=NULL " +
+      "WHERE d.simulation_id=UUID_TO_BIN(?) AND d.id=UUID_TO_BIN(?) AND d.action_id=UUID_TO_BIN(?)",
+      [simulationId,row.decisionId,row.id]
+    );
+    auditReferencesCleared+=Number(updated.affectedRows||0);
+  }
+  if(!retentionBudgetAvailable(simulationId)){
+    const [backlog]=await conn.query(countSql,[simulationId,cutoff]);
+    return{deleted:0,remainingCandidates:Number(backlog[0]?.candidates||0),auditReferencesCleared,budgetExhausted:true};
+  }
+  const placeholders=actionIds.map(()=> "UUID_TO_BIN(?)").join(",");
+  const [result]=await conn.query("DELETE FROM actions WHERE id IN ("+placeholders+")",[...actionIds]);
+  const deleted=Number(result.affectedRows||0);
+  const [backlog]=await conn.query(countSql,[simulationId,cutoff]);
+  return{deleted,remainingCandidates:Number(backlog[0]?.candidates||0),auditReferencesCleared,budgetExhausted:retentionBudgetRemainingMs(simulationId)<=0};
 }
 
 

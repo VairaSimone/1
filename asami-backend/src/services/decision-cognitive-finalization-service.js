@@ -1,8 +1,18 @@
 const { pool } = require("../db/pool");
+const { env } = require("../config/env");
 
 const TERMINAL_DECISION_STATUSES = new Set(["EXECUTED","FAILED","CANCELLED"]);
 const MAX_RECONCILIATION_BATCH = 500;
 const DEFAULT_GRACE_MINUTES = 5;
+
+function cognitiveArtifactWindow(simulationTime,graceMinutes=DEFAULT_GRACE_MINUTES){
+  const nowMs=new Date(simulationTime).getTime();
+  if(!Number.isFinite(nowMs))return{valid:false,nowMs:NaN,validationCutoff:null,artifactCutoff:null};
+  const graceMs=Math.max(1,Number(graceMinutes)||DEFAULT_GRACE_MINUTES)*60000;
+  const retentionDays=Math.max(1,Number(env.RETENTION_COGNITIVE_ARTIFACT_DAYS)||14);
+  const formatSqlDate=ms=>new Date(ms).toISOString().replace("T"," ").replace("Z","");
+  return{valid:true,nowMs,validationCutoff:formatSqlDate(nowMs-graceMs),artifactCutoff:formatSqlDate(nowMs-retentionDays*86400000),retentionExemptBefore:new Date(nowMs-retentionDays*86400000).toISOString(),retentionDays};
+}
 
 function parseJson(value,fallback={}) {
   if (value === null || value === undefined) return fallback;
@@ -180,19 +190,21 @@ async function reconcileTerminalDecisionCognition(
   const safeGrace=Math.max(1,Number(graceMinutes)||DEFAULT_GRACE_MINUTES);
   const nowMs=new Date(simulationTime).getTime();
   if (!Number.isFinite(nowMs)) return { checked:0,repaired:0,invalidSimulationTime:true };
-  const cutoff=new Date(nowMs-safeGrace*60000).toISOString().replace("T"," ").replace("Z","");
+  const window=cognitiveArtifactWindow(simulationTime,safeGrace);
+  const cutoff=window.validationCutoff;
+  const artifactCutoff=window.artifactCutoff;
 
   const [rows]=await pool.query(
     "SELECT BIN_TO_UUID(d.id) AS decisionId,BIN_TO_UUID(d.entity_id) AS entityId,d.status,d.simulation_time AS simulationTime "+
     "FROM decisions d "+
     "WHERE d.simulation_id=UUID_TO_BIN(?) AND d.status IN ('EXECUTED','FAILED','CANCELLED') "+
-    "AND d.simulation_time<=? AND ("+
+    "AND d.simulation_time<=? AND d.simulation_time>=? AND (+
       "EXISTS (SELECT 1 FROM cognitive_expectations ce WHERE ce.decision_id=d.id AND ce.status='OPEN') "+
       "OR EXISTS (SELECT 1 FROM counterfactual_worlds cw WHERE cw.decision_id=d.id AND cw.status='OPEN') "+
       "OR (d.action_created=1 AND d.action_id IS NOT NULL AND d.action_outcome IS NULL)"+
     ") "+
     "ORDER BY d.simulation_time ASC LIMIT ?",
-    [simulationId,cutoff,safeLimit]
+    [simulationId,cutoff,artifactCutoff,safeLimit]
   );
 
   let repaired=0;
@@ -224,8 +236,9 @@ async function getTerminalCognitiveInvariant(
   if (!Number.isFinite(nowMs)) {
     return {openExpectationViolations:0,openWorldViolations:0,missingExpectation:0,missingWorlds:0};
   }
-  const cutoff=new Date(nowMs-Math.max(1,Number(graceMinutes)||DEFAULT_GRACE_MINUTES)*60000)
-    .toISOString().replace("T"," ").replace("Z","");
+  const window=cognitiveArtifactWindow(simulationTime,graceMinutes);
+  const cutoff=window.validationCutoff;
+  const artifactCutoff=window.artifactCutoff;
   const [rows]=await pool.query(
     "SELECT "+
       "SUM(CASE WHEN EXISTS(SELECT 1 FROM cognitive_expectations ce WHERE ce.decision_id=d.id AND ce.status='OPEN') THEN 1 ELSE 0 END) AS openExpectationViolations,"+
@@ -233,15 +246,23 @@ async function getTerminalCognitiveInvariant(
       "SUM(CASE WHEN NOT EXISTS(SELECT 1 FROM cognitive_expectations ce WHERE ce.decision_id=d.id) THEN 1 ELSE 0 END) AS missingExpectation,"+
       "SUM(CASE WHEN NOT EXISTS(SELECT 1 FROM counterfactual_worlds cw WHERE cw.decision_id=d.id) THEN 1 ELSE 0 END) AS missingWorlds "+
     "FROM decisions d "+
-    "WHERE d.simulation_id=UUID_TO_BIN(?) AND d.status IN ('EXECUTED','FAILED','CANCELLED') AND d.simulation_time<=?",
-    [simulationId,cutoff]
+    "WHERE d.simulation_id=UUID_TO_BIN(?) AND d.status IN ('EXECUTED','FAILED','CANCELLED') AND d.simulation_time<=? AND d.simulation_time>=?",
+    [simulationId,cutoff,artifactCutoff]
   );
   const row=rows[0]||{};
+  const [exemptRows]=await pool.query(
+    "SELECT COUNT(*) AS count FROM decisions d "+
+    "WHERE d.simulation_id=UUID_TO_BIN(?) AND d.status IN ('EXECUTED','FAILED','CANCELLED') AND d.simulation_time<?",
+    [simulationId,artifactCutoff]
+  );
   return {
     openExpectationViolations:Number(row.openExpectationViolations||0),
     openWorldViolations:Number(row.openWorldViolations||0),
     missingExpectation:Number(row.missingExpectation||0),
-    missingWorlds:Number(row.missingWorlds||0)
+    missingWorlds:Number(row.missingWorlds||0),
+    artifactRetentionDays:window.retentionDays,
+    artifactCutoff,
+    retentionExemptTerminalDecisions:Number(exemptRows[0]?.count||0)
   };
 }
 
@@ -251,5 +272,6 @@ module.exports={
   getTerminalCognitiveInvariant,
   normalizeOutcome,
   outcomeScore,
-  calculateCognitiveRegret
+  calculateCognitiveRegret,
+  cognitiveArtifactWindow
 };

@@ -20,6 +20,12 @@ function localInputToIso(value?: string) {
 }
 function formatDuration(seconds: number | null) { if (seconds === null || !Number.isFinite(seconds)) return '—'; if (seconds < 60) return `${Math.round(seconds)} s`; if (seconds < 3600) return `${Math.round(seconds / 60)} min`; return `${(seconds / 3600).toFixed(1)} h` }
 function severityClass(severity: AnalysisData['anomalies'][number]['severity']) { return severity === 'CRITICAL' ? 'critical' : severity === 'WARNING' ? 'warning' : 'info' }
+function healthClass(status: AnalysisData['systemHealth']['overallStatus']) {
+  return status === 'CRITICAL' ? 'critical' : status === 'WARNING' ? 'warning' : status === 'UNAVAILABLE' ? 'critical' : status === 'NO_DATA' ? 'info' : 'ok'
+}
+function healthLabel(status: AnalysisData['systemHealth']['overallStatus']) {
+  return status === 'CRITICAL' ? 'CRITICO' : status === 'WARNING' ? 'ATTENZIONE' : status === 'UNAVAILABLE' ? 'NON DISPONIBILE' : status === 'NO_DATA' ? 'NESSUN DATO' : 'OK'
+}
 function MiniBars({ items }: { items: { label: string; value: number }[] }) { const max = Math.max(1, ...items.map((x) => x.value)); return <div className="analysis-bars">{items.slice(0, 8).map((item) => <div className="analysis-bar-row" key={item.label}><div className="analysis-bar-label"><span>{labelize(item.label)}</span><strong>{item.value}</strong></div><div className="analysis-bar-track"><div className="analysis-bar-fill" style={{ width: `${(item.value / max) * 100}%` }} /></div></div>)}</div> }
 function ActivityChart({ series }: { series: AnalysisData['series'] }) {
   if (!series.length) return <EmptyState title="Nessuna attività nel periodo" text="Allarga l'intervallo temporale o lascia avanzare la simulazione." />
@@ -62,6 +68,38 @@ export function Analysis({ simulationId, entityId, currentSimulationAt, onRefres
     {data && <>
       {headline && <div className={`analysis-alert ${headline.cls}`}>{headline.icon}<div><strong>{headline.text}</strong><span>{formatSimTime(data.range.from)} → {formatSimTime(data.range.to)}</span></div><span className="analysis-alert-count">{data.anomalies.length + data.patterns.length} segnali</span></div>}
       <div className="analysis-kpis"><div className="analysis-kpi"><div className="kpi-icon"><Timer size={17} /></div><span>Tick elaborati</span><strong>{data.kpis.ticks.total}</strong><small>{data.kpis.ticks.failed} falliti · {data.kpis.ticks.skipped} saltati</small></div><div className="analysis-kpi"><div className="kpi-icon"><Activity size={17} /></div><span>Azioni</span><strong>{data.kpis.actions.total}</strong><small>{data.kpis.actions.successRate}% concluse · {data.kpis.actions.failed} fallite</small></div><div className="analysis-kpi"><div className="kpi-icon"><Sparkles size={17} /></div><span>Eventi</span><strong>{data.kpis.events.total}</strong><small>{data.kpis.events.important} ad alta importanza</small></div><div className="analysis-kpi"><div className="kpi-icon"><Brain size={17} /></div><span>Decisioni</span><strong>{data.kpis.decisions.total}</strong><small>{data.kpis.decisions.failed} fallite</small></div><div className="analysis-kpi"><div className="kpi-icon"><Database size={17} /></div><span>Memorie create</span><strong>{data.kpis.memories.total}</strong><small>{data.kpis.memories.failures} legate a fallimenti</small></div></div>
+      <Panel title="System Health" eyebrow="SALUTE DEL MOTORE">
+        <div className="system-health-head">
+          <div><strong>Stato complessivo</strong><span>{formatSimTime(data.systemHealth.observedAt)}</span></div>
+          <b className={`health-badge ${healthClass(data.systemHealth.overallStatus)}`}>{healthLabel(data.systemHealth.overallStatus)}</b>
+        </div>
+        <div className="system-health-grid">
+          <div className={`system-health-card ${healthClass(data.systemHealth.retention.status)}`}>
+            <span>Retention</span>
+            <strong>{data.systemHealth.retention.backlog.toLocaleString('it-IT')}</strong>
+            <small>backlog · {data.systemHealth.retention.debtAgeHours.toFixed(1)} h di debito</small>
+            <small>{data.systemHealth.retention.catchUpActive ? `Catch-up L${data.systemHealth.retention.catchUpLevel}` : 'Catch-up inattivo'}</small>
+          </div>
+          <div className={`system-health-card ${healthClass(data.systemHealth.ai.status)}`}>
+            <span>AI coverage</span>
+            <strong>{data.systemHealth.ai.totalDecisions ? `${data.systemHealth.ai.aiCoveragePercent}%` : '—'}</strong>
+            <small>AI · fallback {data.systemHealth.ai.fallbackCoveragePercent}%</small>
+            <small>unavailable {data.systemHealth.ai.unavailableCoveragePercent}% · deterministic {data.systemHealth.ai.deterministicCoveragePercent}%</small>
+          </div>
+          <div className={`system-health-card ${healthClass(data.systemHealth.cognition.status)}`}>
+            <span>Cognizione</span>
+            <strong>{data.systemHealth.cognition.missingExpectation + data.systemHealth.cognition.missingWorlds}</strong>
+            <small>artifact mancanti nella finestra attiva</small>
+            <small>open expectation {data.systemHealth.cognition.openExpectationViolations} · worlds {data.systemHealth.cognition.openWorldViolations}</small>
+          </div>
+          <div className={`system-health-card ${healthClass(data.systemHealth.integrity.status)}`}>
+            <span>Integrità temporale</span>
+            <strong>{data.systemHealth.integrity.temporalViolations}</strong>
+            <small>violazioni nel periodo analizzato</small>
+            <small>stato: {healthLabel(data.systemHealth.integrity.status)}</small>
+          </div>
+        </div>
+      </Panel>
       <Panel title="Attività nel tempo" eyebrow="PROFILO TEMPORALE"><ActivityChart series={data.series} /></Panel>
       <div className="analysis-grid"><Panel title="Cosa è successo" eyebrow="CRONOLOGIA" className="analysis-span-2"><div className="analysis-feed">{data.highlights.length ? data.highlights.map((item) => <div className="analysis-feed-row" key={`${item.kind}-${item.id}`}><div className={`feed-icon ${item.severity.toLowerCase()}`}>{item.kind === 'ACTION' ? <Activity size={14} /> : <Sparkles size={14} />}</div><div className="feed-main"><div className="feed-meta"><span>{formatSimTime(item.at)}</span><b>{labelize(item.kind)}</b></div><strong>{item.title}</strong><span>{item.description}</span></div><span className={`feed-tag ${item.severity.toLowerCase()}`}>{labelize(item.severity)}</span></div>) : <EmptyState title="Nessun evento notevole" text="Nel periodo selezionato non ci sono eventi o azioni degni di nota." />}</div></Panel><Panel title="Integrità dei dati" eyebrow="RILEVATORE DI ANOMALIE"><div className="anomaly-stack">{data.anomalies.map((item) => <div className={`anomaly-row ${severityClass(item.severity)}`} key={item.id}><div className="anomaly-mark">{item.severity === 'CRITICAL' ? <XCircle size={15} /> : <AlertTriangle size={15} />}</div><div><strong>{item.title}</strong><span>{item.detail}</span></div><b>{item.count}</b></div>)}</div></Panel></div>
       <Panel title="Pattern comportamentali" eyebrow="RILEVATORE DI PATTERN"><div className="pattern-grid">{data.patterns.length ? data.patterns.map((item) => <div className={`pattern-card ${severityClass(item.severity)}`} key={item.id}><div className="pattern-card-top"><span>{item.severity === 'CRITICAL' ? <XCircle size={15} /> : item.severity === 'WARNING' ? <AlertTriangle size={15} /> : <CheckCircle2 size={15} />}</span><b>{item.count}</b></div><strong>{item.title}</strong><span>{item.detail}</span></div>) : <EmptyState title="Nessun pattern sospetto" text="Non sono emerse ripetizioni, blocchi, stagnazioni o escalation oltre le soglie monitorate." />}</div></Panel>

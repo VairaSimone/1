@@ -8,7 +8,23 @@ const budget = require("../services/gemini-budget-service");
 const looseObject = z.object({}).catchall(z.unknown());
 const optionalUuid = z.string().uuid().nullable().optional().catch(null);
 const DecisionSchema = z.object({selectedActionType:z.string().min(1).max(100),targetEntityId:optionalUuid,targetLocationId:optionalUuid,reason:z.string().min(1).max(360),confidence:z.number().min(0).max(1)});
-const AdvancedDecisionSchema = DecisionSchema.extend({strategy:z.object({objective:z.string().max(255).optional(),rationale:z.string().max(360).optional(),constraints:z.array(z.string().max(160)).max(5).default([]),fallbackActionType:z.string().max(100).nullable().optional()}).nullable().optional(),planProposal:z.object({title:z.string().min(1).max(255),strategy:looseObject.optional(),steps:z.array(z.object({title:z.string().min(1).max(255),description:z.string().max(320).optional(),actionType:z.string().max(100).optional()})).min(1).max(5)}).nullable().optional()});
+const AdvancedDecisionSchema = DecisionSchema.extend({
+  strategy:z.object({
+    objective:z.string().max(160).optional(),
+    rationale:z.string().max(220).optional(),
+    constraints:z.array(z.string().max(100)).max(3).default([]),
+    fallbackActionType:z.string().max(60).nullable().optional()
+  }).nullable().optional(),
+  planProposal:z.object({
+    title:z.string().min(1).max(160),
+    strategy:looseObject.optional(),
+    steps:z.array(z.object({
+      title:z.string().min(1).max(160),
+      description:z.string().max(180).optional(),
+      actionType:z.string().max(60).optional()
+    })).min(1).max(3)
+  }).nullable().optional()
+});
 const DialogueStateEffectsSchema=z.object({
   needs:z.array(z.object({code:z.string(),delta:z.number()})).max(6).default([]),
   emotions:z.array(z.object({code:z.string(),delta:z.number()})).max(6).default([]),
@@ -159,6 +175,125 @@ function toProviderJsonSchema(schema) {
   });
   return normalizeProviderSchemaNode(root, root);
 }
+function compactDecisionContext(context,{advanced=false}={}){
+  const compactList=(items,mapper,limit)=>Array.isArray(items)?items.slice(0,limit).map(mapper):[];
+  const candidates=compactList(context?.candidates,c=>({
+    action:c.action,
+    score:Number(c.score||0),
+    targetLocationId:c.targetLocationId||null,
+    targetEntityId:c.targetEntityId||null,
+    resourceIntent:c.resourceIntent?{
+      resource:c.resourceIntent.resource||null,
+      reason:c.resourceIntent.reason||null,
+      expectedTravelMinutes:Number(c.resourceIntent.expectedTravelMinutes||0)
+    }:null,
+    explorationIntent:c.explorationIntent?{
+      reason:c.explorationIntent.reason||null,
+      novelty:Number(c.explorationIntent.novelty||0),
+      interest:Number(c.explorationIntent.interest||0)
+    }:null,
+    socialTarget:Boolean(c.socialTarget),
+    planCommitted:Boolean(c.planCommitted),
+    recoveryBlocked:Boolean(c.recoveryBlocked)
+  }),10);
+  const compact={
+    simulationTime:context?.simulationTime||null,
+    entity:{
+      id:context?.entity?.id||null,
+      displayName:context?.entity?.displayName||""
+    },
+    needs:compactList(context?.needs,n=>({code:n.code,value:Number(n.value||0),priorityWeight:Number(n.priorityWeight||1)}),12),
+    traits:compactList(context?.traits,t=>({code:t.code,value:Number(t.value??0)}),12),
+    currentAction:context?.currentAction?{
+      actionType:context.currentAction.actionType||null,
+      status:context.currentAction.status||null
+    }:null,
+    location:context?.location?{
+      locationId:context.location.locationId||null,
+      locationType:context.location.locationType||null,
+      name:context.location.name||context.location.displayName||null
+    }:null,
+    goals:compactList(context?.goals,g=>({
+      id:g.id||null,title:g.title||null,status:g.status||null,
+      goalType:g.goalType||null,priority:Number(g.priority||0),progress:Number(g.progress||0),
+      motivation:g.motivation||null
+    }),8),
+    candidates,
+    allowedActionTypes:compactList(context?.allowedActionTypes,a=>String(a),16),
+    recentActions:compactList(context?.recentActions,a=>({
+      actionType:a.actionType||a,
+      outcome:a.outcome||a.status||null,
+      at:a.completedSimulationAt||a.startedSimulationAt||a.at||null
+    }),12),
+    recoveryBlocks:compactList(context?.recoveryBlocks,b=>({
+      code:b.code||null,needValue:Number(b.needValue||0),
+      blockedActions:Array.isArray(b.blockedActions)?b.blockedActions.slice(0,8):[]
+    }),8),
+    resourceContext:context?.resourceContext?{
+      currentLocationId:context.resourceContext.currentLocationId||null,
+      currentResources:context.resourceContext.currentResources||{},
+      blockedResources:context.resourceContext.blockedResources||{},
+      nearestResources:{
+        water:context.resourceContext.nearestResources?.water||null,
+        food:context.resourceContext.nearestResources?.food||null
+      },
+      emergencyResources:compactList(context.resourceContext.emergencyResources,e=>({
+        resource:e.resource||null,locationId:e.locationId||null,reason:e.reason||null
+      }),6)
+    }:null,
+    social:context?.social?{
+      candidates:compactList(context.social.candidates,c=>({
+        id:c.id||null,name:c.name||null,
+        familiarity:Number(c.familiarity||0),closeness:Number(c.closeness||0),
+        affection:Number(c.affection||0),trust:Number(c.trust||0),
+        compatibility:Number(c.compatibility||0)
+      }),8)
+    }:null,
+    proactivity:context?.proactivity||null,
+    geminiTrigger:context?.geminiTrigger||null
+  };
+  if(advanced){
+    compact.cognitiveProfile={
+      mentalState:context?.cognitiveProfile?.mentalState||null,
+      preferences:compactList(context?.cognitiveProfile?.preferences,p=>({
+        targetType:p.targetType,targetEntityId:p.targetEntityId||null,
+        value:Number(p.preferenceValue||0),strength:Number(p.strength||0),confidence:Number(p.confidence||0),topic:p.topic||null
+      }),6),
+      beliefs:compactList(context?.cognitiveProfile?.beliefs,b=>({
+        predicate:b.predicate,subjectEntityId:b.subjectEntityId||null,objectValue:b.objectValue,
+        confidence:Number(b.confidence||0),importance:Number(b.importance||0)
+      }),6),
+      knowledge:compactList(context?.cognitiveProfile?.knowledge,k=>({
+        knowledgeType:k.knowledgeType,content:String(k.content||"").slice(0,350),
+        subjectEntityId:k.subjectEntityId||null,objectEntityId:k.objectEntityId||null,
+        predicate:k.predicate||null,confidence:Number(k.confidence||0),importance:Number(k.importance||0)
+      }),6),
+      habits:compactList(context?.cognitiveProfile?.habits,h=>({
+        name:h.name,description:String(h.description||"").slice(0,180),strength:Number(h.strength||0),frequency:h.frequency||null
+      }),4),
+      plans:compactList(context?.cognitiveProfile?.plans,p=>({
+        title:p.title,status:p.status,goalId:p.goalId||null,
+        steps:compactList(p.steps,s=>({title:s.title,status:s.status,actionType:s.result?.actionType||null}),3)
+      }),3)
+    };
+  }
+  return compact;
+}
+
+function calculateDynamicStructuredOutputTokenCeiling({kind="autonomy",prompt,schema,thinkingLevel="low",configuredCeiling,minimumOutputTokenCeiling=512}={}){
+  const configured=Math.max(1,Math.floor(Number(configuredCeiling)||1));
+  const minimum=Math.max(1,Math.min(configured,Math.floor(Number(minimumOutputTokenCeiling)||1)));
+  let schemaTokens=0;
+  try{schemaTokens=budget.estimateInputTokens(JSON.stringify(toProviderJsonSchema(schema)));}catch{}
+  const promptTokens=budget.estimateInputTokens(prompt);
+  const reasoningReserve=thinkingLevel==="medium"?1024:thinkingLevel==="low"?640:384;
+  const schemaReserve=Math.min(768,Math.max(128,Math.ceil(schemaTokens*.65)));
+  const contextReserve=Math.min(768,Math.max(128,Math.ceil(promptTokens/8)));
+  const naturalNeed=minimum+reasoningReserve+schemaReserve+contextReserve;
+  const hardCap=kind==="autonomy"?4096:4096;
+  return Math.min(hardCap,Math.max(configured,naturalNeed));
+}
+
 function dialogueNeedsAdvancedCognition(context){
   const type=String(context?.conversationIntent?.type||"");
   if(["PLANNING","EMOTIONAL_SHARING","DISAGREEMENT"].includes(type))return true;
@@ -562,12 +697,14 @@ class GeminiService {
         ?Number(env.GEMINI_DIALOGUE_OUTPUT_TOKEN_CEILING)
         :Number(env.GEMINI_AUTONOMY_OUTPUT_TOKEN_CEILING)
     );
-    // Gemini 3 thinking tokens share the maxOutputTokens budget with the
-    // structured response. Keep compact autonomy responses above a safe floor
-    // so JSON cannot be truncated merely because the thinking budget consumed it.
-    const requestedOutputTokenCeiling=kind==="autonomy"
-      ?Math.max(512,configuredOutputTokenCeiling)
-      :configuredOutputTokenCeiling;
+    const requestedOutputTokenCeiling=calculateDynamicStructuredOutputTokenCeiling({
+      kind,
+      prompt,
+      schema,
+      thinkingLevel,
+      configuredCeiling:configuredOutputTokenCeiling,
+      minimumOutputTokenCeiling
+    });
     const configuredModels=kind==="dialogue"?this.dialogueModels:this.models;
     const availableModels=this._availableModels(kind);
     const requestedMaxModels=Number(maxModels);
@@ -992,8 +1129,9 @@ class GeminiService {
         : "This is a routine decision. Do not output strategy or planProposal. Output only the compact decision fields.",
       "An active plan step is a commitment unless a critical need or physical constraint makes it infeasible.",
       "Deterministic candidates are evidence and constraints, not instructions to fabricate.",
+      "Return only the fields required by the schema; omit optional strategy/plan data unless this decision genuinely needs them.",
       "Reason for this Gemini consultation: "+trigger+".",
-      JSON.stringify(context)
+      JSON.stringify(compactDecisionContext(context,{advanced}))
     ].join("\n");
     const autonomyMaxModels=Math.max(1,Math.min(2,Number(env.GEMINI_AUTONOMY_MAX_MODELS)||2));
     return this.generateJson(prompt,schema,{
@@ -1114,4 +1252,4 @@ class GeminiService {
   }
 
 }
-module.exports={GeminiService,DecisionSchema,AdvancedDecisionSchema,DialogueSchema,AdvancedDialogueSchema,decisionNeedsAdvancedCognition,dialogueNeedsAdvancedCognition,compactDialogueContext,classifyGeminiError,computeProviderBackoffMs,toProviderJsonSchema};
+module.exports={GeminiService,DecisionSchema,AdvancedDecisionSchema,DialogueSchema,AdvancedDialogueSchema,decisionNeedsAdvancedCognition,dialogueNeedsAdvancedCognition,compactDialogueContext,compactDecisionContext,calculateDynamicStructuredOutputTokenCeiling,classifyGeminiError,computeProviderBackoffMs,toProviderJsonSchema};

@@ -1,4 +1,6 @@
 const { pool } = require("../db/pool");
+const { getSimulationDecisionCoverage } = require("./gemini-budget-service");
+const { getTerminalCognitiveInvariant } = require("./decision-cognitive-finalization-service");
 
 function rangeWhere(alias, from, to, field) {
   const params = [];
@@ -10,6 +12,80 @@ function rangeWhere(alias, from, to, field) {
 function number(value) { const n = Number(value); return Number.isFinite(n) ? n : 0; }
 function rate(part, total) { return total ? Math.round((part / total) * 1000) / 10 : 0; }
 function pattern(id, severity, title, detail, count = 0, evidence = null) { return { id, severity, title, detail, count, evidence }; }
+
+function healthRank(status){return {NO_DATA:0,OK:1,WARNING:2,CRITICAL:3,UNAVAILABLE:4}[String(status||"UNAVAILABLE").toUpperCase()]||4;}
+function worstHealth(...statuses){return statuses.map(status=>String(status||"UNAVAILABLE").toUpperCase()).sort((a,b)=>healthRank(b)-healthRank(a))[0]||"UNAVAILABLE";}
+function retentionHealth(r){
+  if(!r)return"UNAVAILABLE";
+  if(Number(r.backlog)>=5000||Number(r.debtAgeHours)>=24)return"CRITICAL";
+  if(Number(r.backlog)>1000||Number(r.debtAgeHours)>6||r.catchUpActive)return"WARNING";
+  return"OK";
+}
+function aiHealth(ai){
+  if(!ai||!Number(ai.totalDecisions))return"NO_DATA";
+  if(Number(ai.unavailableCoveragePercent)>=75||Number(ai.aiCoveragePercent)<10)return"CRITICAL";
+  if(Number(ai.unavailableCoveragePercent)>=30||Number(ai.fallbackCoveragePercent)>=50)return"WARNING";
+  return"OK";
+}
+function cognitionHealth(c){
+  if(!c)return"UNAVAILABLE";
+  return Number(c.openExpectationViolations)>0||Number(c.openWorldViolations)>0||Number(c.missingExpectation)>0||Number(c.missingWorlds)>0?"CRITICAL":"OK";
+}
+async function getSystemHealth(simulationId,observedAt,temporalViolations){
+  const results=await Promise.allSettled([
+    pool.query(
+      `SELECT backlog_after AS backlog,retention_debt_age_hours AS debtAgeHours,
+              produced_rows_per_sim_day AS producedRowsPerSimDay,
+              deleted_rows_per_sim_day AS deletedRowsPerSimDay,
+              catch_up_active AS catchUpActive,catch_up_level AS catchUpLevel,
+              adaptive_level AS adaptiveLevel
+       FROM retention_cycle_metrics
+       WHERE simulation_id=UUID_TO_BIN(?)
+       ORDER BY simulation_at DESC,id DESC
+       LIMIT 1`,
+      [simulationId]
+    ),
+    getSimulationDecisionCoverage(simulationId),
+    getTerminalCognitiveInvariant(simulationId,observedAt)
+  ]);
+  const retentionRow=results[0].status==="fulfilled"?results[0].value[0]?.[0]:null;
+  const retention=retentionRow?{
+    backlog:Number(retentionRow.backlog||0),
+    debtAgeHours:Number(retentionRow.debtAgeHours||0),
+    producedRowsPerSimDay:Number(retentionRow.producedRowsPerSimDay||0),
+    deletedRowsPerSimDay:Number(retentionRow.deletedRowsPerSimDay||0),
+    catchUpActive:Boolean(Number(retentionRow.catchUpActive||0)),
+    catchUpLevel:Number(retentionRow.catchUpLevel||0),
+    adaptiveLevel:Number(retentionRow.adaptiveLevel||0)
+  }:null;
+  const ai=results[1].status==="fulfilled"?results[1].value?.coverage:null;
+  const cognition=results[2].status==="fulfilled"?results[2].value:null;
+  const temporal=Number(temporalViolations||0);
+  const retentionStatus=retentionHealth(retention);
+  const aiStatus=aiHealth(ai);
+  const cognitionStatus=cognitionHealth(cognition);
+  const integrityStatus=temporal>0?"CRITICAL":"OK";
+  return{
+    overallStatus:worstHealth(retentionStatus,aiStatus,cognitionStatus,integrityStatus),
+    observedAt,
+    retention:{
+      status:retentionStatus,backlog:Number(retention?.backlog||0),debtAgeHours:Number(retention?.debtAgeHours||0),
+      producedRowsPerSimDay:Number(retention?.producedRowsPerSimDay||0),deletedRowsPerSimDay:Number(retention?.deletedRowsPerSimDay||0),
+      catchUpActive:Boolean(retention?.catchUpActive),catchUpLevel:Number(retention?.catchUpLevel||0),adaptiveLevel:Number(retention?.adaptiveLevel||0)
+    },
+    ai:{
+      status:aiStatus,totalDecisions:Number(ai?.totalDecisions||0),aiCoveragePercent:Number(ai?.aiCoveragePercent||0),
+      fallbackCoveragePercent:Number(ai?.fallbackCoveragePercent||0),unavailableCoveragePercent:Number(ai?.unavailableCoveragePercent||0),
+      deterministicCoveragePercent:Number(ai?.deterministicCoveragePercent||0),degradedModeHours:Number(ai?.degradedModeHours||0)
+    },
+    cognition:{
+      status:cognitionStatus,missingExpectation:Number(cognition?.missingExpectation||0),missingWorlds:Number(cognition?.missingWorlds||0),
+      openExpectationViolations:Number(cognition?.openExpectationViolations||0),openWorldViolations:Number(cognition?.openWorldViolations||0),
+      artifactRetentionDays:Number(cognition?.artifactRetentionDays||0),retentionExemptTerminalDecisions:Number(cognition?.retentionExemptTerminalDecisions||0)
+    },
+    integrity:{status:integrityStatus,temporalViolations:temporal}
+  };
+}
 
 async function analyzeSimulation(simulationId, { from, to, entityId } = {}) {
   const [simRows] = await pool.query(`SELECT started_simulation_at AS startedAt,current_simulation_at AS currentAt FROM simulations WHERE id=UUID_TO_BIN(?) LIMIT 1`, [simulationId]);
@@ -92,13 +168,16 @@ async function analyzeSimulation(simulationId, { from, to, entityId } = {}) {
 
   const [highlightRows]=await pool.query(`SELECT * FROM (SELECT e.simulation_at at,'EVENT' kind,BIN_TO_UUID(e.id) id,e.title title,COALESCE(e.description,et.code,'Evento registrato') description,CASE WHEN COALESCE(e.importance,0)>=0.9 THEN 'WARNING' ELSE 'INFO' END severity FROM events e JOIN event_types et ON et.id=e.event_type_id WHERE e.simulation_id=UUID_TO_BIN(?)${eventRange.where} UNION ALL SELECT a.started_simulation_at at,'ACTION' kind,BIN_TO_UUID(a.id) id,CONCAT(a.action_type,' · ',a.status) title,COALESCE(JSON_UNQUOTE(JSON_EXTRACT(a.result,'$.failureReason')),a.source_type,'Azione registrata') description,CASE WHEN a.status IN ('FAILED','CANCELLED') THEN 'WARNING' ELSE 'INFO' END severity FROM actions a WHERE a.simulation_id=UUID_TO_BIN(?)${actionRange.where}${entityClause}) x ORDER BY at DESC LIMIT 12`,[simulationId,...eventRange.params,simulationId,...actionRange.params,...entityParams]);
 
+  const systemHealth=await getSystemHealth(simulationId,simRows[0].currentAt,temporal+invalidImportance);
+
   return {
     range:bounds,
     kpis:{ticks:{total:number(tick.total),completed:number(tick.completed),failed:failedTicks,skipped:number(tick.skipped),completionRate:rate(number(tick.completed),number(tick.total))},actions:{total:number(action.total),completed:number(action.completed),failed:failedActions,successRate:rate(number(action.completed),number(action.total)),avgDurationSeconds:action.avgDurationSeconds===null?null:number(action.avgDurationSeconds),suspiciousDuration},events:{total:number(event.total),important:number(event.important),avgImportance:number(event.avgImportance),maxImportance:number(event.maxImportance)},decisions:{total:number(decision.total),failed:failedDecisionCount},memories:{total:number(memory.total),failures:number(memoryFailureRows[0]?.failures)},integrity:{temporal:temporal+invalidImportance}},
     series:seriesRows.map(row=>({at:row.at,events:number(row.events),actions:number(row.actions),failedTicks:number(row.failedTicks)})),
     highlights:highlightRows.map(row=>({at:row.at,kind:row.kind,id:row.id,title:String(row.title||"Activity"),description:String(row.description||""),severity:row.severity})),
     anomalies:anomalyList,patterns:patterns.slice(0,40),
-    breakdowns:{actions:actionBreakdown.map(row=>({label:String(row.label||"UNKNOWN"),value:number(row.value)})),events:eventBreakdown.map(row=>({label:String(row.label||"UNKNOWN"),value:number(row.value)})),decisions:decisionBreakdown.map(row=>({label:String(row.label||"UNKNOWN"),value:number(row.value)}))}
+    breakdowns:{actions:actionBreakdown.map(row=>({label:String(row.label||"UNKNOWN"),value:number(row.value)})),events:eventBreakdown.map(row=>({label:String(row.label||"UNKNOWN"),value:number(row.value)})),decisions:decisionBreakdown.map(row=>({label:String(row.label||"UNKNOWN"),value:number(row.value)}))},
+    systemHealth
   };
 }
-module.exports={analyzeSimulation};
+module.exports={analyzeSimulation,getSystemHealth,worstHealth,healthRank};
