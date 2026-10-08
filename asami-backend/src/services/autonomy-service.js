@@ -813,24 +813,6 @@ async function completeGoalForAction(goalId,actionType,simulationTime,outcome,ac
 
   if (!simulationId || !entityId) return null;
 
-  try{
-    observability.recordGoalActionOutcome(simulationId,entityId,simulationTime,{
-      goalId:resolvedGoalId,
-      actionId,
-      actionType,
-      outcome,
-      durationMinutes:Number(actionResult?.durationMinutes||0)
-    });
-  }catch(observabilityError){
-    logger.warn({
-      simulationId,
-      entityId,
-      goalId:resolvedGoalId,
-      actionId,
-      error:String(observabilityError?.message||observabilityError)
-    },"goal action observability update failed");
-  }
-
   const primary=await advancePlanForAction({
     simulationId,
     entityId,
@@ -850,6 +832,44 @@ async function completeGoalForAction(goalId,actionType,simulationTime,outcome,ac
     actionResult,
     excludeGoalId:resolvedGoalId
   });
+
+  const observabilityTargets=[];
+  if(primary?.changed||primary?.completed){
+    observabilityTargets.push({
+      goalId:resolvedGoalId,
+      progress:primary?.progress
+    });
+  }
+  if(persistent?.changed||persistent?.completed){
+    const persistentGoalId=persistent?.goalId||persistent?.resolvedGoalId||persistent?.goal?.id||null;
+    if(persistentGoalId && String(persistentGoalId)!==String(resolvedGoalId)){
+      observabilityTargets.push({
+        goalId:persistentGoalId,
+        progress:persistent?.progress
+      });
+    }
+  }
+
+  for(const target of observabilityTargets){
+    try{
+      observability.recordGoalActionOutcome(simulationId,entityId,simulationTime,{
+        goalId:target.goalId,
+        actionId,
+        actionType,
+        outcome,
+        durationMinutes:Number(actionResult?.durationMinutes||0),
+        progress:target.progress
+      });
+    }catch(observabilityError){
+      logger.warn({
+        simulationId,
+        entityId,
+        goalId:target.goalId,
+        actionId,
+        error:String(observabilityError?.message||observabilityError)
+      },"goal action observability update failed");
+    }
+  }
 
   return{
     ...(primary||{}),
