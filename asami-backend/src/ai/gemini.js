@@ -840,7 +840,7 @@ class GeminiService {
           contents:prompt,
           config:{
             responseMimeType:"application/json",
-            responseSchema,
+            responseJsonSchema:responseSchema,
             maxOutputTokens:outputTokenCeiling,
             thinkingConfig:{thinkingLevel},
             abortSignal:controller.signal,
