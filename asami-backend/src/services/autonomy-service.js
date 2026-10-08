@@ -198,7 +198,7 @@ async function prepareTickAutonomyContext({simulationId,entityIds=[],simulationT
   for(const id of ids){
     const base=decisionContexts.get(id);if(!base)continue;
     const entity=entities.get(id);if(!entity)continue;
-    base.isAsami=normalize(entity.displayName)==="ASAMI";
+    base.isAsami=normalizeAction(entity.displayName)==="ASAMI";
     base.candidates=decisionService.applySleepLocationPreference(
       base.candidates,
       {
@@ -543,7 +543,7 @@ async function markDecisionPipelineFailed({simulationId,entityId,decisionId,inte
   return Boolean(updated.affectedRows);
 }
 
-async function actForEntity({simulationId,entityId,simulationTime,gemini,tickId=null,batchContext=null,needsOverride=null}){const entity=batchContext?.entities?.get(entityId)||await getEntity(simulationId,entityId);if(!entity)return null;let context=batchContext?.contexts?.get(entityId)||await decisionService.buildDecisionContext(simulationId,entityId,simulationTime);context={...context,simulationTime,isAsami:normalize(entity.displayName)==="ASAMI"};
+async function actForEntity({simulationId,entityId,simulationTime,gemini,tickId=null,batchContext=null,needsOverride=null}){const entity=batchContext?.entities?.get(entityId)||await getEntity(simulationId,entityId);if(!entity)return null;let context=batchContext?.contexts?.get(entityId)||await decisionService.buildDecisionContext(simulationId,entityId,simulationTime);context={...context,simulationTime,isAsami:normalizeAction(entity.displayName)==="ASAMI"};
   if(batchContext?.contexts?.has(entityId)){
     const latestNeeds=Array.isArray(needsOverride)&&needsOverride.length?needsOverride:context.needs;
     if(Array.isArray(latestNeeds)&&latestNeeds.length){
