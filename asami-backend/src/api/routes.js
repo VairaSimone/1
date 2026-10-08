@@ -27,6 +27,7 @@ function buildRouter({hub,gemini}){
   router.post("/simulations",async(req,res)=>{
     const body=simulationCreate.parse(req.body);
     const result=await simRepo.createSimulation(body);
+    hub.setSimulationVersion(result.simulation.id,Number(result.simulation.version||0));
     hub.publish(result.simulation.id,"simulation.status",{status:"RUNNING",asamiEntityId:result.asamiEntityId});
     res.status(201).json(result);
   });
