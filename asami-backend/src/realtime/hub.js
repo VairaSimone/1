@@ -58,6 +58,10 @@ class RealtimeHub {
     this.simulationVersionBySimulation.set(simulationId, numeric);
   }
 
+  getSequence(simulationId) {
+    return Number(this.sequenceBySimulation.get(simulationId) || 0);
+  }
+
   publish(simulationId, type, payload) {
     const sequence=(this.sequenceBySimulation.get(simulationId)||0)+1;
     this.sequenceBySimulation.set(simulationId,sequence);
