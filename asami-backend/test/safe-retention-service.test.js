@@ -447,7 +447,7 @@ test("retention debt-age query keeps SQL placeholders and explicit parameters in
   assert.ok(queryStart>=0 && paramsStart>queryStart && paramsEnd>paramsStart);
   const querySource=block.slice(queryStart,paramsStart);
   const paramsSource=block.slice(paramsStart,paramsEnd);
-  assert.equal((querySource.match(/\\?/g)||[]).length,48);
+  assert.equal((querySource.match(/\?/g)||[]).length,48);
   assert.equal((paramsSource.match(/simulationIdBinary/g)||[]).length,20);
   assert.match(paramsSource,/String\(simulationId\),geminiCutoff/);
   assert.match(block,/simulationIdBinary,decisionCutoff/);
