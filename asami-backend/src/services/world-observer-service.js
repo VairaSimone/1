@@ -315,7 +315,7 @@ async function getWorldSnapshot(simulationId, requestedAt = null) {
     latestWeatherByLocation.set(locationId, { eventCode, simulationAt: simulationMs });
   }
 
-  const replayHour = at.getUTCHours();
+  const replayHour = phaseState.localHour;
   const daylight = replayHour < 6 ? .08 : replayHour < 8 ? .35 : replayHour < 18 ? 1 : replayHour < 21 ? .45 : .12;
   const clampEnvironment = (value) => Math.max(0, Math.min(1, Number(value) || 0));
 
