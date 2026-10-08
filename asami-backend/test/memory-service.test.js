@@ -97,3 +97,13 @@ test("memory relevance never falls back to wall-clock time", () => {
     error => error?.code === "SIMULATION_TIME_REQUIRED"
   );
 });
+
+test("batched memory recall updates retry deadlocks and use stable chunks",()=>{
+  const fs=require("node:fs");
+  const path=require("node:path");
+  const source=fs.readFileSync(path.join(__dirname,"../src/services/memory-service.js"),"utf8");
+  assert.match(source,/const RECALL_UPDATE_BATCH_SIZE = 100/);
+  assert.match(source,/const orderedSelectedIds=\[\.\.\.new Set\(selectedIds\.map\(String\)\.filter\(Boolean\)\)\]\.sort\(\)/);
+  assert.match(source,/await withTransaction\(async conn=>\{/);
+  assert.match(source,/last_recalled_simulation_at=\?,version=version\+1/);
+});
