@@ -50,10 +50,10 @@ const Env = z.object({
   GEMINI_DIALOGUE_MAX_MODELS: z.coerce.number().int().min(1).max(3).default(2),
   GEMINI_DIALOGUE_COMPACT_OUTPUT_TOKEN_CEILING: z.coerce.number().int().min(1024).max(4096).default(1536),
   GEMINI_AUTONOMY_MAX_LATENCY_MS: z.preprocess((value)=>{
-    if(value===undefined||value===null||String(value).trim()==="")return 12000;
+    if(value===undefined||value===null||String(value).trim()==="")return 30000;
     const n=Number(value);
-    return Number.isFinite(n)?Math.max(5000,Math.min(30000,n)):value;
-  },z.coerce.number().int().min(5000).max(30000).default(12000)),
+    return Number.isFinite(n)?Math.max(10000,Math.min(30000,n)):value;
+  },z.coerce.number().int().min(10000).max(30000).default(30000)),
   GEMINI_TIMEOUT_MS: z.preprocess((value)=>{
     if(value===undefined||value===null||String(value).trim()==="")return 30000;
     const n=Number(value);
@@ -68,14 +68,14 @@ const Env = z.object({
   GEMINI_AUTONOMY_COMPACT_OUTPUT_TOKEN_CEILING: z.coerce.number().int().min(2048).max(4096).default(2048),
   GEMINI_AUTONOMY_MIN_OUTPUT_TOKEN_CEILING: z.coerce.number().int().min(512).max(4096).default(768),
   GEMINI_AUTONOMY_HIGH_VALUE_MIN_OUTPUT_TOKEN_CEILING: z.coerce.number().int().min(768).max(4096).default(1024),
-  // The autonomy fallback fan-out is intentionally capped at 2 in GeminiService.
-  // Clamp legacy values (for example 3/4 from older .env files) instead of
-  // crashing the whole backend during startup after a configuration update.
+  // Allow one extra provider fallback for automatic decisions. Failed
+  // transient requests release their reservation, so the extra attempt is
+  // used for availability rather than normal request amplification.
   GEMINI_AUTONOMY_MAX_MODELS: z.preprocess((value)=>{
     if(value===undefined||value===null||String(value).trim()==="")return value;
     const n=Number(value);
-    return Number.isFinite(n)?Math.min(2,n):value;
-  },z.coerce.number().int().min(1).max(2).default(2)),
+    return Number.isFinite(n)?Math.min(3,n):value;
+  },z.coerce.number().int().min(1).max(3).default(3)),
   GEMINI_DIALOGUE_OUTPUT_TOKEN_CEILING: z.coerce.number().int().min(256).max(20000).default(1536),
   GEMINI_INPUT_PRICE_USD_PER_1M: z.coerce.number().nonnegative().default(0.75),
   GEMINI_OUTPUT_PRICE_USD_PER_1M: z.coerce.number().nonnegative().default(3.75),
@@ -97,6 +97,9 @@ const Env = z.object({
     return Number.isFinite(n)?Math.min(1440,Math.max(60,n)):value;
   },z.coerce.number().nonnegative().default(1440)),
   GEMINI_AUTONOMY_HIGH_VALUE_RESERVE_USD: z.coerce.number().nonnegative().max(1).default(0.03),
+  GEMINI_AUTONOMY_RETRY_MIN_INTERVAL_MINUTES: z.coerce.number().int().min(1).max(60).default(5),
+  GEMINI_AUTONOMY_SIMULATION_DAY_BUDGET_USD: z.coerce.number().positive().default(0.15),
+  GEMINI_AUTONOMY_SIMULATION_DAY_MAX_REQUESTS: z.coerce.number().int().positive().default(50),
   GEMINI_AUTONOMY_BUDGET_RETRY_MINUTES: z.coerce.number().int().min(1).max(60).default(5),
   GEMINI_AUTONOMY_HIGH_VALUE_MIN_INTERVAL_MINUTES: z.preprocess((value)=>{
     if(value===undefined||value===null||String(value).trim()==="")return 120;
