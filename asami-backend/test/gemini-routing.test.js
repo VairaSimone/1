@@ -246,3 +246,20 @@ test("simulation identity reaches Gemini budget reservation",()=>{
   assert.match(geminiSource,/async chooseDecision\(context,\{simulationId=null,entityId=null,simulationTime=null\}/);
   assert.match(geminiSource,/async dialogue\(context,\{simulationId=null,entityId=null,simulationTime=null\}/);
 });
+
+test("Gemini structured output sends JSON Schema through responseJsonSchema",()=>{
+  assert.match(geminiSource,/responseJsonSchema:responseSchema/);
+  assert.doesNotMatch(geminiSource,/responseSchema,\s*maxOutputTokens/);
+});
+
+test("Autonomy only starts the Gemini trigger cooldown after an accepted AI choice",()=>{
+  const start=autonomySource.indexOf("const generated=await gemini.chooseDecision");
+  const end=autonomySource.indexOf("if(goalState.goal){",start);
+  const block=autonomySource.slice(start,end);
+  const sanitizeIndex=block.indexOf("aiChoice=sanitizeGeminiChoice");
+  const markIndex=block.indexOf("markGeminiDecisionUsed");
+  assert.ok(sanitizeIndex>=0 && markIndex>sanitizeIndex);
+  assert.match(block,/if\(requestStatus\.attempted&&aiChoice\)/);
+  assert.match(block,/triggerKey:effectiveGeminiTrigger\.key\|\|null/);
+  assert.match(block,/INVALID_OR_UNUSABLE_GEMINI_DECISION/);
+});
