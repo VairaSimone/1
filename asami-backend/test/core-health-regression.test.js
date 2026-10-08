@@ -62,3 +62,5 @@ test("realtime hub publishes monotonic sequence numbers",()=>{
   assert.equal(messages[0].sequence,1);
   assert.equal(messages[1].sequence,2);
 });
+
+// Keep CI-triggering content update explicit: the assertion above matches the severity rules.
