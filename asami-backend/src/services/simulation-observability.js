@@ -172,7 +172,7 @@ function recordGoalProgress(simulationId,entityId,simulationTime,{goalId,progres
   };
 }
 
-function recordGoalActionOutcome(simulationId,entityId,simulationTime,{goalId,actionId=null,actionType=null,outcome=null,durationMinutes=0}={}) {
+function recordGoalActionOutcome(simulationId,entityId,simulationTime,{goalId,actionId=null,actionType=null,outcome=null,durationMinutes=0,progress=null}={}) {
   if(!simulationId||!entityId||!goalId)return null;
   const now=parseSimulationMs(simulationTime);
   if(now===null)return null;
@@ -186,6 +186,11 @@ function recordGoalActionOutcome(simulationId,entityId,simulationTime,{goalId,ac
 
   const normalizedOutcome=String(outcome||"").trim().toUpperCase();
   const durationHours=Math.max(0,Number(durationMinutes)||0)/60;
+  const numericProgress=Number(progress);
+  if(Number.isFinite(numericProgress) && numericProgress>Number(previous.lastProgress||0)+0.0001){
+    previous.lastProgress=Math.max(0,Math.min(1,numericProgress));
+    previous.lastProgressAt=now;
+  }
   previous.activeTimeHours=Math.max(0,Number(previous.activeTimeHours||0))+durationHours;
   if(["SUCCESS","SUCCEEDED","COMPLETED"].includes(normalizedOutcome)){
     previous.successfulActionsOnGoal=Number(previous.successfulActionsOnGoal||0)+1;
