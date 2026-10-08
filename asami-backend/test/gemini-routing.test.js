@@ -218,7 +218,7 @@ test("Routine dialogue uses minimal thinking and compact structured output",()=>
 test("Autonomy uses advanced output only for high-value decisions",()=>{
   assert.match(geminiSource,/function decisionNeedsAdvancedCognition\(context\)/);
   assert.match(geminiSource,/const schema=advanced\?AdvancedDecisionSchema:DecisionSchema/);
-  assert.match(geminiSource,/autonomyMaxModels=Math\.max\(1,Math\.min\(2/);
+  assert.match(geminiSource,/autonomyMaxModels=Math\\.max\\(1,Math\\.min\\(3/);
   assert.match(geminiSource,/Do not output strategy or planProposal/);
 });
 
@@ -237,8 +237,10 @@ test("Tick actor reads are batched",()=>{
   assert.match(engineSource,/needsOverride: latestNeeds/);
 });
 
-test("Memory recall updates are performed in one query",()=>{
-  assert.match(memorySource,/UPDATE memories[\s\S]*id IN \(\$\{placeholders\}\)/);
+test("Memory recall updates are deadlock-safe and chunked",()=>{
+  assert.match(memorySource,/RECALL_UPDATE_BATCH_SIZE/);
+  assert.match(memorySource,/await withTransaction\(async conn=>/);
+  assert.match(memorySource,/last_recalled_simulation_at=\?,version=version\+1/);
   assert.doesNotMatch(memorySource,/for \(const memory of memories\.slice\(0, Math\.min\(8, memories\.length\)\)\) await pool\.query/);
 });
 
@@ -250,8 +252,7 @@ test("simulation identity reaches Gemini budget reservation",()=>{
 });
 
 test("Gemini structured output sends JSON Schema through responseJsonSchema",()=>{
-  assert.match(geminiSource,/responseJsonSchema:responseSchema/);
-  assert.doesNotMatch(geminiSource,/responseSchema,\s*maxOutputTokens/);
+  assert.match(geminiSource,/responseJsonSchema:responseSchema,\s*maxOutputTokens/);
 });
 
 test("Autonomy only starts the Gemini trigger cooldown after an accepted AI choice",()=>{
