@@ -1,4 +1,4 @@
-const { pool } = require("../db/pool");
+const { pool, withTransaction } = require("../db/pool");
 const { uuid } = require("../lib/ids");
 const crypto = require("crypto");
 const observability = require("./simulation-observability");
@@ -7,6 +7,7 @@ const DECAY_BATCH_SIZE = 250;
 const DECAY_CHECKPOINT_MINUTES = 360;
 const DECAY_PER_HOUR_FACTOR = 0.997;
 const lastDecayCheckBySimulation = new Map();
+const RECALL_UPDATE_BATCH_SIZE = 100;
 
 async function recordMemoryStatusDistribution(simulationId){
   if(!simulationId)return;
@@ -375,7 +376,20 @@ async function recallContexts(simulationId,entityIds=[],limit=8,contextsByEntity
   const grouped=new Map(ids.map(id=>[id,[]]));
   for(const row of rows){const list=grouped.get(row.entityId);if(list)list.push({...row,metadata:normalizeJson(row.metadata)});}
   for(const id of ids){const base=contextsByEntity instanceof Map?contextsByEntity.get(id)||{}:(contextsByEntity&&contextsByEntity[id])||{},effectiveContext={...base,simulationTime:assertSimulationTime(base.simulationTime)};const memories=grouped.get(id)||[];memories.sort((a,b)=>memoryRelevance(b,effectiveContext)-memoryRelevance(a,effectiveContext)||Number(b.strength||0)-Number(a.strength||0)||new Date(b.simulationAt).getTime()-new Date(a.simulationAt).getTime());const selected=memories.slice(0,Math.min(Number(limit)||8,8));result.set(id,selected);for(const memory of selected){selectedIds.push(memory.id);observability.increment(simulationId,"memory_recalled_total");}}
-  if(selectedIds.length){const selectedPlaceholders=selectedIds.map(()=> 'UUID_TO_BIN(?)').join(',');await pool.query(`UPDATE memories SET last_recalled_simulation_at=?,version=version+1 WHERE simulation_id=UUID_TO_BIN(?) AND id IN (${selectedPlaceholders}) AND status='ACTIVE'`,[assertSimulationTime(contextsByEntity instanceof Map?contextsByEntity.values().next().value?.simulationTime:null),simulationId,...selectedIds]);}
+  if(selectedIds.length){
+    const recallAt=assertSimulationTime(contextsByEntity instanceof Map?contextsByEntity.values().next().value?.simulationTime:null);
+    const orderedSelectedIds=[...new Set(selectedIds.map(String).filter(Boolean))].sort();
+    for(let start=0;start<orderedSelectedIds.length;start+=RECALL_UPDATE_BATCH_SIZE){
+      const chunk=orderedSelectedIds.slice(start,start+RECALL_UPDATE_BATCH_SIZE);
+      const selectedPlaceholders=chunk.map(()=>"UUID_TO_BIN(?)").join(",");
+      await withTransaction(async conn=>{
+        await conn.query(
+          `UPDATE memories SET last_recalled_simulation_at=?,version=version+1 WHERE simulation_id=UUID_TO_BIN(?) AND id IN (${selectedPlaceholders}) AND status='ACTIVE'`,
+          [recallAt,simulationId,...chunk]
+        );
+      });
+    }
+  }
   return result;
 }
 async function recallContext(simulationId, entityId, limit = 8, context = {}) {
