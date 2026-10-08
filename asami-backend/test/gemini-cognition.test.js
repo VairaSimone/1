@@ -39,7 +39,11 @@ test("Gemini is triggered by failures and periodic strategic deliberation", () =
       { action: "DRINKING", score: 1.1 },
       { action: "RESTING", score: 0.5 }
     ],
-    recentOutcomes: [{ actionType: "DRINKING", outcome: "FAILURE" }]
+    recentInterruptions: [{
+      id: "interruption-1",
+      actionType: "DRINKING",
+      result: { outcome: "FAILURE" }
+    }]
   };
 
   assert.equal(getGeminiTrigger(entity, context).priority, "HIGH");
