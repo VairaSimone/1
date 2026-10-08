@@ -198,7 +198,7 @@ async function reconcileTerminalDecisionCognition(
     "SELECT BIN_TO_UUID(d.id) AS decisionId,BIN_TO_UUID(d.entity_id) AS entityId,d.status,d.simulation_time AS simulationTime "+
     "FROM decisions d "+
     "WHERE d.simulation_id=UUID_TO_BIN(?) AND d.status IN ('EXECUTED','FAILED','CANCELLED') "+
-    "AND d.simulation_time<=? AND d.simulation_time>=? AND (+
+    "AND d.simulation_time<=? AND d.simulation_time>=? AND ("+
       "EXISTS (SELECT 1 FROM cognitive_expectations ce WHERE ce.decision_id=d.id AND ce.status='OPEN') "+
       "OR EXISTS (SELECT 1 FROM counterfactual_worlds cw WHERE cw.decision_id=d.id AND cw.status='OPEN') "+
       "OR (d.action_created=1 AND d.action_id IS NOT NULL AND d.action_outcome IS NULL)"+
