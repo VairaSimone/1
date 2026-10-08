@@ -42,7 +42,7 @@ test("unusual sleep is allowed only with explicit contextual motivation",()=>{
 });
 
 test("backend phase uses Europe/Rome consistently at UTC/CEST boundaries",()=>{
-  assert.equal(simulationPhase("2026-01-15T20:00:00.000Z").phase,"evening");
+  assert.equal(simulationPhase("2026-01-15T19:00:00.000Z").phase,"evening");
   assert.equal(simulationPhase("2026-01-15T22:00:00.000Z").phase,"night");
   assert.equal(simulationPhase("2026-07-15T19:00:00.000Z").localHour,21);
   assert.equal(simulationPhase("2026-07-15T19:00:00.000Z").phase,"night");
