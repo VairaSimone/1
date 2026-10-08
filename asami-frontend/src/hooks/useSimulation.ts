@@ -418,10 +418,10 @@ export function useSimulation() {
         retry = 0
         void refresh(true).then((synced) => {
           if (wsRef.current !== ws || ws.readyState !== WebSocket.OPEN) return
-          latestRealtimeSequence.current = 0
-          latestRealtimeSimulationVersion.current = Number(synced?.simulation?.version || 0)
-          latestRealtimeWorldStateAt.current.clear()
           const syncedWorld = synced?.world || worldRef.current
+          latestRealtimeSequence.current = Number(syncedWorld?.realtime?.eventSequence || 0)
+          latestRealtimeSimulationVersion.current = Number(syncedWorld?.realtime?.simulationVersion || synced?.simulation?.version || 0)
+          latestRealtimeWorldStateAt.current.clear()
           if (syncedWorld?.simulationAt) {
             const syncedAt = new Date(syncedWorld.simulationAt).getTime()
             if (Number.isFinite(syncedAt)) {
