@@ -12,6 +12,7 @@ const engineSource=fs.readFileSync(path.join(__dirname,"../src/simulation/engine
 const actionSource=fs.readFileSync(path.join(__dirname,"../src/services/action-service.js"),"utf8");
 const perceptionSource=fs.readFileSync(path.join(__dirname,"../src/services/perception-service.js"),"utf8");
 const entityRepoSource=fs.readFileSync(path.join(__dirname,"../src/repositories/entity-repo.js"),"utf8");
+const autonomySource=fs.readFileSync(path.join(__dirname,"../src/services/autonomy-service.js"),"utf8");
 
 test("Gemini strips unsupported JSON Schema string formats before provider submission",()=>{
   assert.match(geminiSource,/const providerSupportedStringFormats = new Set\(\["date-time","date","time"\]\)/);
@@ -22,7 +23,8 @@ test("Gemini strips unsupported JSON Schema string formats before provider submi
 test("Gemini uses a stable multi-model fallback chain",()=>{
   assert.match(envSource,/GEMINI_MODEL[\s\S]*default\("gemini-3\.8-flash"\)/);
   assert.match(envSource,/GEMINI_FALLBACK_MODELS/);
-  assert.match(envSource,/GEMINI_AUTONOMY_MAX_MODELS: z\.coerce\.number/);
+  assert.match(envSource,/GEMINI_AUTONOMY_MAX_MODELS: z\.preprocess/);
+  assert.match(envSource,/\.max\(2\)\.default\(2\)/);
   assert.match(geminiSource,/this\.models=\[this\.model,"gemini-3\.1-flash-lite"/);
   assert.match(geminiSource,/this\.models=\[this\.model,"gemini-3\.1-flash-lite",\.\.\.\(Array\.isArray\(env\.GEMINI_FALLBACK_MODELS\)/);
   assert.match(envSource,/gemini-3\.1-flash-lite/);
