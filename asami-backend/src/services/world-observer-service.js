@@ -24,6 +24,21 @@ function iso(value) {
   return String(value);
 }
 
+function simulationPhase(simulationTime, timeZone="Europe/Rome") {
+  const date=simulationTime instanceof Date ? simulationTime : new Date(simulationTime);
+  if(!Number.isFinite(date.getTime())) return { phase:"night", localHour:0, timeZone };
+  const formatter=new Intl.DateTimeFormat("en-US",{timeZone,hour:"2-digit",hourCycle:"h23"});
+  const localHour=Number(formatter.format(date));
+  const phase=localHour<6||localHour>=21
+    ? "night"
+    : localHour<9
+      ? "morning"
+      : localHour<18
+        ? "day"
+        : "evening";
+  return { phase, localHour, timeZone };
+}
+
 function replayWindowDays() {
   return Math.max(
     1,
@@ -118,6 +133,7 @@ async function getWorldSnapshot(simulationId, requestedAt = null) {
   const at = validateAndClampSimulationTime(requestedAt, simulation, replayFloorMs);
   const atIso = at.toISOString();
   const replayClamped=Boolean(requestedAt && Number.isFinite(requestedParsed) && requestedParsed<replayFloorMs);
+  const phaseState=simulationPhase(at);
 
   const [locationRows, actorRows, actionRows, movementRows, eventRows, goalRowsPromise, weatherRows] = await Promise.all([
     pool.query(
@@ -455,6 +471,9 @@ async function getWorldSnapshot(simulationId, requestedAt = null) {
 
   return {
     simulationAt: atIso,
+    phase: phaseState.phase,
+    localHour: phaseState.localHour,
+    timeZone: phaseState.timeZone,
     requestedAt: requestedAt || null,
     isLive: at.getTime() === new Date(simulation.current_simulation_at).getTime(),
     simulation: {
@@ -478,4 +497,4 @@ async function getWorldSnapshot(simulationId, requestedAt = null) {
   };
 }
 
-module.exports = { getWorldSnapshot, replayWindowDays };
+module.exports = { getWorldSnapshot, replayWindowDays, simulationPhase };
