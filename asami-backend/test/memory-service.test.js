@@ -76,10 +76,8 @@ test("memory lifecycle exposes transition counters and current state gauges",()=
     "memory_archived_total"
   ]) assert.match(memory+retention,new RegExp(name));
   assert.match(memory,/recordMemoryStatusDistribution/);
-  assert.match(memory,/memory_active_current/);
-  assert.match(memory,/memory_fading_current/);
-  assert.match(memory,/memory_forgotten_current/);
-  assert.match(memory,/memory_archived_current/);
+  assert.match(memory,/observability\.setGauge\(simulationId,\`memory_\$\{status\.toLowerCase\(\)\}_current\`,counts\[status\]\|\|0\)/);
+  assert.match(memory,/\["ACTIVE","FADING","FORGOTTEN","ARCHIVED"\]/);
   assert.match(observability,/memory.*Current|memory_active_current/);
 });
 

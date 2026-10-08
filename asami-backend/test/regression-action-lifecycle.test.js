@@ -28,12 +28,13 @@ test("simulation engine completes active actions before stale decision reconcili
   const path=require("node:path");
   const source=fs.readFileSync(path.join(__dirname,"../src/simulation/engine.js"),"utf8");
   const entityLoop=source.indexOf("for (const id of actors)");
-  const completion=source.indexOf("actionService.completeAction",entityLoop);
-  const reconciliation=source.indexOf("reconcileStaleEvaluatedDecisions");
+  const completion=source.indexOf("completion = await actionService.completeAction",entityLoop);
+  const reconciliation=source.indexOf("const staleDecisionReconciliation = await reconcileStaleEvaluatedDecisions",completion);
+  const reconcilePhase=source.indexOf('setPhase("action.reconcile");',completion);
   assert.ok(entityLoop>=0);
   assert.ok(completion>entityLoop);
   assert.ok(reconciliation>completion);
-  assert.equal(source.indexOf('setPhase("action.reconcile");',0)>entityLoop,true);
+  assert.ok(reconcilePhase>completion);
 });
 
 test("autonomy actor selection prioritizes entities with active actions",()=>{
