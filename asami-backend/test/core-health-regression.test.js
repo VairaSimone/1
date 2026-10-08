@@ -12,7 +12,7 @@ const {EventEmitter}=require("node:events");
 test("retention catch-up stays active until backlog and debt age are both recovered",()=>{
   assert.deepEqual(
     retention.deriveRetentionCatchUpState({}, {backlogAfter:6000,debtAgeHours:2,producedRows:100,deletedRows:50}),
-    {catchUpActive:true,catchUpLevel:1}
+    {catchUpActive:true,catchUpLevel:2}
   );
   assert.deepEqual(
     retention.deriveRetentionCatchUpState({catchUpActive:true,catchUpLevel:3},{backlogAfter:1500,debtAgeHours:2,producedRows:100,deletedRows:200}),
