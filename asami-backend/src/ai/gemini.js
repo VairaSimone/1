@@ -553,7 +553,7 @@ class GeminiService {
   constructor(){
     this.client=null;
     this.model=env.GEMINI_MODEL;
-    this.models=[this.model,"gemini-3.1-flash-lite",...(Array.isArray(env.GEMINI_FALLBACK_MODELS)?env.GEMINI_FALLBACK_MODELS:[])]
+    this.models=[this.model,"gemini-3.1-flash-lite","gemini-3.7-flash",...(Array.isArray(env.GEMINI_FALLBACK_MODELS)?env.GEMINI_FALLBACK_MODELS:[])]
       .map(model=>String(model||"").trim())
       .filter(Boolean)
       .filter((model,index,self)=>self.indexOf(model)===index);
@@ -1133,7 +1133,7 @@ class GeminiService {
       "Reason for this Gemini consultation: "+trigger+".",
       JSON.stringify(compactDecisionContext(context,{advanced}))
     ].join("\n");
-    const autonomyMaxModels=Math.max(1,Math.min(2,Number(env.GEMINI_AUTONOMY_MAX_MODELS)||2));
+    const autonomyMaxModels=Math.max(1,Math.min(3,Number(env.GEMINI_AUTONOMY_MAX_MODELS)||3));
     return this.generateJson(prompt,schema,{
       kind:"autonomy",
       thinkingLevel,
