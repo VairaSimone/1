@@ -359,15 +359,21 @@ function getGeminiTrigger(entity,context,memories=[]){
 }
 
 function shouldAskGemini(entity,context,memories=[]){return Boolean(getGeminiTrigger(entity,context,memories));}
-function canUseGeminiDecision(entityId,simulationTime,{highValue=false,periodic=false,triggerKey=null}={}){
-  if(geminiBudget.providerBlockRemainingMs()>0)return false;
+function geminiDecisionGateStatus(entityId,simulationTime,{highValue=false,periodic=false,triggerKey=null}={}){
+  const providerBlockedMs=geminiBudget.providerBlockRemainingMs();
+  if(providerBlockedMs>0){
+    return{allowed:false,reason:"PROVIDER_COOLDOWN",retryAfterMs:providerBlockedMs};
+  }
   const now=new Date(simulationTime).getTime();
-  if(!Number.isFinite(now))return false;
+  if(!Number.isFinite(now))return{allowed:false,reason:"INVALID_SIMULATION_TIME",retryAfterMs:0};
 
   const retryBlockedUntil=Number(geminiRetryBlockedUntilByEntity.get(entityId)||0);
-  if(retryBlockedUntil>now)return false;
+  const retryAfterMs=Math.max(0,retryBlockedUntil-Date.now());
+  if(retryAfterMs>0)return{allowed:false,reason:"REQUEST_RETRY_BACKOFF",retryAfterMs};
 
-  if(triggerKey&&lastGeminiTriggerKeyByEntity.get(entityId)===triggerKey)return false;
+  if(triggerKey&&lastGeminiTriggerKeyByEntity.get(entityId)===triggerKey){
+    return{allowed:false,reason:"TRIGGER_ALREADY_USED",retryAfterMs:0};
+  }
 
   const configured=Number(env.GEMINI_AUTONOMY_MIN_INTERVAL_MINUTES);
   const normalInterval=Math.max(60,Number.isFinite(configured)?configured:1440);
@@ -382,18 +388,24 @@ function canUseGeminiDecision(entityId,simulationTime,{highValue=false,periodic=
     ?lastHighValueGeminiDecisionAt.get(entityId)
     :lastPeriodicGeminiDecisionAt.get(entityId);
   const intervalMinutes=highValue?highValueInterval:normalInterval;
-  if(clock===undefined)return true;
-  return now-clock>=intervalMinutes*60000;
+  if(clock===undefined)return{allowed:true,reason:null,retryAfterMs:0};
+  const elapsedMs=now-clock;
+  if(elapsedMs<intervalMinutes*60000){
+    return{
+      allowed:false,
+      reason:highValue?"HIGH_VALUE_INTERVAL":"PERIODIC_INTERVAL",
+      retryAfterMs:Math.max(0,intervalMinutes*60000-elapsedMs)
+    };
+  }
+  return{allowed:true,reason:null,retryAfterMs:0};
 }
-function markGeminiDecisionAttempt(entityId,simulationTime,retryAfterMs=0){
-  const now=new Date(simulationTime).getTime();
-  if(!Number.isFinite(now))return;
+function canUseGeminiDecision(entityId,simulationTime,options={}){
+  return geminiDecisionGateStatus(entityId,simulationTime,options).allowed;
+}
+function markGeminiDecisionAttempt(entityId,retryAfterMs=0){
   const configuredRetryMinutes=Math.max(1,Number(env.GEMINI_AUTONOMY_RETRY_MIN_INTERVAL_MINUTES)||5);
-  const retryMs=Math.max(
-    Number(retryAfterMs)||0,
-    configuredRetryMinutes*60000
-  );
-  geminiRetryBlockedUntilByEntity.set(entityId,now+retryMs);
+  const retryMs=Math.max(Number(retryAfterMs)||0,configuredRetryMinutes*60000);
+  geminiRetryBlockedUntilByEntity.set(entityId,Date.now()+retryMs);
 }
 function markGeminiDecisionUsed(entityId,simulationTime,{highValue=false,triggerKey=null}={}){
   const now=new Date(simulationTime).getTime();
@@ -660,20 +672,38 @@ async function actForEntity({simulationId,entityId,simulationTime,gemini,tickId=
   if(effectiveGeminiTrigger){
     if(!gemini?.client){
       geminiDecision={status:"FALLBACK",source:"DETERMINISTIC_FALLBACK",reason:"GEMINI_UNAVAILABLE",attempted:false,retryAfterMs:0};
-    }else if(!canUseGeminiDecision(
-      entity.id,
-      simulationTime,
-      {
+    }else{
+      const gate=geminiDecisionGateStatus(entity.id,simulationTime,{
         highValue:effectiveGeminiTrigger.priority==="HIGH",
         periodic:effectiveGeminiTrigger.type==="PERIODIC_DELIBERATION",
         triggerKey:effectiveGeminiTrigger.key||null
-      }
-    )){
-      geminiDecision={status:"FALLBACK",source:"DETERMINISTIC_FALLBACK",reason:"LOCAL_INTERVAL",attempted:false,retryAfterMs:0};
-    }else{
+      });
+      if(!gate.allowed){
+        geminiDecision={
+          status:"FALLBACK",
+          source:"DETERMINISTIC_FALLBACK",
+          reason:gate.reason,
+          attempted:false,
+          retryAfterMs:gate.retryAfterMs
+        };
+        logger.debugThrottled(
+          `gemini:decision-gate:${entity.id}`,
+          60000,
+          {
+            simulationId,
+            entityId:entity.id,
+            simulationTime,
+            triggerType:effectiveGeminiTrigger.type||null,
+            triggerKey:effectiveGeminiTrigger.key||null,
+            reason:gate.reason,
+            retryAfterMs:gate.retryAfterMs
+          },
+          "Gemini autonomy request skipped by decision gate"
+        );
+      }else{
       const worldLocations=worldLocationsCache||await loadWorldLocations(simulationId);
       const geminiContext=buildGeminiDecisionContext({entity,context,memories});
-      markGeminiDecisionAttempt(entity.id,simulationTime);
+      markGeminiDecisionAttempt(entity.id);
       const generated=await gemini.chooseDecision(geminiContext,{simulationId,entityId,simulationTime});
       const requestStatus=gemini.lastRequestStatus&&typeof gemini.lastRequestStatus==="object"
         ?{...gemini.lastRequestStatus}
@@ -682,7 +712,7 @@ async function actForEntity({simulationId,entityId,simulationTime,gemini,tickId=
       aiChoice=sanitizeGeminiChoice(generated,context,{socialContext,currentLocationId,worldLocations});
 
       if(requestStatus.attempted&&!aiChoice){
-        markGeminiDecisionAttempt(entity.id,simulationTime,requestStatus.retryAfterMs);
+        markGeminiDecisionAttempt(entity.id,requestStatus.retryAfterMs);
       }
 
       if(requestStatus.attempted&&aiChoice){
@@ -716,6 +746,7 @@ async function actForEntity({simulationId,entityId,simulationTime,gemini,tickId=
       }
 
       if(aiChoice?.planProposal&&goalState.goal)aiChoice.planProposal.goalId=goalState.goal.id;
+      }
     }
   }
 context.geminiDecision=geminiDecision;
