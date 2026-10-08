@@ -75,7 +75,8 @@ test("stale evaluated decisions use a simulated-time grace window and only fail 
   const section=source.slice(start,end);
   assert.ok(start>=0&&end>start);
   assert.match(section,/d\.status='EVALUATED'/);
-  assert.match(section,/const cutoff=new Date/);
+  assert.match(section,/const simulationNowMs=new Date\(simulationTime\)\.getTime\(\)/);
+  assert.match(section,/const cutoffSimulationTime=normalizeSimulationTimestamp/);
   assert.match(section,/d\.simulation_time<=\?/);
   assert.match(section,/LEFT JOIN intentions/);
   assert.match(section,/i\.decision_id=d\.id/);
