@@ -663,14 +663,37 @@ async function actForEntity({simulationId,entityId,simulationTime,gemini,tickId=
         ?{...gemini.lastRequestStatus}
         :{status:"FALLBACK",source:"DETERMINISTIC_FALLBACK",reason:"UNKNOWN",attempted:true,retryAfterMs:0};
 
-      if(requestStatus.attempted){
-        markGeminiDecisionUsed(entity.id,simulationTime,{highValue:effectiveGeminiTrigger.priority==="HIGH",triggerKey:aiChoice?effectiveGeminiTrigger.key||null:null});
+      aiChoice=sanitizeGeminiChoice(generated,context,{socialContext,currentLocationId,worldLocations});
+
+      if(requestStatus.attempted&&aiChoice){
+        markGeminiDecisionUsed(entity.id,simulationTime,{
+          highValue:effectiveGeminiTrigger.priority==="HIGH",
+          triggerKey:effectiveGeminiTrigger.key||null
+        });
       }
 
-      aiChoice=sanitizeGeminiChoice(generated,context,{socialContext,currentLocationId,worldLocations});
       geminiDecision=aiChoice
         ?{...requestStatus,status:"SUCCESS",source:"GEMINI",reason:"GEMINI_DECISION_ACCEPTED"}
         :{...requestStatus,status:"FALLBACK",source:"DETERMINISTIC_FALLBACK",reason:generated?"INVALID_GEMINI_OUTPUT":requestStatus.reason||"GEMINI_FALLBACK"};
+
+      if(generated&&!aiChoice){
+        logger.warnThrottled(
+          `gemini:decision-rejected:${entity.id}`,
+          300000,
+          {
+            simulationId,
+            entityId:entity.id,
+            simulationTime,
+            triggerType:effectiveGeminiTrigger.type||null,
+            triggerKey:effectiveGeminiTrigger.key||null,
+            attempted:true,
+            providerModel:requestStatus.model||null,
+            providerStatus:requestStatus.status||null,
+            reason:"INVALID_OR_UNUSABLE_GEMINI_DECISION"
+          },
+          "Gemini returned a decision that the deterministic validator rejected; using deterministic selection"
+        );
+      }
 
       if(aiChoice?.planProposal&&goalState.goal)aiChoice.planProposal.goalId=goalState.goal.id;
     }
