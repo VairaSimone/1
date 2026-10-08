@@ -151,7 +151,7 @@ test("decision context archive is bounded separately from the operational decisi
   assert.match(source,/decision_context_archive/);
   assert.match(source,/async function deleteOldDecisionContextArchives/);
   assert.match(source,/decisionContextArchivesDeleted/);
-  assert.match(source,/JSON_EXTRACT\(d\.context,'\\$\.operational'\)/);
+  assert.ok(source.includes("JSON_EXTRACT(d.context,'$.operational')"));
   assert.match(source,/BIN_TO_UUID\(d\.entity_id\) AS entityId/);
 });
 
@@ -351,7 +351,7 @@ test("retention bounds simulation tick history without deleting active ticks",()
   const start=source.indexOf("async function deleteOldSimulationTicks");
   const end=source.indexOf("\nasync function deleteOldEvents",start);
   const helperBlock=source.slice(start,end);
-  assert.match(helperBlock,/status IN ('COMPLETED','FAILED','SKIPPED')/);
+  assert.ok(helperBlock.includes("status IN ('COMPLETED','FAILED','SKIPPED')"));
   assert.doesNotMatch(helperBlock,/status='RUNNING'/);
   assert.match(source,/RETENTION_SIMULATION_TICK_DAYS/);
 });
@@ -459,13 +459,13 @@ test("retention plan-step debt uses the plan timestamp because plan_steps has no
   const start=source.indexOf("async function getOldestRetentionDebtAt");
   const end=source.indexOf("\nasync function persistRetentionTelemetry",start);
   const block=source.slice(start,end);
-  assert.match(block,/SELECT p\\.created_simulation_at FROM plan_steps ps JOIN plans p ON p\\.id=ps\\.plan_id/);
-  assert.doesNotMatch(block,/SELECT ps\\.created_simulation_at FROM plan_steps ps/);
+  assert.ok(block.includes("SELECT p.created_simulation_at FROM plan_steps ps JOIN plans p ON p.id=ps.plan_id"));
+  assert.ok(!block.includes("SELECT ps.created_simulation_at FROM plan_steps ps"));
   const compactionStart=source.indexOf("async function compactOldPlanStepResults");
   const compactionEnd=source.indexOf("\nasync function compactExistingDecisionActionSummaries",compactionStart);
   const compaction=source.slice(compactionStart,compactionEnd);
-  assert.match(compaction,/p\\.created_simulation_at<\\?/);
-  assert.doesNotMatch(compaction,/ps\\.created_simulation_at/);
+  assert.ok(compaction.includes("p.created_simulation_at<?"));
+  assert.ok(!compaction.includes("ps.created_simulation_at"));
 });
 
 test("retention decision-option debt uses the parent decision timestamp because decision_options has no creation timestamp",()=>{
@@ -475,6 +475,6 @@ test("retention decision-option debt uses the parent decision timestamp because 
   const start=source.indexOf("async function getOldestRetentionDebtAt");
   const end=source.indexOf("\nasync function persistRetentionTelemetry",start);
   const block=source.slice(start,end);
-  assert.match(block,/SELECT d\\.simulation_time FROM decision_options dopt JOIN decisions d ON d\\.id=dopt\\.decision_id/);
-  assert.doesNotMatch(block,/SELECT dopt\\.created_simulation_at FROM decision_options dopt/);
+  assert.ok(block.includes("SELECT d.simulation_time FROM decision_options dopt JOIN decisions d ON d.id=dopt.decision_id"));
+  assert.ok(!block.includes("SELECT dopt.created_simulation_at FROM decision_options dopt"));
 });
