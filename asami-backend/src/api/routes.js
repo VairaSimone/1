@@ -50,6 +50,7 @@ function buildRouter({hub,gemini}){
     const id=uuid.parse(req.params.simulationId);
     const op=req.header("Idempotency-Key")||`pause:${Date.now()}`;
     const result=await runIdempotent(id,op,"PAUSE",()=>simRepo.setStatus(id,"PAUSED"));
+    hub.setSimulationVersion(id,Number(result?.version));
     hub.publish(id,"simulation.status",{status:"PAUSED"});
     res.json(result);
   });
@@ -57,6 +58,7 @@ function buildRouter({hub,gemini}){
     const id=uuid.parse(req.params.simulationId);
     const op=req.header("Idempotency-Key")||`resume:${Date.now()}`;
     const result=await runIdempotent(id,op,"RESUME",()=>simRepo.setStatus(id,"RUNNING"));
+    hub.setSimulationVersion(id,Number(result?.version));
     hub.publish(id,"simulation.status",{status:"RUNNING"});
     res.json(result);
   });
@@ -64,6 +66,7 @@ function buildRouter({hub,gemini}){
     const id=uuid.parse(req.params.simulationId);
     const op=req.header("Idempotency-Key")||`stop:${Date.now()}`;
     const result=await runIdempotent(id,op,"STOP",()=>simRepo.setStatus(id,"STOPPED"));
+    hub.setSimulationVersion(id,Number(result?.version));
     hub.publish(id,"simulation.status",{status:"STOPPED"});
     res.json(result);
   });
@@ -86,6 +89,7 @@ function buildRouter({hub,gemini}){
       if (at < anchor) at = anchor;
       return simRepo.changeSpeed(id, body.speed, at);
     });
+    hub.setSimulationVersion(id,Number(result?.version));
     hub.publish(id,"simulation.speed",{speed:body.speed});
     res.json(result);
   });
