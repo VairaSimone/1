@@ -395,6 +395,9 @@ export function useSimulation() {
         return {
           ...prev,
           simulationAt,
+          phase: (p.phase === 'night' || p.phase === 'morning' || p.phase === 'day' || p.phase === 'evening') ? p.phase : prev.phase,
+          localHour: Number.isFinite(Number(p.localHour)) ? Number(p.localHour) : prev.localHour,
+          timeZone: p.timeZone ? String(p.timeZone) : prev.timeZone,
           isLive: true,
           locations,
           recentEvents,
