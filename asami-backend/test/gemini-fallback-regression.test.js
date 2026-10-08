@@ -18,9 +18,12 @@ test("non-provider failures remain separate from rate/quota fallback",()=>{
   assert.equal(classifyGeminiError(new Error("invalid JSON")).kind,"ERROR");
 });
 
-test("autonomy skips Gemini while the provider circuit breaker is active",()=>{
+test("autonomy respects provider and request retry gates",()=>{
   const fs=require("node:fs");
   const path=require("node:path");
   const source=fs.readFileSync(path.join(__dirname,"../src/services/autonomy-service.js"),"utf8");
-  assert.match(source,/geminiBudget\.providerBlockRemainingMs\(\)>0/);
+  assert.match(source,/geminiBudget\.providerBlockRemainingMs\(\)/);
+  assert.match(source,/REQUEST_RETRY_BACKOFF/);
+  assert.match(source,/geminiRetryBlockedUntilByEntity/);
+  assert.match(source,/Date\.now\(\)\+retryMs/);
 });
