@@ -839,7 +839,7 @@ async function advancePersistentGoalFromAnyAutonomousAction({simulationId,entity
   });
   if(!candidate)return null;
 
-  return advancePlanForAction({
+  const result=await advancePlanForAction({
     simulationId,
     entityId,
     goalId:candidate.goalId,
@@ -848,6 +848,7 @@ async function advancePersistentGoalFromAnyAutonomousAction({simulationId,entity
     simulationTime,
     actionResult
   });
+  return{...result,goalId:candidate.goalId};
 }
 
 async function advancePlanForAction({simulationId,entityId,goalId,actionType,outcome,simulationTime,actionResult=null}){
