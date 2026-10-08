@@ -28,6 +28,7 @@ const { runSimulationIntegrityCheck } = require("../services/integrity-check-ser
 const { calibrateDecisionOutcome } = require("../services/decision-service");
 const observability = require("../services/simulation-observability");
 const { WEATHER_DURATIONS_HOURS } = require("../services/environment-service");
+const { simulationPhase } = require("../services/world-observer-service");
 
 const INTERRUPTIBLE_ACTIONS = new Set(["SLEEPING", "WORKING", "STUDYING"]);
 const CRITICAL_EVENT_PATTERNS = /DANGER|EMERGENCY|ACCIDENT|THREAT|CRISIS|EVACUATION|ATTACK|FIRE/i;
@@ -1187,7 +1188,14 @@ class SimulationEngine {
             event: "RETENTION_SERVICE_UNAVAILABLE"
           }, "safe retention service unavailable; simulation continues without cleanup");
         }
-        this.hub.publish(sim.id, "simulation.tick", { simulationTime: nextTime.toISOString(), tickId });
+        const phaseState=simulationPhase(nextTime);
+        this.hub.publish(sim.id, "simulation.tick", {
+          simulationTime: nextTime.toISOString(),
+          tickId,
+          phase: phaseState.phase,
+          localHour: phaseState.localHour,
+          timeZone: phaseState.timeZone
+        });
       } catch (err) {
         if (isCriticalResourceRecoveryUnavailable(err)) {
           observability.recordRecoveryFailed(sim.id);
