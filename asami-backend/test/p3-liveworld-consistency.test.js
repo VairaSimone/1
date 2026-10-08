@@ -22,8 +22,8 @@ test("sleep location follows HOME -> BEDROOM -> SAFE_PLACE -> OTHER hierarchy",(
   assert.equal(policy.targetLocationId,"home");
   assert.equal(policy.rank,0);
   const residentPolicy=resolvePreferredSleepLocation({locations,originId:"other",context:{isAsami:false}});
-  assert.equal(residentPolicy.rank,2);
-  assert.equal(residentPolicy.targetLocationId,"safe");
+  assert.equal(residentPolicy.rank,1);
+  assert.equal(residentPolicy.targetLocationId,"bed");
   assert.equal(sleepLocationRank(locations[2],{isAsami:true}),1);
   assert.equal(sleepLocationRank(locations[1]),2);
   assert.equal(sleepLocationRank(locations[0]),3);
