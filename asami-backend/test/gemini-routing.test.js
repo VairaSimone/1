@@ -178,7 +178,9 @@ test("Autonomy uses a slower periodic review and a separate high-value cooldown"
   assert.match(envSource,/GEMINI_AUTONOMY_HIGH_VALUE_MIN_INTERVAL_MINUTES/);
   assert.match(envSource,/return 1440/);
   assert.match(envSource,/return 120/);
+  assert.match(envSource,/GEMINI_AUTONOMY_RETRY_MIN_INTERVAL_MINUTES/);
   assert.match(autonomySource,/highValueInterval/);
+  assert.match(autonomySource,/geminiRetryBlockedUntilByEntity/);
 });
 
 test("Repeated identical Gemini triggers are deduplicated per entity",()=>{
@@ -201,8 +203,8 @@ test("Autonomy budget cooldown no longer suppresses high-value Gemini opportunit
   assert.doesNotMatch(autonomySource,/geminiTrigger=localBudgetBlocked\?null/);
 });
 
-test("Autonomy caps provider fallback fanout to two models",()=>{
-  assert.match(geminiSource,/autonomyMaxModels=Math\.max\(1,Math\.min\(2/);
+test("Autonomy allows a third provider fallback model",()=>{
+  assert.match(geminiSource,/autonomyMaxModels=Math\.max\(1,Math\.min\(3/);
   assert.match(geminiSource,/maxModels:autonomyMaxModels/);
 });
 
@@ -262,4 +264,18 @@ test("Autonomy only starts the Gemini trigger cooldown after an accepted AI choi
   assert.match(block,/if\(requestStatus\.attempted&&aiChoice\)/);
   assert.match(block,/triggerKey:effectiveGeminiTrigger\.key\|\|null/);
   assert.match(block,/INVALID_OR_UNUSABLE_GEMINI_DECISION/);
+});
+
+test("Autonomy gate exposes retry backoff after transient failure",()=>{
+  assert.match(autonomySource,/function geminiDecisionGateStatus/);
+  assert.match(autonomySource,/reason:"REQUEST_RETRY_BACKOFF"/);
+  assert.match(autonomySource,/markGeminiDecisionAttempt\(entity\.id\)/);
+  assert.match(autonomySource,/markGeminiDecisionAttempt\(entity\.id,requestStatus\.retryAfterMs\)/);
+  assert.match(autonomySource,/Date\.now\(\)\+retryMs/);
+});
+
+test("Autonomy has a larger total latency budget than the legacy 12-second default",()=>{
+  assert.match(envSource,/GEMINI_AUTONOMY_MAX_LATENCY_MS/);
+  assert.match(envSource,/default\(30000\)/);
+  assert.match(geminiSource,/minimumAutonomyLatencyMs=MIN_PROVIDER_DEADLINE_MS\*2/);
 });
