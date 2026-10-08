@@ -17,6 +17,7 @@ const lastAutonomyDecisionAt=new Map();
 const lastHighValueGeminiDecisionAt=new Map();
 const lastPeriodicGeminiDecisionAt=new Map();
 const lastGeminiTriggerKeyByEntity=new Map();
+const geminiRetryBlockedUntilByEntity=new Map();
 const EXPLORATION_LOCATION_INTEREST={HOME:{},PARK:{FUN:.45,SOCIAL_NEED:.25,CURIOSITY:.30},CAFE:{SOCIAL_NEED:.55,BELONGING:.30,FUN:.20,CURIOSITY:.15},SHOP:{HUNGER:.25,THIRST:.25,CURIOSITY:.10},LIBRARY:{CURIOSITY:.70,ACHIEVEMENT:.55},SCHOOL:{ACHIEVEMENT:.60,CURIOSITY:.40},COMMUNITY:{SOCIAL_NEED:.50,BELONGING:.55,FUN:.25},GYM:{FUN:.45,ACHIEVEMENT:.20},CLINIC:{SAFETY:.60,COMFORT:.20},NATURE:{CURIOSITY:.80,FUN:.35},WORKSHOP:{ACHIEVEMENT:.55,CURIOSITY:.45}};
 const RESOURCE_NEED_CODES={water:"THIRST",food:"HUNGER"};
 const GOAL_PRESSURE_CODES=new Set(["HUNGER","THIRST","SLEEPINESS","SOCIAL_NEED","FUN","CURIOSITY","ACHIEVEMENT","BELONGING"]);
@@ -363,6 +364,9 @@ function canUseGeminiDecision(entityId,simulationTime,{highValue=false,periodic=
   const now=new Date(simulationTime).getTime();
   if(!Number.isFinite(now))return false;
 
+  const retryBlockedUntil=Number(geminiRetryBlockedUntilByEntity.get(entityId)||0);
+  if(retryBlockedUntil>now)return false;
+
   if(triggerKey&&lastGeminiTriggerKeyByEntity.get(entityId)===triggerKey)return false;
 
   const configured=Number(env.GEMINI_AUTONOMY_MIN_INTERVAL_MINUTES);
@@ -381,9 +385,20 @@ function canUseGeminiDecision(entityId,simulationTime,{highValue=false,periodic=
   if(clock===undefined)return true;
   return now-clock>=intervalMinutes*60000;
 }
+function markGeminiDecisionAttempt(entityId,simulationTime,retryAfterMs=0){
+  const now=new Date(simulationTime).getTime();
+  if(!Number.isFinite(now))return;
+  const configuredRetryMinutes=Math.max(1,Number(env.GEMINI_AUTONOMY_RETRY_MIN_INTERVAL_MINUTES)||5);
+  const retryMs=Math.max(
+    Number(retryAfterMs)||0,
+    configuredRetryMinutes*60000
+  );
+  geminiRetryBlockedUntilByEntity.set(entityId,now+retryMs);
+}
 function markGeminiDecisionUsed(entityId,simulationTime,{highValue=false,triggerKey=null}={}){
   const now=new Date(simulationTime).getTime();
   if(!Number.isFinite(now))return;
+  geminiRetryBlockedUntilByEntity.delete(entityId);
   lastAutonomyDecisionAt.set(entityId,now);
   if(highValue)lastHighValueGeminiDecisionAt.set(entityId,now);
   else lastPeriodicGeminiDecisionAt.set(entityId,now);
@@ -658,12 +673,17 @@ async function actForEntity({simulationId,entityId,simulationTime,gemini,tickId=
     }else{
       const worldLocations=worldLocationsCache||await loadWorldLocations(simulationId);
       const geminiContext=buildGeminiDecisionContext({entity,context,memories});
+      markGeminiDecisionAttempt(entity.id,simulationTime);
       const generated=await gemini.chooseDecision(geminiContext,{simulationId,entityId,simulationTime});
       const requestStatus=gemini.lastRequestStatus&&typeof gemini.lastRequestStatus==="object"
         ?{...gemini.lastRequestStatus}
         :{status:"FALLBACK",source:"DETERMINISTIC_FALLBACK",reason:"UNKNOWN",attempted:true,retryAfterMs:0};
 
       aiChoice=sanitizeGeminiChoice(generated,context,{socialContext,currentLocationId,worldLocations});
+
+      if(requestStatus.attempted&&!aiChoice){
+        markGeminiDecisionAttempt(entity.id,simulationTime,requestStatus.retryAfterMs);
+      }
 
       if(requestStatus.attempted&&aiChoice){
         markGeminiDecisionUsed(entity.id,simulationTime,{
