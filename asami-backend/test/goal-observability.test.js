@@ -41,3 +41,22 @@ test("legacy activityHours elapsed-gap metric is no longer produced",()=>{
   assert.match(source,/failedActionsOnGoal/);
   assert.doesNotMatch(source,/activityHoursSinceLastAction/);
 });
+
+test("goal observability advances its progress clock only from explicit goal progress",()=>{
+  const simulationId="sim-goal-progress-clock";
+  const entityId="entity-goal-progress-clock";
+  const goalId="goal-goal-progress-clock";
+  observability.recordGoalProgress(simulationId,entityId,"2026-01-02T00:00:00Z",{
+    goalId,progress:0.1,status:"ACTIVE",actionType:"WORKING"
+  });
+  const progressed=observability.recordGoalActionOutcome(simulationId,entityId,"2026-01-02T01:00:00Z",{
+    goalId,actionId:"action-progressed",actionType:"WORKING",outcome:"SUCCESS",durationMinutes:30,progress:0.4
+  });
+  assert.equal(progressed.progress,0.4);
+  assert.equal(progressed.timeSinceLastProgress,0);
+  const stagnant=observability.recordGoalActionOutcome(simulationId,entityId,"2026-01-02T03:00:00Z",{
+    goalId,actionId:"action-no-progress",actionType:"DRINKING",outcome:"SUCCESS",durationMinutes:10
+  });
+  assert.equal(stagnant.progress,0.4);
+  assert.equal(stagnant.timeSinceLastProgress,2);
+});
