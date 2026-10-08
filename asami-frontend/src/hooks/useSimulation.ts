@@ -126,6 +126,8 @@ export function useSimulation() {
   const worldRef = useRef<WorldSnapshot | null>(null)
   const latestDashboardSimulationAt = useRef(0)
   const latestRealtimeSequence = useRef(0)
+  const latestRealtimeSimulationVersion = useRef(0)
+  const latestRealtimeWorldStateAt = useRef(new Map<string, number>())
 
   const simulation = useMemo(() => simulations.find((s) => s.id === simulationId) || null, [simulations, simulationId])
 
@@ -134,6 +136,8 @@ export function useSimulation() {
   const setSimulationId = useCallback((id: string) => {
     latestDashboardSimulationAt.current = 0
     latestRealtimeSequence.current = 0
+    latestRealtimeSimulationVersion.current = 0
+    latestRealtimeWorldStateAt.current.clear()
     setSimulationIdState(id)
     localStorage.setItem(ACTIVE_SIM_KEY, id)
     setDashboard(null); setTimeline([]); setEvents([]); setMemories([]); setDevelopment({ current: null, history: [] }); setWorld(null); setWorldActivities([]); setSociety(null); setMessages([]); setConversationId(''); setConversationState(null)
@@ -186,6 +190,7 @@ export function useSimulation() {
         api.timeline(simulationId, entity.id, 200), api.events(simulationId, 100), api.memories(simulationId, entity.id, 100), api.development(simulationId, entity.id),
       ])
       setTimeline(nextTimeline); setEvents(nextEvents); setMemories(nextMemories); setDevelopment(nextDevelopment)
+      return { simulation: sim, world: nextWorld || worldRef.current }
     } catch (e) { setError(e instanceof Error ? e.message : 'Errore durante il caricamento della simulazione.') }
     finally { setLoading(false); setRefreshing(false) }
   }, [simulationId, refreshWorldOnly])
@@ -297,14 +302,20 @@ export function useSimulation() {
     }
 
     const applyWorldActor = (payload: Record<string, unknown>, occurredAt: string) => {
+      const entityId = String(payload.entityId || '')
+      const state = payload.worldState && typeof payload.worldState === 'object' ? payload.worldState as Record<string, unknown> : payload
+      const atIso = String(payload.simulationAt || state.simulationAt || occurredAt)
+      const atMs = new Date(atIso).getTime()
+      const lastStateAt = latestRealtimeWorldStateAt.current.get(entityId) || 0
+      if (Number.isFinite(atMs) && lastStateAt > 0 && atMs < lastStateAt) return
+
       setWorld((prev) => {
         if (!prev) return prev
-        const entityId = String(payload.entityId || '')
         const index = prev.actors.findIndex((actor) => actor.id === entityId)
         if (index < 0) return prev
         const actor = prev.actors[index]
-        const state = payload.worldState && typeof payload.worldState === 'object' ? payload.worldState as Record<string, unknown> : payload
-        const atIso = String(payload.simulationAt || state.simulationAt || occurredAt)
+        const stateAtSnapshot = new Date(prev.simulationAt).getTime()
+        if (Number.isFinite(atMs) && Number.isFinite(stateAtSnapshot) && atMs < stateAtSnapshot) return prev
         const hasLocationKey = Object.prototype.hasOwnProperty.call(state, 'locationId')
         const hasMovingKey = Object.prototype.hasOwnProperty.call(state, 'moving')
         const hasMovementKey = Object.prototype.hasOwnProperty.call(state, 'movement')
@@ -330,12 +341,13 @@ export function useSimulation() {
             longitude = location.longitude
           }
         }
+        if (Number.isFinite(atMs)) latestRealtimeWorldStateAt.current.set(entityId, Math.max(lastStateAt, atMs))
         const nextActor = { ...actor, locationId, moving, movement, action, latitude, longitude }
         const actors = prev.actors.slice()
         actors[index] = nextActor
         return {
           ...prev,
-          simulationAt: atIso,
+          simulationAt: Number.isFinite(atMs) && (!Number.isFinite(stateAtSnapshot) || atMs >= stateAtSnapshot) ? atIso : prev.simulationAt,
           isLive: true,
           actors
         }
@@ -348,6 +360,8 @@ export function useSimulation() {
       if (!Number.isFinite(simulationMs)) return
       setWorld((prev) => {
         if (!prev) return prev
+        const currentMs = new Date(prev.simulationAt).getTime()
+        if (Number.isFinite(currentMs) && simulationMs < currentMs) return prev
         const recentEvents = prev.recentEvents.map((event) => {
           if (!event.environmental || !event.locationId || !['RAIN', 'STORM'].includes(String(event.eventCode || '').toUpperCase())) return event
           const expiresAt = event.metadata?.weatherExpiresAt ? new Date(String(event.metadata.weatherExpiresAt)).getTime() : Number.NaN
@@ -394,17 +408,39 @@ export function useSimulation() {
       if (disposed) return
       const ws = new WebSocket(url)
       wsRef.current = ws
+      let realtimeReady = false
       ws.onopen = () => {
-        latestRealtimeSequence.current = 0
+        realtimeReady = false
         setWsConnected(true)
         retry = 0
-        void refresh(true)
+        void refresh(true).then((synced) => {
+          if (wsRef.current !== ws || ws.readyState !== WebSocket.OPEN) return
+          latestRealtimeSequence.current = 0
+          latestRealtimeSimulationVersion.current = Number(synced?.simulation?.version || 0)
+          latestRealtimeWorldStateAt.current.clear()
+          const syncedWorld = synced?.world || worldRef.current
+          if (syncedWorld?.simulationAt) {
+            const syncedAt = new Date(syncedWorld.simulationAt).getTime()
+            if (Number.isFinite(syncedAt)) {
+              for (const actor of syncedWorld.actors) latestRealtimeWorldStateAt.current.set(actor.id, syncedAt)
+            }
+          }
+          realtimeReady = true
+        }).catch(() => {
+          if (wsRef.current === ws && ws.readyState === WebSocket.OPEN) realtimeReady = true
+        })
       }
       ws.onmessage = (event) => {
         try {
+          if (!realtimeReady) return
           const msg = JSON.parse(event.data) as WsMessage
           const p = msg.payload || {}
-          const sequence = Number(msg.sequence)
+          const sequence = Number(msg.eventSequence ?? msg.sequence)
+          const simulationVersion = Number(msg.simulationVersion ?? p.simulationVersion)
+          if (Number.isFinite(simulationVersion)) {
+            if (latestRealtimeSimulationVersion.current > 0 && simulationVersion < latestRealtimeSimulationVersion.current) return
+            latestRealtimeSimulationVersion.current = Math.max(latestRealtimeSimulationVersion.current, simulationVersion)
+          }
           if (Number.isFinite(sequence)) {
             if (sequence <= latestRealtimeSequence.current) return
             latestRealtimeSequence.current = sequence
