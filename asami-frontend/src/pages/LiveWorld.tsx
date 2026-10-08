@@ -175,10 +175,12 @@ export function LiveWorld({
     ? new Set([latestActivity.entityId || '', latestActivity.targetEntityId || ''].filter(Boolean))
     : new Set<string>()
 
-  const currentNeeds = dashboard && mode === 'live' ? [...dashboard.needs].sort((a, b) => Number(a.value) - Number(b.value)).slice(0, 4) : []
+  const currentNeeds = dashboard && mode === 'live'
+    ? [...dashboard.needs].sort((a, b) => needPressure(b.code, b.value) - needPressure(a.code, a.value)).slice(0, 4)
+    : []
   const currentEmotions = dashboard && mode === 'live' ? dashboard.emotions.slice(0, 4) : []
-  const hour = displayWorld ? new Date(displayWorld.simulationAt).getUTCHours() : 12
-  const phase = hour < 6 || hour >= 21 ? 'night' : hour < 9 ? 'morning' : hour < 18 ? 'day' : 'evening'
+  const hour = displayWorld?.localHour ?? 12
+  const phase = displayWorld?.phase ?? 'day'
   const weather = selectedLocation?.environment?.weather || 'CLEAR'
 
   const enterReplay = (at?: string) => {

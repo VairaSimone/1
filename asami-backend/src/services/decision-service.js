@@ -1,4 +1,5 @@
 const {pool,withTransaction}=require("../db/pool");
+const {resolvePreferredSleepLocation}=require("./sleep-location-service");
 const {uuid}=require("../lib/ids");
 const {ACTIONS,scoreAction,RESOURCE_REQUIREMENTS,needPriorityState,CRITICAL_NEED_ACTIONS,activityDiversityBonus}=require("./decision-rules");
 const {getCognitiveProfile,getCognitiveProfiles,cognitiveDecisionModifier}=require("./personality-service");
@@ -66,6 +67,31 @@ async function findNearestFoodMarket(simulationId,originId,worldLocations=[]){
 }
 function travelMinutesForRoute(route){return route&&Number.isFinite(Number(route.distanceMeters))?travelMinutes(route.distanceMeters):null;}
 function applyResourceRoutingBias(candidates,resourceContext,needs){const next=candidates.map(c=>({...c})),indexByAction=new Map(next.map((c,i)=>[normalizeAction(c.action),i]));for(const[action,requirement]of Object.entries(RESOURCE_REQUIREMENTS)){const status=resourceContext.actions?.[action];if(!status||status.localAvailable>=requirement.amount)continue;let nearest=status.nearestLocation,routeReason="RESOURCE_UNAVAILABLE_LOCALLY";if(requirement.resource==="food"&&!nearest&&resourceContext.marketFoodLocation){nearest=resourceContext.marketFoodLocation;routeReason="FOOD_UNAVAILABLE_LOCALLY_MARKET_AVAILABLE";}const walkingIndex=indexByAction.get(resourceTargetAction(requirement.resource));if(!nearest||walkingIndex===undefined)continue;const pressureCode=action==="DRINKING"?"THIRST":"HUNGER",pressure=Number(needs.find(n=>n.code===pressureCode)?.value||0),urgency=Math.min(1.4,RESOURCE_TRAVEL_BONUS+pressure*.6),travelPenalty=Math.min(.45,Number(nearest.travelMinutes||0)/60*.45);next[walkingIndex].score=Number(next[walkingIndex].score||0)+urgency-travelPenalty;next[walkingIndex].targetLocationId=nearest.locationId;next[walkingIndex].resourceIntent={resource:requirement.resource,reason:routeReason,expectedTravelMinutes:nearest.travelMinutes,destinationLocationId:nearest.locationId};}return next.sort((a,b)=>Number(b.score||0)-Number(a.score||0));}
+function applySleepLocationPreference(candidates,{worldLocations=[],currentLocationId=null,context={}}={}){
+  if(!Array.isArray(candidates)||!candidates.length||!Array.isArray(worldLocations)||!worldLocations.length)return candidates;
+  if(!candidates.some(candidate=>normalizeAction(candidate.action)==="SLEEPING"))return candidates;
+  const policy=resolvePreferredSleepLocation({locations:worldLocations,originId:currentLocationId,context});
+  if(!policy.targetLocationId)return candidates;
+  const preferredId=String(policy.targetLocationId);
+  return candidates.map(candidate=>{
+    if(normalizeAction(candidate.action)!=="SLEEPING")return candidate;
+    const alreadyPreferred=String(candidate.targetLocationId||"")===preferredId;
+    return {
+      ...candidate,
+      targetLocationId:preferredId,
+      sleepPolicy:{
+        category:policy.category,
+        rank:policy.rank,
+        reason:policy.reason,
+        allowUnusual:policy.allowUnusual,
+        fallback:policy.fallback
+      },
+      score:Number(candidate.score||0)+(alreadyPreferred?0:.12),
+      sleepLocationPreferred:!policy.allowUnusual,
+      sleepLocationFallback:Boolean(policy.fallback)
+    };
+  });
+}
 function applyPlanBias(candidates,plans){if(!Array.isArray(candidates)||!Array.isArray(plans))return candidates;const actions=new Set();for(const plan of plans){const step=(plan.steps||[]).find(s=>s.status==="ACTIVE"||s.status==="PENDING"),action=normalizeAction(step?.actionType||step?.result?.actionType);if(action)actions.add(action);}if(!actions.size)return candidates;return candidates.map(c=>actions.has(normalizeAction(c.action))?{...c,score:Number(c.score||0)+.65}:c).sort((a,b)=>Number(b.score||0)-Number(a.score||0));}
 function actionFrequencyPenalty(action,recentActions){const recent=recentActions.map(normalizeAction),target=normalizeAction(action),count=recent.filter(x=>x===target).length;let penalty=Math.min(.72,count*.22);if(recent[0]===target)penalty+=.72;if(recent[1]===target)penalty+=.36;if(recent[2]===target)penalty+=.24;if(recent.length>=3&&recent[0]===target&&recent[2]===target)penalty+=.55;if(recent.length>=4&&recent[0]===target&&recent[3]===target)penalty+=.35;return Math.min(1.85,penalty);}
 function applyRecentActionPenalty(candidates,recentActions=[]){if(!Array.isArray(candidates)||!recentActions.length)return candidates;return candidates.map(c=>({...c,score:Math.max(0,Number(c.score||0)-actionFrequencyPenalty(c.action,recentActions))})).sort((a,b)=>Number(b.score||0)-Number(a.score||0));}
@@ -410,9 +436,9 @@ async function buildDecisionContexts(simulationId,entityIds=[],simulationTime=nu
       targetLocationId:activity.parameters?.targetLocationId||activity.locationId||null
     }));
     candidates=candidates.map(c=>({...c,score:Number(c.score||0)+cognitiveDecisionModifier(profile,c.action)+Math.max(-MAX_EXPERIENCE_SCORE_EFFECT,Math.min(MAX_EXPERIENCE_SCORE_EFFECT,cognitiveExperienceModifier(profile,c.action,{locationType:currentLocation?.locationType,locationId:currentLocation?.locationId,simulationTime:effectiveSimulationTime})))+activityDiversityBonus(c.action,(actionsByEntity.get(id)||[]).map(row=>row.actionType))}));
-    candidates=applyIndividualityBias(candidates,id);candidates=applyPlanBias(candidates,profile.plans);candidates=applyRecentActionPenalty(candidates,(actionsByEntity.get(id)||[]).map(row=>row.actionType));candidates=applyLocationBias(candidates,currentLocation);candidates=applyResourceRoutingBias(candidates,resourceContext,needsList);candidates=applyRecoveryBlocks(candidates,recoveryBlocks,criticalProtectedActions(needsList,resourceContext,{entityId:id,recentActions:actionsByEntity.get(id)||[],simulationTime:effectiveSimulationTime}));candidates=applyWanderingGuard(candidates,needsList);
+    candidates=applyIndividualityBias(candidates,id);candidates=applyPlanBias(candidates,profile.plans);candidates=applyRecentActionPenalty(candidates,(actionsByEntity.get(id)||[]).map(row=>row.actionType));candidates=applyLocationBias(candidates,currentLocation);candidates=applyResourceRoutingBias(candidates,resourceContext,needsList);candidates=applySleepLocationPreference(candidates,{worldLocations,currentLocationId:currentLocation?.locationId||null,context:{goals:goalsByEntity.get(id)||[],activeGoal:(goalsByEntity.get(id)||[]).find(goal=>String(goal.status||'').toUpperCase()==='ACTIVE')||null}});candidates=applyRecoveryBlocks(candidates,recoveryBlocks,criticalProtectedActions(needsList,resourceContext,{entityId:id,recentActions:actionsByEntity.get(id)||[],simulationTime:effectiveSimulationTime}));candidates=applyWanderingGuard(candidates,needsList);
     candidates.sort((a,b)=>Number(b.score||0)-Number(a.score||0));
-    contexts.set(id,{entityId:id,simulationTime:effectiveSimulationTime,needs:needsList,traits:traitsByEntity.get(id)||[],goals:goalsByEntity.get(id)||[],location:currentLocation,recentActions:actionsByEntity.get(id)||[],recentInterruptions:interruptionsByEntity.get(id)||[],recentSocialTargets,recentSocialTargetCounts,recoveryBlocks,resourceContext,dynamicActivities,activityTypes:availableActivities,cognitiveProfile:profile,needPriority:needPriorityState(needsList),allowedActionTypes:availableActivities.map(activity=>activity.code),candidates});
+    contexts.set(id,{entityId:id,simulationTime:effectiveSimulationTime,needs:needsList,traits:traitsByEntity.get(id)||[],goals:goalsByEntity.get(id)||[],location:currentLocation,worldLocations,recentActions:actionsByEntity.get(id)||[],recentInterruptions:interruptionsByEntity.get(id)||[],recentSocialTargets,recentSocialTargetCounts,recoveryBlocks,resourceContext,dynamicActivities,activityTypes:availableActivities,cognitiveProfile:profile,needPriority:needPriorityState(needsList),allowedActionTypes:availableActivities.map(activity=>activity.code),candidates});
   }
   return contexts;
 }
@@ -428,7 +454,7 @@ function rebuildDecisionCandidates(context={},entityId,needs=context?.needs||[])
   const availableActivities=context.activityTypes||[...ACTIONS.map(code=>({code})),...(context.dynamicActivities||[])];
   let candidates=availableActivities.map(activity=>({action:activity.code,score:ACTIONS.includes(activity.code)?scoreAction(activity.code,needs,traits,resourceContext):scoreDynamicActivity(activity,needs,traits),dynamic:!ACTIONS.includes(activity.code),activityDefinition:activity,targetLocationId:activity.parameters?.targetLocationId||activity.locationId||null}));
   candidates=candidates.map(c=>({...c,score:Number(c.score||0)+cognitiveDecisionModifier(profile,c.action)+Math.max(-MAX_EXPERIENCE_SCORE_EFFECT,Math.min(MAX_EXPERIENCE_SCORE_EFFECT,cognitiveExperienceModifier(profile,c.action,{locationType:context.location?.locationType,locationId:context.location?.locationId,simulationTime:context.simulationTime})))+activityDiversityBonus(c.action,recentActions)}));
-  candidates=applyIndividualityBias(candidates,entityId);candidates=applyPlanBias(candidates,profile.plans);candidates=applyRecentActionPenalty(candidates,recentActions);candidates=applyLocationBias(candidates,context.location);candidates=applyResourceRoutingBias(candidates,resourceContext,needs);
+  candidates=applyIndividualityBias(candidates,entityId);candidates=applyPlanBias(candidates,profile.plans);candidates=applyRecentActionPenalty(candidates,recentActions);candidates=applyLocationBias(candidates,context.location);candidates=applyResourceRoutingBias(candidates,resourceContext,needs);candidates=applySleepLocationPreference(candidates,{worldLocations:context.worldLocations||[],currentLocationId:context.location?.locationId||null,context});
   const recoveryBlocks=Array.isArray(context.recoveryBlocks)?context.recoveryBlocks:activeRecoveryBlocks(context.recentInterruptions||[],needs);
   candidates.sort((a,b)=>Number(b.score||0)-Number(a.score||0));
   return applyRecoveryBlocks(candidates,recoveryBlocks,criticalProtectedActions(needs,resourceContext,{entityId,recentActions,simulationTime:context.simulationTime||null}));
@@ -1165,12 +1191,22 @@ async function makeDecision({
       : aiChoice
         ? (aiBlockedByCritical ? "AI_OVERRIDDEN_CRITICAL_NEED" : "AI_OVERRIDDEN_DETERMINISTIC")
         : "NO_AI_PROPOSAL";
-  const selectedTargetLocationId =
+  let selectedTargetLocationId =
     validAiAction &&
     !aiBlockedByCritical &&
     selectionMode === "AI_DELIBERATION"
       ? aiChoice?.targetLocationId || chosenCandidate.targetLocationId || null
       : chosenCandidate.targetLocationId || null;
+  if(chosen==="SLEEPING"){
+    const sleepPolicy=resolvePreferredSleepLocation({
+      locations:context?.worldLocations||[],
+      originId:context?.location?.locationId||null,
+      context
+    });
+    if(sleepPolicy.targetLocationId&&!sleepPolicy.allowUnusual){
+      selectedTargetLocationId=sleepPolicy.targetLocationId;
+    }
+  }
   validateCriticalDecision(context?.needs || [], chosen, selectedTargetLocationId, criticalResourceRecovery,{entityId:context?.entityId||null,recentActions:context?.recentActions||[],simulationTime:context?.simulationTime||null});
   const needPriority = needPriorityState(context?.needs || []);
   const mysqlSimulationTime = effectiveSimulationTimeString(simulationTime);
@@ -1482,4 +1518,4 @@ async function markDecisionActionOutcome({decisionId,simulationId,entityId,actio
 }
 
 function effectiveSimulationTimeString(value){const date=value instanceof Date?value:new Date(value);if(!Number.isFinite(date.getTime()))throw Object.assign(new Error("Invalid simulation time"),{code:"INVALID_SIMULATION_TIME"});const pad=n=>String(n).padStart(2,"0"),ms=String(date.getUTCMilliseconds()).padStart(3,"0");return `${date.getUTCFullYear()}-${pad(date.getUTCMonth()+1)}-${pad(date.getUTCDate())} ${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}:${pad(date.getUTCSeconds())}.${ms}`;}
-module.exports={shouldArchiveFullDecisionContext,ACTIONS,RESOURCE_REQUIREMENTS,scoreAction,buildDecisionContext,buildDecisionContexts,markDecisionActionCreated,markDecisionActionOutcome,rebuildDecisionCandidates,makeDecision,applyLocationBias,LOCATION_ACTION_BIAS,loadResourceContext,findNearestResourceLocation,shortestRoute,deriveProactivity,applyProactiveOpportunityBias,applyPlanCommitment,applyExplorationCommitment,applyRecoveryBlocks,criticalProtectedActions,recoveryBlockForInterruption,activeRecoveryBlocks,criticalNeedState,criticalNeedAction,criticalResourceNeedState,resolveCriticalResourceRecovery,resolveCriticalDecisionRequirement,validateCriticalDecision,applyRecentActionPenalty,individualityBias,chooseStochasticCandidate,resolvePlanCommitment,chooseSocialTargetCandidate,applySocialFeasibility,applySocialIsolationFallback,applyWanderingGuard,compactDecisionContext,needPriorityState,calibratedSuccessProbability,calibrateDecisionOutcome,criticalNeedSatisfactionAction,criticalNeedTemporalSignal};
+module.exports={shouldArchiveFullDecisionContext,ACTIONS,RESOURCE_REQUIREMENTS,scoreAction,buildDecisionContext,buildDecisionContexts,markDecisionActionCreated,markDecisionActionOutcome,rebuildDecisionCandidates,makeDecision,applyLocationBias,LOCATION_ACTION_BIAS,loadResourceContext,findNearestResourceLocation,shortestRoute,deriveProactivity,applyProactiveOpportunityBias,applyPlanCommitment,applyExplorationCommitment,applySleepLocationPreference,applyRecoveryBlocks,criticalProtectedActions,recoveryBlockForInterruption,activeRecoveryBlocks,criticalNeedState,criticalNeedAction,criticalResourceNeedState,resolveCriticalResourceRecovery,resolveCriticalDecisionRequirement,validateCriticalDecision,applyRecentActionPenalty,individualityBias,chooseStochasticCandidate,resolvePlanCommitment,chooseSocialTargetCandidate,applySocialFeasibility,applySocialIsolationFallback,applyWanderingGuard,compactDecisionContext,needPriorityState,calibratedSuccessProbability,calibrateDecisionOutcome,criticalNeedSatisfactionAction,criticalNeedTemporalSignal};

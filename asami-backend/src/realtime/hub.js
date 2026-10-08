@@ -21,6 +21,7 @@ class RealtimeHub {
   constructor() {
     this.clients = new Set();
     this.sequenceBySimulation = new Map();
+    this.simulationVersionBySimulation = new Map();
   }
   attach(ws, simulationId) {
     const client = { ws, simulationId };
@@ -51,13 +52,28 @@ class RealtimeHub {
     };
   }
 
+  setSimulationVersion(simulationId, version) {
+    const numeric = Number(version);
+    if (!Number.isFinite(numeric)) return;
+    this.simulationVersionBySimulation.set(simulationId, numeric);
+  }
+
+  getSequence(simulationId) {
+    return Number(this.sequenceBySimulation.get(simulationId) || 0);
+  }
+
   publish(simulationId, type, payload) {
     const sequence=(this.sequenceBySimulation.get(simulationId)||0)+1;
     this.sequenceBySimulation.set(simulationId,sequence);
+    const payloadVersion = payload && typeof payload === "object" ? Number(payload.simulationVersion) : Number.NaN;
+    if (Number.isFinite(payloadVersion)) this.setSimulationVersion(simulationId,payloadVersion);
+    const simulationVersion=this.simulationVersionBySimulation.get(simulationId) ?? null;
     const message = JSON.stringify({
       type,
       simulationId,
       sequence,
+      eventSequence:sequence,
+      simulationVersion,
       occurredAt: new Date().toISOString(),
       payload
     });

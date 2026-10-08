@@ -87,8 +87,12 @@ export interface WorldEvent {
   environmental: boolean
   metadata: Record<string, unknown>
 }
+export type WorldPhase = 'night' | 'morning' | 'day' | 'evening'
 export interface WorldSnapshot {
   simulationAt: string
+  phase: WorldPhase
+  localHour: number
+  timeZone: string
   requestedAt: string | null
   isLive: boolean
   simulation: {
@@ -100,6 +104,10 @@ export interface WorldSnapshot {
   locations: WorldLocation[]
   actors: WorldActor[]
   recentEvents: WorldEvent[]
+  realtime?: {
+    eventSequence: number
+    simulationVersion: number | null
+  }
   meta: {
     locationCount: number
     actorCount: number
@@ -165,7 +173,15 @@ export interface ConversationState {
   }
   metadata: Record<string, unknown>
 }
-export interface WsMessage { type: string; simulationId: string; sequence?: number; occurredAt: string; payload: Record<string, unknown> }
+export interface WsMessage {
+  type: string
+  simulationId: string
+  sequence?: number
+  eventSequence?: number
+  simulationVersion?: number | null
+  occurredAt: string
+  payload: Record<string, unknown>
+}
 
 export interface MindValue { id: string; code: string; label: string; importance: number; confidence: number; origin: string; salience: number; updatedAt: string }
 export interface SelfBelief { id: string; beliefKey: string; statement: string; confidence: number; importance: number; sourceType: string; status: string; updatedAt: string }
