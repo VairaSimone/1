@@ -183,7 +183,7 @@ test("Autonomy uses a slower periodic review and a separate high-value cooldown"
 
 test("Repeated identical Gemini triggers are deduplicated per entity",()=>{
   assert.match(autonomySource,/lastGeminiTriggerKeyByEntity/);
-  assert.match(autonomySource,/triggerKey===lastGeminiTriggerKeyByEntity\.get/);
+  assert.match(autonomySource,/lastGeminiTriggerKeyByEntity\.get\(entityId\)===triggerKey/);
   assert.match(autonomySource,/key:"PERIODIC:/);
 });
 
