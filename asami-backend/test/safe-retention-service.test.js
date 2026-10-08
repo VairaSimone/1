@@ -472,3 +472,19 @@ test("retention decision-option debt uses the parent decision timestamp because 
   assert.ok(block.includes("SELECT d.simulation_time FROM decision_options dopt JOIN decisions d ON d.id=dopt.decision_id"));
   assert.ok(!block.includes("SELECT dopt.created_simulation_at FROM decision_options dopt"));
 });
+
+test("retention preserves and reuses database catch-up level",()=>{
+  const base=retention.getAdaptiveRetentionProfile(0,0);
+  const catchUp=retention.getAdaptiveRetentionProfile(0,3);
+  assert.equal(base.level,0);
+  assert.equal(catchUp.level,3);
+  assert.equal(catchUp.timeBudgetMs,30000);
+  assert.equal(catchUp.simulationIntervalHours,0.25);
+
+  const fs=require("node:fs");
+  const path=require("node:path");
+  const source=fs.readFileSync(path.join(__dirname,"../src/services/safe-retention-service.js"),"utf8");
+  assert.match(source,/previousState\?\.catchUpLevel \|\| 0/);
+  assert.match(source,/catchUpLevel: Number\(retentionTelemetry\.catchUpLevel \|\| 0\)/);
+  assert.match(source,/catchUpActive: Boolean\(retentionTelemetry\.catchUpActive\)/);
+});
