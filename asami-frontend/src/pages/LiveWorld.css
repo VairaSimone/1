@@ -1168,3 +1168,7 @@
 }
 
 .emergent-location-badge{display:inline-block;margin-left:5px;padding:2px 4px;border-radius:999px;background:rgba(111,222,207,.08);border:1px solid rgba(111,222,207,.13);color:#79b9af;font:500 7px "DM Mono",monospace;text-transform:uppercase;letter-spacing:.05em;vertical-align:middle}
+
+
+.replay-history-note { margin-top:7px; color:#68758d; font-size:8px; line-height:1.45; }
+.inspector-state > div > small { color:#68758d; font-size:8px; margin-top:2px; }

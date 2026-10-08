@@ -1,4 +1,5 @@
 const { pool } = require("../db/pool");
+const { env } = require("../config/env");
 const { WEATHER, WEATHER_DURATIONS_HOURS, BASE_BY_TYPE } = require("./environment-service");
 
 const DEFAULT_EVENT_LIMIT = 12;
@@ -23,7 +24,17 @@ function iso(value) {
   return String(value);
 }
 
-function validateAndClampSimulationTime(requestedAt, simulation) {
+function replayWindowDays() {
+  return Math.max(
+    1,
+    Math.min(
+      Number(env.RETENTION_ACTION_DAYS) || 7,
+      Number(env.RETENTION_EVENT_DAYS) || 7
+    )
+  );
+}
+
+function validateAndClampSimulationTime(requestedAt, simulation, minimumReplayMs=null) {
   const start = new Date(simulation.started_simulation_at).getTime();
   const current = new Date(simulation.current_simulation_at).getTime();
   if (!Number.isFinite(start) || !Number.isFinite(current)) {
@@ -36,7 +47,10 @@ function validateAndClampSimulationTime(requestedAt, simulation) {
     throw Object.assign(new Error("Query parameter 'at' must be a valid ISO timestamp"), { code: "INVALID_WORLD_TIME", statusCode: 400 });
   }
 
-  const clamped = Math.max(start, Math.min(current, parsed.getTime()));
+  const replayFloor=Number.isFinite(Number(minimumReplayMs))
+    ?Math.max(start,Math.min(current,Number(minimumReplayMs)))
+    :start;
+  const clamped = Math.max(replayFloor, Math.min(current, parsed.getTime()));
   return new Date(clamped);
 }
 
@@ -96,10 +110,16 @@ async function getWorldSnapshot(simulationId, requestedAt = null) {
   const simulation = simulationRows[0];
   if (!simulation) return null;
 
-  const at = validateAndClampSimulationTime(requestedAt, simulation);
+  const replayDays=replayWindowDays();
+  const simulationStartMs=new Date(simulation.started_simulation_at).getTime();
+  const simulationCurrentMs=new Date(simulation.current_simulation_at).getTime();
+  const replayFloorMs=Math.max(simulationStartMs,simulationCurrentMs-replayDays*86400000);
+  const requestedParsed=requestedAt?new Date(requestedAt).getTime():simulationCurrentMs;
+  const at = validateAndClampSimulationTime(requestedAt, simulation, replayFloorMs);
   const atIso = at.toISOString();
+  const replayClamped=Boolean(requestedAt && Number.isFinite(requestedParsed) && requestedParsed<replayFloorMs);
 
-  const [locationRows, actorRows, actionRows, movementRows, eventRows, weatherRows] = await Promise.all([
+  const [locationRows, actorRows, actionRows, movementRows, eventRows, goalRowsPromise, weatherRows] = await Promise.all([
     pool.query(
       `SELECT BIN_TO_UUID(e.id) AS locationId,
               e.display_name AS name,
@@ -113,9 +133,10 @@ async function getWorldSnapshot(simulationId, requestedAt = null) {
        JOIN locations l ON l.entity_id=e.id AND l.simulation_id=e.simulation_id
        WHERE e.simulation_id=UUID_TO_BIN(?)
          AND e.status='ACTIVE'
+         AND e.created_simulation_at <= ?
          AND l.simulation_id=UUID_TO_BIN(?)
        ORDER BY e.created_simulation_at ASC`,
-      [simulationId, simulationId]
+      [simulationId, atIso, simulationId]
     ),
     pool.query(
       `SELECT BIN_TO_UUID(e.id) AS id,
@@ -141,10 +162,11 @@ async function getWorldSnapshot(simulationId, requestedAt = null) {
          AND et.code='PERSON'
          AND e.status NOT IN ('INACTIVE','DEAD')
          AND e.display_name<>'Observer'
+         AND e.created_simulation_at <= ?
        ORDER BY CASE WHEN LOWER(e.display_name)='asami' THEN 0 ELSE 1 END,
                 e.created_simulation_at
        LIMIT ?`,
-      [atIso, atIso, simulationId, MAX_ACTORS]
+      [atIso, atIso, simulationId, atIso, MAX_ACTORS]
     ),
     pool.query(
       `SELECT BIN_TO_UUID(a.id) AS id,
@@ -200,6 +222,34 @@ async function getWorldSnapshot(simulationId, requestedAt = null) {
       [simulationId, atIso, DEFAULT_EVENT_LIMIT]
     ),
     pool.query(
+      `SELECT BIN_TO_UUID(g.entity_id) AS entityId,
+              BIN_TO_UUID(g.id) AS goalId,
+              g.title AS goalTitle,
+              g.goal_type AS goalType,
+              g.priority,
+              g.progress,
+              g.status,
+              BIN_TO_UUID(p.id) AS planId,
+              ps.title AS stepTitle,
+              ps.result AS stepResult
+       FROM goals g
+       LEFT JOIN plans p
+         ON p.goal_id=g.id
+        AND p.simulation_id=g.simulation_id
+        AND p.entity_id=g.entity_id
+        AND p.status IN ('ACTIVE','PAUSED','BLOCKED')
+       LEFT JOIN plan_steps ps
+         ON ps.plan_id=p.id
+        AND ps.status IN ('ACTIVE','PENDING')
+       WHERE g.simulation_id=UUID_TO_BIN(?)
+         AND g.status IN ('ACTIVE','PAUSED','BLOCKED')
+         AND g.created_simulation_at <= ?
+       ORDER BY g.entity_id,
+                CASE g.status WHEN 'ACTIVE' THEN 0 WHEN 'PAUSED' THEN 1 ELSE 2 END,
+                g.priority DESC,g.created_simulation_at ASC,
+                ps.sequence ASC`,
+      [simulationId,atIso]
+    ),    pool.query(
       `SELECT
           JSON_UNQUOTE(JSON_EXTRACT(e.metadata,'$.locationId')) AS locationId,
           JSON_UNQUOTE(JSON_EXTRACT(e.metadata,'$.eventCode')) AS eventCode,
@@ -231,6 +281,7 @@ async function getWorldSnapshot(simulationId, requestedAt = null) {
 
   const [locations] = locationRows;
   const [actors] = actorRows;
+  const [goalRows] = goalRowsPromise;
   const [weatherEvents] = weatherRows;
   const [actions] = actionRows;
   const [movements] = movementRows;
@@ -341,6 +392,9 @@ async function getWorldSnapshot(simulationId, requestedAt = null) {
     let targetLocationId = null;
     let targetEntityId = null;
     let actionParameters = parseJson(actionRow?.parameters, {});
+    const goalRow = at.getTime() === simulationCurrentMs
+      ? goalRows.find(candidate => String(candidate.entityId) === String(row.id)) || null
+      : null;
     let actionTarget = parseJson(actionRow?.target, null);
     if (!actionTarget && actionRow?.target) actionTarget = actionRow.target;
     targetLocationId = actionParameters.targetLocationId || actionTarget?.locationId || null;
@@ -358,6 +412,17 @@ async function getWorldSnapshot(simulationId, requestedAt = null) {
       longitude: position.x,
       moving: position.moving,
       movement: position.movement,
+      goal: goalRow ? {
+        goalId: goalRow.goalId,
+        title: goalRow.goalTitle,
+        goalType: goalRow.goalType,
+        priority: Number(goalRow.priority || 0),
+        progress: Number(goalRow.progress || 0),
+        status: goalRow.status,
+        planId: goalRow.planId || null,
+        stepTitle: goalRow.stepTitle || null,
+        stepActionType: parseJson(goalRow.stepResult, {})?.actionType || null
+      } : null,
       action: actionRow ? {
         id: actionRow.id,
         actionType: actionRow.actionType,
@@ -404,9 +469,13 @@ async function getWorldSnapshot(simulationId, requestedAt = null) {
     meta: {
       locationCount: locationsById.size,
       actorCount: actorPayload.length,
-      eventCount: recentEvents.length
+      eventCount: recentEvents.length,
+      replayWindowDays: replayDays,
+      replayWindowStart: new Date(replayFloorMs).toISOString(),
+      replayClamped,
+      reconstructionWindow: "ACTION_EVENT_RETENTION"
     }
   };
 }
 
-module.exports = { getWorldSnapshot };
+module.exports = { getWorldSnapshot, replayWindowDays };

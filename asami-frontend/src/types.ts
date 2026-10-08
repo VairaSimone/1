@@ -47,6 +47,17 @@ export interface WorldAction {
   targetLocationId: string | null
   targetEntityId: string | null
 }
+export interface WorldGoal {
+  goalId: string
+  title: string
+  goalType: string
+  priority: number
+  progress: number
+  status: string
+  planId: string | null
+  stepTitle: string | null
+  stepActionType: string | null
+}
 export interface WorldActor {
   id: string
   displayName: string
@@ -59,6 +70,7 @@ export interface WorldActor {
   longitude: number | null
   moving: boolean
   movement: WorldMovement | null
+  goal: WorldGoal | null
   action: WorldAction | null
 }
 export interface WorldEvent {
@@ -88,7 +100,15 @@ export interface WorldSnapshot {
   locations: WorldLocation[]
   actors: WorldActor[]
   recentEvents: WorldEvent[]
-  meta: { locationCount: number; actorCount: number; eventCount: number }
+  meta: {
+    locationCount: number
+    actorCount: number
+    eventCount: number
+    replayWindowDays: number
+    replayWindowStart: string
+    replayClamped: boolean
+    reconstructionWindow: string
+  }
 }
 export interface WorldActivity {
   id: string
@@ -182,6 +202,43 @@ export interface MindData {
 
 export type AnalysisRangePreset = '1h' | '6h' | '24h' | '7d' | 'all' | 'custom'
 export interface AnalysisPattern { id: string; severity: 'INFO' | 'WARNING' | 'CRITICAL'; title: string; detail: string; count: number; evidence?: Record<string, unknown> | null }
+export type SystemHealthStatus = 'OK' | 'WARNING' | 'CRITICAL' | 'UNAVAILABLE' | 'NO_DATA'
+export interface SystemHealth {
+  overallStatus: SystemHealthStatus
+  observedAt: string
+  retention: {
+    status: SystemHealthStatus
+    backlog: number
+    debtAgeHours: number
+    producedRowsPerSimDay: number
+    deletedRowsPerSimDay: number
+    catchUpActive: boolean
+    catchUpLevel: number
+    adaptiveLevel: number
+  }
+  ai: {
+    status: SystemHealthStatus
+    totalDecisions: number
+    aiCoveragePercent: number
+    fallbackCoveragePercent: number
+    unavailableCoveragePercent: number
+    deterministicCoveragePercent: number
+    degradedModeHours: number
+  }
+  cognition: {
+    status: SystemHealthStatus
+    missingExpectation: number
+    missingWorlds: number
+    openExpectationViolations: number
+    openWorldViolations: number
+    artifactRetentionDays: number
+    retentionExemptTerminalDecisions: number
+  }
+  integrity: {
+    status: SystemHealthStatus
+    temporalViolations: number
+  }
+}
 export interface AnalysisData {
   range: { from: string; to: string }
   kpis: { ticks: { total: number; completed: number; failed: number; skipped: number; completionRate: number }; actions: { total: number; completed: number; failed: number; successRate: number; avgDurationSeconds: number | null; suspiciousDuration: number }; events: { total: number; important: number; avgImportance: number; maxImportance: number }; decisions: { total: number; failed: number }; memories: { total: number; failures: number }; integrity: { temporal: number } }
@@ -190,6 +247,7 @@ export interface AnalysisData {
   anomalies: AnalysisPattern[]
   patterns: AnalysisPattern[]
   breakdowns: { actions: { label: string; value: number }[]; events: { label: string; value: number }[]; decisions: { label: string; value: number }[] }
+  systemHealth: SystemHealth
 }
 
 

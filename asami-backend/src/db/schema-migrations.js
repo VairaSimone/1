@@ -358,6 +358,41 @@ async function ensureDecisionActionAuditMigration(db=pool){
        AND JSON_UNQUOTE(JSON_EXTRACT(actual_outcome,'$.actionId')) IS NOT NULL`
   );
 
+  // Action rows are intentionally shorter-lived than decisions. Existing
+  // orphaned pointers must therefore be converted into compact decision-local
+  // audit data and then cleared; a stale physical pointer is not a valid audit.
+  await db.query(
+    `UPDATE decisions d
+     LEFT JOIN actions a
+       ON a.id=d.action_id AND a.simulation_id=d.simulation_id
+     SET
+       d.actual_outcome=JSON_SET(
+         COALESCE(d.actual_outcome,JSON_OBJECT()),
+         '$.actionSummary',
+         COALESCE(
+           JSON_EXTRACT(d.actual_outcome,'$.actionSummary'),
+           JSON_OBJECT(
+             'schemaVersion',1,
+             'actionId',BIN_TO_UUID(d.action_id),
+             'decisionId',BIN_TO_UUID(d.id),
+             'actionType',COALESCE(
+               JSON_UNQUOTE(JSON_EXTRACT(d.actual_outcome,'$.actionType')),
+               'UNKNOWN'
+             ),
+             'status',CASE
+               WHEN d.status='FAILED' THEN 'FAILED'
+               WHEN d.status='CANCELLED' THEN 'CANCELLED'
+               ELSE 'COMPLETED'
+             END,
+             'outcome',d.action_outcome
+           )
+         )
+       ),
+       d.action_id=NULL
+     WHERE d.action_id IS NOT NULL
+       AND a.id IS NULL`
+  );
+
   await db.query(
     `UPDATE decisions
      SET action_outcome=UPPER(COALESCE(

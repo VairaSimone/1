@@ -115,8 +115,9 @@ export function LiveWorld({
   const [error, setError] = useState<string | null>(null)
   const [selectedId, setSelectedId] = useState(asamiId)
 
-  const rangeStart = new Date(simulation.startedSimulationAt).getTime()
   const rangeEnd = new Date(simulation.currentSimulationAt).getTime()
+  const replayWindowStart = new Date(world?.meta?.replayWindowStart || simulation.startedSimulationAt).getTime()
+  const rangeStart = Number.isFinite(replayWindowStart) ? Math.min(replayWindowStart, rangeEnd) : new Date(simulation.startedSimulationAt).getTime()
   const replayMax = Math.max(rangeStart + 1, rangeEnd)
 
   useEffect(() => {
@@ -163,7 +164,9 @@ export function LiveWorld({
   const selectedLocation = selected?.locationId ? displayWorld?.locations.find((location) => location.locationId === selected.locationId) || null : null
   const selectedTargetLocation = selected?.action?.targetLocationId
     ? displayWorld?.locations.find((location) => location.locationId === selected.action?.targetLocationId) || null
-    : null
+    : selected?.movement?.destinationLocationId
+      ? displayWorld?.locations.find((location) => location.locationId === selected.movement?.destinationLocationId) || null
+      : null
   const targetActor = selected?.action?.targetEntityId
     ? displayWorld?.actors.find((actor) => actor.id === selected.action?.targetEntityId) || null
     : null
@@ -238,6 +241,7 @@ export function LiveWorld({
         aria-label="Posizione temporale del replay"
       />
       <div className="replay-scale"><span>{formatSimTime(new Date(rangeStart))}</span><span>{formatSimTime(new Date(rangeEnd))}</span></div>
+      {mode === 'replay' && <div className="replay-history-note">Storia ricostruibile: ultimi {displayWorld?.meta.replayWindowDays ?? '—'} giorni. La finestra è limitata dalla retention di azioni ed eventi.</div>}
     </section>
 
     {error && <ErrorState text={error} retry={() => enterReplay()} />}
@@ -347,7 +351,9 @@ export function LiveWorld({
           <div className="inspector-state">
             <div><span>Stato</span><strong>{selected.moving ? 'In movimento' : selected.action ? labelize(selected.action.actionType) : 'Libero'}</strong></div>
             <div><span>Luogo</span><strong>{selectedLocation?.name || '—'}</strong></div>
-            <div><span>Obiettivo immediato</span><strong>{selectedTargetLocation?.name || targetActor?.displayName || '—'}</strong></div>
+            <div><span>Obiettivo</span><strong>{selected.goal?.title || '—'}</strong>{selected.goal && <small>{Math.round(Number(selected.goal.progress || 0) * 100)}% · {labelize(selected.goal.status)}</small>}</div>
+            <div><span>Destinazione</span><strong>{selectedTargetLocation?.name || '—'}</strong></div>
+            <div><span>Bersaglio</span><strong>{targetActor?.displayName || '—'}</strong></div>
           </div>
 
           {selected.movement && <div className="movement-card">
