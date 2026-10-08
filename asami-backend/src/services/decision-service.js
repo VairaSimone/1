@@ -727,6 +727,7 @@ function compactDecisionContext(context = {}) {
           motivation: (()=>{const parsed=parseJson(goal?.motivation,{});const value=Number(parsed?.pressure);return Number.isFinite(value)?Number(value.toFixed(4)):compactNumber(goal?.motivation)})()
         }))
       : [],
+    isAsami: context.isAsami === true,
     location: context.location ? {
       locationId: context.location.locationId || null,
       locationType: context.location.locationType || null
