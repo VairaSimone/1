@@ -20,7 +20,15 @@ function locationObjects(location){
   const value=location?.objects??location?.data?.objects;
   return Array.isArray(value)?value.map(normalize):[];
 }
-function sleepLocationRank(location){
+function sleepLocationRank(location,context={}){
+  // The current world model has one named HOME ("Asami's Home") and no
+  // per-person home relation. HOME therefore outranks everything only for
+  // Asami; other residents must not be redirected to her home.
+  if(context?.isAsami!==true){
+    const type=normalize(location?.locationType);
+    const code=locationCode(location);
+    if(type==="HOME"||code==="HOME")return 3;
+  }
   const type=normalize(location?.locationType);
   const code=locationCode(location);
   if(type==="HOME"||code==="HOME")return 0;
@@ -74,7 +82,7 @@ function resolvePreferredSleepLocation({
     .filter(location=>location?.locationId)
     .map(location=>({
       ...location,
-      sleepRank:sleepLocationRank(location),
+      sleepRank:sleepLocationRank(location,context),
       graphDistance:reachableDistance(locations,originId,location.locationId)
     }))
     .filter(location=>location.graphDistance!==null);
