@@ -235,8 +235,8 @@ test('event write lock helper is exported for retention and world writers',()=>{
 
 test('symmetric relationship lookup qualifies id after joining relationship types',()=>{
   const source=read('services/relationship-service.js');
-  const start=source.indexOf('if(!rows.length && Number(type.symmetric))');
-  const end=source.indexOf('\n  if(!rows.length){',start);
+  const start=source.indexOf('if(!rows.length&&Number(type.symmetric))');
+  const end=source.indexOf('\n    if(!rows.length){',start);
   const section=source.slice(start,end);
   assert.match(section,/SELECT BIN_TO_UUID\(r\.id\) AS id,r\.version/);
   assert.doesNotMatch(section,/SELECT BIN_TO_UUID\(id\) AS id,version/);
