@@ -109,9 +109,19 @@ function buildRouter({hub,gemini}){
 
   router.get("/simulations/:simulationId/world",async(req,res)=>{
     const simulationId=uuid.parse(req.params.simulationId);
+    // Capture the realtime sequence before reconstructing the snapshot. Any
+    // events published after this point have a greater sequence and can be
+    // safely applied after the snapshot arrives on a websocket reconnect.
+    const realtimeSequence=typeof hub?.getSequence==="function" ? hub.getSequence(simulationId) : 0;
     const snapshot=await getWorldSnapshot(simulationId,req.query.at ? String(req.query.at) : null);
     if(!snapshot)return res.status(404).json({error:"Simulation not found"});
-    res.json(snapshot);
+    res.json({
+      ...snapshot,
+      realtime:{
+        eventSequence:Number(realtimeSequence||0),
+        simulationVersion:Number(snapshot.simulation.version||0)
+      }
+    });
   });
   router.get("/simulations/:simulationId/emergence",async(req,res)=>{
     const simulationId=uuid.parse(req.params.simulationId);
