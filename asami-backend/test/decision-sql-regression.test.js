@@ -84,9 +84,10 @@ test("decision action audit is durable after action retention",()=>{
   const decision=fs.readFileSync(path.join(__dirname,"../src/services/decision-service.js"),"utf8");
   const action=fs.readFileSync(path.join(__dirname,"../src/services/action-service.js"),"utf8");
   assert.match(migration,/ensureDecisionActionAuditMigration/);
-  assert.match(migration,/ADD COLUMN action_created TINYINT\(1\)/);
-  assert.match(migration,/ADD COLUMN action_id BINARY\(16\)/);
-  assert.match(migration,/ADD COLUMN action_outcome VARCHAR\(32\)/);
+  assert.match(migration,/\["action_created","TINYINT\(1\) NOT NULL DEFAULT 0 AFTER status"\]/);
+  assert.match(migration,/\["action_id","BINARY\(16\) NULL AFTER action_created"\]/);
+  assert.match(migration,/\["action_outcome","VARCHAR\(32\) NULL AFTER action_id"\]/);
+  assert.match(migration,/ALTER TABLE decisions ADD COLUMN \$\{name\} \$\{definition\}/);
   assert.match(migration,/a\.decision_id=d\.id/);
   assert.match(migration,/JSON_EXTRACT\(actual_outcome,'\$\.actionId'\)/);
   assert.match(decision,/markDecisionActionCreated/);
