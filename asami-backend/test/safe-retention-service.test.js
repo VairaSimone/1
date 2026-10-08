@@ -434,7 +434,7 @@ test("retention debt-age query binds binary simulation ids instead of embedding 
   assert.match(block,/simulation_id=\?/);
 });
 
-test("retention debt-age query keeps SQL placeholders and bound parameters in sync",()=>{
+test("retention debt-age query keeps SQL placeholders and explicit parameters in sync",()=>{
   const fs=require("node:fs");
   const path=require("node:path");
   const source=fs.readFileSync(path.join(__dirname,"../src/services/safe-retention-service.js"),"utf8");
@@ -447,13 +447,11 @@ test("retention debt-age query keeps SQL placeholders and bound parameters in sy
   assert.ok(queryStart>=0 && paramsStart>queryStart && paramsEnd>paramsStart);
   const querySource=block.slice(queryStart,paramsStart);
   const paramsSource=block.slice(paramsStart,paramsEnd);
-  const placeholderCount=(querySource.match(/\\?/g)||[]).length;
-  const parameterCount=(paramsSource.match(/,/g)||[]).length+1;
-  assert.equal(placeholderCount,parameterCount+1);
-  assert.equal(placeholderCount,48);
-  assert.equal(parameterCount,47);
+  assert.equal((querySource.match(/\\?/g)||[]).length,48);
+  assert.equal((paramsSource.match(/simulationIdBinary/g)||[]).length,20);
+  assert.match(paramsSource,/String\(simulationId\),geminiCutoff/);
+  assert.match(block,/simulationIdBinary,decisionCutoff/);
 });
-
 test("retention plan-step debt uses the plan timestamp because plan_steps has no creation timestamp",()=>{
   const fs=require("node:fs");
   const path=require("node:path");
