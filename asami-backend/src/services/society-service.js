@@ -3,6 +3,7 @@ const { uuid } = require("../lib/ids");
 const { createEvent } = require("./event-service");
 const logger = require("../lib/logger");
 const { validateDefinition, registerDefinition, normalizeDefinition } = require("./emergent-definition-service");
+const { affordableWholeUnitQuantity } = require("./economic-behavior");
 
 const SYSTEM_ENTITY_TYPE = "00000000-0000-4000-8000-000000000005";
 
@@ -423,10 +424,10 @@ async function restockMarkets(simulationId,simulationTime){
           WHERE simulation_id=UUID_TO_BIN(?) AND location_id=UUID_TO_BIN(?) AND good_code=? LIMIT 1`,
         [simulationId,market.locationId,good.goodCode]
       );
-      const unitPrice=Number(priceRows[0]?.price||1)*0.72;
-      const quantity=Math.min(4,Number(candidate.stock.quantity||0));
+      const unitPrice=Number((Number(priceRows[0]?.price||1)*0.72).toFixed(4));
+      const quantity=affordableWholeUnitQuantity({stockQuantity:candidate.stock.quantity,marketBalance:marketAccount[0].balance,unitPrice,maxQuantity:4});
       const total=Number((unitPrice*quantity).toFixed(4));
-      if(quantity<=0||Number(marketAccount[0].balance)<total)continue;
+      if(quantity<=0||total>Number(marketAccount[0].balance||0)+1e-8)continue;
 
       const [producerAccount]=await pool.query(
         `SELECT id FROM emergent_economy_accounts
@@ -458,6 +459,7 @@ async function restockMarkets(simulationId,simulationTime){
            SET balance=balance-?,lifetime_spending=lifetime_spending+?,last_updated_simulation_at=?,version=version+1 WHERE id=?`,
         [total,total,simulationTime,marketAccount[0].id]
       );
+      marketAccount[0].balance=Number((Number(marketAccount[0].balance||0)-total).toFixed(4));
       await pool.query(
         `UPDATE emergent_economy_accounts
            SET balance=balance+?,lifetime_income=lifetime_income+?,last_updated_simulation_at=?,version=version+1 WHERE id=?`,

@@ -8,6 +8,7 @@ const {calculateTraitNeedModifiers,calculateHistoryModifier,calculateHabitModifi
 const {loadCapabilitiesForEntities,loadActivityCatalog,scoreDynamicActivity}=require("./world-capability-service");
 const {assertTransition}=require("./state-machine");
 const observability = require("./simulation-observability");
+const { buildDecisionActivities, applyEconomicOpportunityBias, FOOD_PURCHASE_MIN_HUNGER } = require("./economic-behavior");
 const RESOURCE_SEARCH_TTL_MINUTES=180,RESOURCE_TRAVEL_BONUS=.85,WALKING_SPEED_KMH=4.8,ROAD_FACTOR=1.18,MAX_EXPERIENCE_SCORE_EFFECT=.65,MAX_RECENT_ACTIONS=12,MAX_RECENT_INTERRUPTION_HOURS=12,MAX_RECENT_SOCIAL_INTERACTIONS=12,STOCHASTIC_TOP_K=4,BASE_TEMPERATURE=.24,CRITICAL_TIE_WINDOW=.22,CRITICAL_DEBT_HOURS=12,CRITICAL_RECENT_SATISFACTION_HOURS=4;
 const LOCATION_ACTION_BIAS={HOME:{SLEEPING:.50,RESTING:.30,EATING:.18,DRINKING:.12},CAFE:{TALKING:.45,DRINKING:.35,EATING:.20,PLAYING:.08,READING:.05},SHOP:{EATING:.36,DRINKING:.42,EXPLORING:.05,WALKING:.05},LIBRARY:{READING:.45,STUDYING:.50,WORKING:.05,TALKING:-.08},SCHOOL:{STUDYING:.48,READING:.30,TALKING:.06,PLAYING:.03},PARK:{WALKING:.32,PLAYING:.35,TALKING:.25,EXPLORING:.28},SQUARE:{TALKING:.35,WALKING:.20,PLAYING:.18,EXPLORING:.08},COMMUNITY:{TALKING:.35,WORKING:.22,STUDYING:.18,PLAYING:.12},GYM:{PLAYING:.48,WALKING:.20,RESTING:.10},CLINIC:{RESTING:.20,WALKING:.05},NATURE:{EXPLORING:.42,WALKING:.36,PLAYING:.18},WORKSHOP:{WORKING:.46,STUDYING:.14,EXPLORING:.10}};
 function normalizeAction(v){return String(v||"").trim().toUpperCase();}
@@ -377,7 +378,8 @@ async function loadResourceContext(simulationId,entityId,location,simulationTime
     nearestResources,
     emergencyResources,
     resourceEmergency:resourceEmergencyByResource.get("water")||resourceEmergencyByResource.get("food")||null,
-    actions
+    actions,
+    worldLocations: locations
   };
 }
 async function buildDecisionContexts(simulationId,entityIds=[],simulationTime=null,{worldLocations:providedWorldLocations=null}={}){
@@ -411,6 +413,14 @@ async function buildDecisionContexts(simulationId,entityIds=[],simulationTime=nu
   const worldLocations=providedWorldLocations||worldRows[0].map(row=>{const attributes=parseJson(row.attributes,{});return{locationId:row.locationId,locationType:row.locationType,latitude:Number(row.latitude),longitude:Number(row.longitude),data:parseJson(row.addressData,{}),resources:attributes.resources&&typeof attributes.resources==='object'?attributes.resources:{},resourceEmergencies:attributes.resourceEmergencies&&typeof attributes.resourceEmergencies==='object'?attributes.resourceEmergencies:{}};});
   const capabilitiesByEntity=await loadCapabilitiesForEntities(simulationId,ids);
   const globalActivityCatalog=Array.isArray(activityCatalog)?activityCatalog:[];
+  const [personalFoodRows] = await pool.query(
+    `SELECT BIN_TO_UUID(owner_entity_id) entityId,COALESCE(SUM(quantity),0) quantity
+       FROM emergent_inventory WHERE simulation_id=UUID_TO_BIN(?)
+         AND owner_entity_id IN (${placeholders}) AND good_code='FOOD'
+       GROUP BY owner_entity_id`,
+    [simulationId, ...ids]
+  );
+  const personalFoodByEntity = new Map(personalFoodRows.map(row => [String(row.entityId), Number(row.quantity || 0)]));
   for(const id of ids){
     const currentLocation=locationsByEntity.get(id)||null,rawNeeds=needsByEntity.get(id)||[],profile=cognitiveProfiles.get(id)||{mentalState:{currentFocus:null,currentConcern:null,recentThought:null,mentalLoad:.2,rumination:.1,certainty:.5,updatedSimulationAt:null},preferences:[],beliefs:[],knowledge:[],habits:[],plans:[]};
     const needsList=personalizeDecisionNeeds(rawNeeds,traitsByEntity.get(id)||[],profile.habits||[],actionsByEntity.get(id)||[],effectiveSimulationTime);
@@ -420,14 +430,18 @@ async function buildDecisionContexts(simulationId,entityIds=[],simulationTime=nu
     for(const row of resourceKnowledgeRows){const learnedAt=new Date(row.learnedAt).getTime();if(!Number.isFinite(learnedAt)||!Number.isFinite(nowMs)||nowMs-learnedAt>RESOURCE_SEARCH_TTL_MINUTES*60000)continue;const resource=row.content?.resource;const locationId=row.locationId;if(resource&&String(locationId||'')===String(currentLocation?.locationId||''))blockedResources[String(resource).toLowerCase()]=true;}
     const resourceContext={currentLocationId:currentLocation?.locationId||null,currentResources:currentWorldLocation?.resources||{},localResources:currentWorldLocation?.resources||{},blockedResources,nearestResources:{},emergencyResources:[],resourceEmergency:null,marketFoodLocation:null,actions:{}};
     for(const resource of ['water','food'])resourceContext.nearestResources[resource]=findNearestResourceLocation(worldLocations,currentLocation?.locationId,resource,resourceExclusions);
-    if(Number(currentWorldLocation?.resources?.food??0)<1){
-      resourceContext.marketFoodLocation=await findNearestFoodMarket(simulationId,id,worldLocations);
-    }
+    const hasPersonalFood=Number(personalFoodByEntity.get(String(id))||0)>=1;
+     const hungerLevel=Number(needsList.find(item=>normalizeAction(item.code)==="HUNGER")?.value||0);
+     if(!hasPersonalFood&&(Number(currentWorldLocation?.resources?.food??0)<1||hungerLevel>=FOOD_PURCHASE_MIN_HUNGER)){
+       resourceContext.marketFoodLocation=await findNearestFoodMarket(simulationId,id,worldLocations);
+     }
     const resourceEmergencyCandidates=[];for(const item of worldLocations)for(const[resource,emergency] of Object.entries(item.resourceEmergencies||{})){const activeUntil=new Date(emergency?.activeUntil||0).getTime(),triggeredAt=new Date(emergency?.triggeredAt||0).getTime(),now=new Date(effectiveSimulationTime).getTime();if(emergency?.active===true&&Number.isFinite(activeUntil)&&Number.isFinite(triggeredAt)&&Number.isFinite(now)&&now>=triggeredAt&&now<=activeUntil)resourceEmergencyCandidates.push({resource:String(resource).toLowerCase(),locationId:item.locationId,reason:emergency.reason||null,triggeredAt:emergency.triggeredAt||null,activeUntil:emergency.activeUntil||null,reserve:Number(emergency.reserve)||null});}
     resourceContext.emergencyResources=resourceEmergencyCandidates;for(const resource of ['water','food']){const required=resource==='water'?1:1,localAvailable=Number(currentWorldLocation?.resources?.[resource]??0),emergency=resourceEmergencyCandidates.find(item=>item.resource===resource);resourceContext.actions[resource==='water'?'DRINKING':'EATING']={resource,required,localAvailable,locallyAvailable:localAvailable>=required,recentlyBlocked:Boolean(blockedResources[resource]),nearestLocation:resourceContext.nearestResources[resource]||null,emergency:emergency||null};}
     resourceContext.resourceEmergency=resourceEmergencyCandidates.find(item=>item.resource==='water')||resourceEmergencyCandidates.find(item=>item.resource==='food')||null;
     const dynamicActivities=capabilitiesByEntity.get(id)||[];
-    const availableActivities=[...new Map([...globalActivityCatalog,...dynamicActivities].map(activity=>[activity.code,activity])).values()];
+     const nearestFoodLocation=resourceContext.nearestResources.food||null;
+     const localFoodAvailable=Number(currentWorldLocation?.resources?.food??0);
+     const availableActivities=buildDecisionActivities(globalActivityCatalog,dynamicActivities,{marketFoodLocation:resourceContext.marketFoodLocation,nearestFoodLocation,localFoodAvailable,hasPersonalFood,hungerLevel});
     let candidates=availableActivities.map(activity=>({
       action:activity.code,
       score:ACTIONS.includes(activity.code)?scoreAction(activity.code,needsList,traitsByEntity.get(id)||[],resourceContext):scoreDynamicActivity(activity,needsList,traitsByEntity.get(id)||[]),
@@ -437,8 +451,12 @@ async function buildDecisionContexts(simulationId,entityIds=[],simulationTime=nu
     }));
     candidates=candidates.map(c=>({...c,score:Number(c.score||0)+cognitiveDecisionModifier(profile,c.action)+Math.max(-MAX_EXPERIENCE_SCORE_EFFECT,Math.min(MAX_EXPERIENCE_SCORE_EFFECT,cognitiveExperienceModifier(profile,c.action,{locationType:currentLocation?.locationType,locationId:currentLocation?.locationId,simulationTime:effectiveSimulationTime})))+activityDiversityBonus(c.action,(actionsByEntity.get(id)||[]).map(row=>row.actionType))}));
     candidates=applyIndividualityBias(candidates,id);candidates=applyPlanBias(candidates,profile.plans);candidates=applyRecentActionPenalty(candidates,(actionsByEntity.get(id)||[]).map(row=>row.actionType));candidates=applyLocationBias(candidates,currentLocation);candidates=applyResourceRoutingBias(candidates,resourceContext,needsList);candidates=applySleepLocationPreference(candidates,{worldLocations,currentLocationId:currentLocation?.locationId||null,context:{goals:goalsByEntity.get(id)||[],activeGoal:(goalsByEntity.get(id)||[]).find(goal=>String(goal.status||'').toUpperCase()==='ACTIVE')||null}});candidates=applyRecoveryBlocks(candidates,recoveryBlocks,criticalProtectedActions(needsList,resourceContext,{entityId:id,recentActions:actionsByEntity.get(id)||[],simulationTime:effectiveSimulationTime}));candidates=applyWanderingGuard(candidates,needsList);
+     candidates=applyEconomicOpportunityBias(candidates,needsList,{
+       marketFoodLocation:resourceContext.marketFoodLocation,nearestFoodLocation:resourceContext.nearestResources.food||null,
+       localFoodAvailable:Number(currentWorldLocation?.resources?.food??0),hasPersonalFood,recentActions:actionsByEntity.get(id)||[]
+     });
     candidates.sort((a,b)=>Number(b.score||0)-Number(a.score||0));
-    contexts.set(id,{entityId:id,simulationTime:effectiveSimulationTime,needs:needsList,traits:traitsByEntity.get(id)||[],goals:goalsByEntity.get(id)||[],location:currentLocation,worldLocations,recentActions:actionsByEntity.get(id)||[],recentInterruptions:interruptionsByEntity.get(id)||[],recentSocialTargets,recentSocialTargetCounts,recoveryBlocks,resourceContext,dynamicActivities,activityTypes:availableActivities,cognitiveProfile:profile,needPriority:needPriorityState(needsList),allowedActionTypes:availableActivities.map(activity=>activity.code),candidates});
+    contexts.set(id,{entityId:id,simulationTime:effectiveSimulationTime,needs:needsList,traits:traitsByEntity.get(id)||[],goals:goalsByEntity.get(id)||[],location:currentLocation,worldLocations,recentActions:actionsByEntity.get(id)||[],recentInterruptions:interruptionsByEntity.get(id)||[],recentSocialTargets,recentSocialTargetCounts,recoveryBlocks,resourceContext,dynamicActivities,activityTypes:availableActivities,cognitiveProfile:profile,needPriority:needPriorityState(needsList),hasPersonalFood,allowedActionTypes:availableActivities.map(activity=>activity.code),candidates});
   }
   return contexts;
 }
@@ -447,8 +465,39 @@ const cognitiveProfile=await getCognitiveProfile(simulationId,entityId);
 needs=personalizeDecisionNeeds(needs,traits,cognitiveProfile.habits||[],recentActions,effectiveSimulationTime);
 const dynamicActivities=(await loadCapabilitiesForEntities(simulationId,[entityId])).get(String(entityId))||[];
 const activityCatalog=await loadActivityCatalog();
-const availableActivities=[...new Map([...activityCatalog,...dynamicActivities].map(activity=>[activity.code,activity])).values()];
-const recoveryBlocks=activeRecoveryBlocks(recentInterruptions,needs),recentSocialTargets=recentSocialInteractions.map(row=>row.targetEntityId).filter(Boolean),recentSocialTargetCounts=recentSocialTargets.reduce((counts,id)=>{counts[id]=(counts[id]||0)+1;return counts;},{}),excludedLocationIds=[];for(const plan of cognitiveProfile.plans||[])for(const id of plan.strategy?.avoidLocationIds||[])if(id&&!excludedLocationIds.includes(id))excludedLocationIds.push(id);const resourceExclusions=criticalResourceNeedState(needs,{entityId,recentActions,simulationTime:effectiveSimulationTime})?[]:excludedLocationIds;const resourceContext=await loadResourceContext(simulationId,entityId,currentLocation,effectiveSimulationTime,resourceExclusions);let candidates=availableActivities.map(activity=>({action:activity.code,score:ACTIONS.includes(activity.code)?scoreAction(activity.code,needs,traits,resourceContext):scoreDynamicActivity(activity,needs,traits),dynamic:!ACTIONS.includes(activity.code),activityDefinition:activity,targetLocationId:activity.parameters?.targetLocationId||activity.locationId||null}));candidates=candidates.map(c=>({...c,score:Number(c.score||0)+cognitiveDecisionModifier(cognitiveProfile,c.action)+Math.max(-MAX_EXPERIENCE_SCORE_EFFECT,Math.min(MAX_EXPERIENCE_SCORE_EFFECT,cognitiveExperienceModifier(cognitiveProfile,c.action,{locationType:currentLocation?.locationType,locationId:currentLocation?.locationId,simulationTime:effectiveSimulationTime})))+activityDiversityBonus(c.action,recentActions.map(r=>r.actionType))}));candidates=applyIndividualityBias(candidates,entityId);candidates=applyPlanBias(candidates,cognitiveProfile.plans);candidates=applyRecentActionPenalty(candidates,recentActions.map(r=>r.actionType));candidates=applyLocationBias(candidates,currentLocation);candidates=applyResourceRoutingBias(candidates,resourceContext,needs);candidates=applyRecoveryBlocks(candidates,recoveryBlocks,criticalProtectedActions(needs,resourceContext,{entityId,recentActions,simulationTime:effectiveSimulationTime}));candidates=applyWanderingGuard(candidates,needs);candidates.sort((a,b)=>Number(b.score||0)-Number(a.score||0));const needPriority=needPriorityState(needs);return{entityId,simulationTime:effectiveSimulationTime,needs,traits,goals,location:currentLocation,recentActions:recentActions,recentInterruptions:recentInterruptions.map(row=>({...row,result:parseJson(row.result,{})})),recentSocialTargets,recentSocialTargetCounts,recoveryBlocks,resourceContext,dynamicActivities,activityTypes:availableActivities,cognitiveProfile,needPriority,allowedActionTypes:availableActivities.map(activity=>activity.code),candidates};}
+const recoveryBlocks=activeRecoveryBlocks(recentInterruptions,needs);
+const recentSocialTargets=recentSocialInteractions.map(row=>row.targetEntityId).filter(Boolean);
+const recentSocialTargetCounts=recentSocialTargets.reduce((counts,id)=>{counts[id]=(counts[id]||0)+1;return counts;},{});
+const excludedLocationIds=[];
+for(const plan of cognitiveProfile.plans||[])for(const id of plan.strategy?.avoidLocationIds||[])if(id&&!excludedLocationIds.includes(id))excludedLocationIds.push(id);
+const resourceExclusions=criticalNeedState(needs,{entityId,recentActions,simulationTime:effectiveSimulationTime})?[]:excludedLocationIds;
+const resourceContext=await loadResourceContext(simulationId,entityId,currentLocation,effectiveSimulationTime,resourceExclusions);
+const worldLocations=resourceContext.worldLocations||[];
+delete resourceContext.worldLocations;
+const [personalFoodRows]=await pool.query(\`SELECT COALESCE(SUM(quantity),0) quantity FROM emergent_inventory WHERE simulation_id=UUID_TO_BIN(?) AND owner_entity_id=UUID_TO_BIN(?) AND good_code='FOOD'\`,[simulationId,entityId]);
+const hasPersonalFood=Number(personalFoodRows[0]?.quantity||0)>=1;
+const hungerLevel=Number(needs.find(item=>normalizeAction(item.code)==="HUNGER")?.value||0);
+if(!hasPersonalFood&&(Number(resourceContext.localResources?.food??0)<1||hungerLevel>=FOOD_PURCHASE_MIN_HUNGER)){
+  resourceContext.marketFoodLocation=await findNearestFoodMarket(simulationId,entityId,worldLocations);
+}
+const nearestFoodLocation=resourceContext.nearestResources.food||null;
+const localFoodAvailable=Number(resourceContext.localResources?.food??0);
+const availableActivities=buildDecisionActivities(activityCatalog,dynamicActivities,{marketFoodLocation:resourceContext.marketFoodLocation,nearestFoodLocation,localFoodAvailable,hasPersonalFood,hungerLevel});
+let candidates=availableActivities.map(activity=>({action:activity.code,score:ACTIONS.includes(activity.code)?scoreAction(activity.code,needs,traits,resourceContext):scoreDynamicActivity(activity,needs,traits),dynamic:!ACTIONS.includes(activity.code),activityDefinition:activity,targetLocationId:activity.parameters?.targetLocationId||activity.locationId||null}));
+candidates=candidates.map(candidate=>({...candidate,score:Number(candidate.score||0)+cognitiveDecisionModifier(cognitiveProfile,candidate.action)+Math.max(-MAX_EXPERIENCE_SCORE_EFFECT,Math.min(MAX_EXPERIENCE_SCORE_EFFECT,cognitiveExperienceModifier(cognitiveProfile,candidate.action,{locationType:currentLocation?.locationType,locationId:currentLocation?.locationId,simulationTime:effectiveSimulationTime})))+activityDiversityBonus(candidate.action,recentActions.map(row=>row.actionType))}));
+candidates=applyIndividualityBias(candidates,entityId);
+candidates=applyPlanBias(candidates,cognitiveProfile.plans);
+candidates=applyRecentActionPenalty(candidates,recentActions.map(row=>row.actionType));
+candidates=applyLocationBias(candidates,currentLocation);
+candidates=applyResourceRoutingBias(candidates,resourceContext,needs);
+candidates=applySleepLocationPreference(candidates,{worldLocations,currentLocationId:currentLocation?.locationId||null,context:{goals,activeGoal:goals.find(goal=>String(goal.status||"").toUpperCase()==="ACTIVE")||null}});
+candidates=applyRecoveryBlocks(candidates,recoveryBlocks,criticalProtectedActions(needs,resourceContext,{entityId,recentActions,simulationTime:effectiveSimulationTime}));
+candidates=applyWanderingGuard(candidates,needs);
+candidates=applyEconomicOpportunityBias(candidates,needs,{marketFoodLocation:resourceContext.marketFoodLocation,nearestFoodLocation,localFoodAvailable,hasPersonalFood,recentActions});
+candidates.sort((a,b)=>Number(b.score||0)-Number(a.score||0));
+const needPriority=needPriorityState(needs);
+return {entityId,simulationTime:effectiveSimulationTime,needs,traits,goals,location:currentLocation,recentActions,recentInterruptions:recentInterruptions.map(row=>({...row,result:parseJson(row.result,{})})),recentSocialTargets,recentSocialTargetCounts,recoveryBlocks,resourceContext,dynamicActivities,activityTypes:availableActivities,cognitiveProfile,needPriority,hasPersonalFood,allowedActionTypes:availableActivities.map(activity=>activity.code),candidates};
+}
 function rebuildDecisionCandidates(context={},entityId,needs=context?.needs||[]){
   const traits=context.traits||[],profile=context.cognitiveProfile||{},resourceContext=context.resourceContext||{},recentActions=Array.isArray(context.recentActions)?context.recentActions.map(item=>item?.actionType||item):[];
   const availableActivities=context.activityTypes||[...ACTIONS.map(code=>({code})),...(context.dynamicActivities||[])];
@@ -456,8 +505,13 @@ function rebuildDecisionCandidates(context={},entityId,needs=context?.needs||[])
   candidates=candidates.map(c=>({...c,score:Number(c.score||0)+cognitiveDecisionModifier(profile,c.action)+Math.max(-MAX_EXPERIENCE_SCORE_EFFECT,Math.min(MAX_EXPERIENCE_SCORE_EFFECT,cognitiveExperienceModifier(profile,c.action,{locationType:context.location?.locationType,locationId:context.location?.locationId,simulationTime:context.simulationTime})))+activityDiversityBonus(c.action,recentActions)}));
   candidates=applyIndividualityBias(candidates,entityId);candidates=applyPlanBias(candidates,profile.plans);candidates=applyRecentActionPenalty(candidates,recentActions);candidates=applyLocationBias(candidates,context.location);candidates=applyResourceRoutingBias(candidates,resourceContext,needs);candidates=applySleepLocationPreference(candidates,{worldLocations:context.worldLocations||[],currentLocationId:context.location?.locationId||null,context});
   const recoveryBlocks=Array.isArray(context.recoveryBlocks)?context.recoveryBlocks:activeRecoveryBlocks(context.recentInterruptions||[],needs);
+  candidates=applyRecoveryBlocks(candidates,recoveryBlocks,criticalProtectedActions(needs,resourceContext,{entityId,recentActions,simulationTime:context.simulationTime||null}));
+  candidates=applyEconomicOpportunityBias(candidates,needs,{
+    marketFoodLocation:resourceContext.marketFoodLocation,nearestFoodLocation:resourceContext.nearestResources?.food||null,
+    localFoodAvailable:Number(resourceContext.localResources?.food??0),hasPersonalFood:Boolean(context.hasPersonalFood),recentActions
+  });
   candidates.sort((a,b)=>Number(b.score||0)-Number(a.score||0));
-  return applyRecoveryBlocks(candidates,recoveryBlocks,criticalProtectedActions(needs,resourceContext,{entityId,recentActions,simulationTime:context.simulationTime||null}));
+  return candidates;
 }
 function calibratedSuccessProbability({action,candidates=[],context={}}={}){
   const normalized=normalizeAction(action);
@@ -920,6 +974,23 @@ function resolveCriticalResourceRecovery(context = {}) {
       selectedAction: "WALKING",
       emergency
     };
+  }
+
+  const marketFoodLocation = critical.code === "HUNGER" ? resourceContext.marketFoodLocation : null;
+  if (marketFoodLocation?.locationId) {
+    const marketLocationId = String(marketFoodLocation.locationId);
+    if (String(resourceContext.currentLocationId || "") === marketLocationId) {
+      const buyCandidate = candidates.find(candidate => normalizeAction(candidate.action) === "BUY_FOOD");
+      if (buyCandidate) return { critical, mode: "DIRECT",
+        candidate: { ...buyCandidate, targetLocationId: marketLocationId, recoveryBlocked: false, wanderingBlocked: false, criticalRecovery: true },
+        selectedAction: "BUY_FOOD" };
+    } else {
+      const candidate = walkingCandidate ? { ...walkingCandidate, recoveryBlocked: false, recoveryBlock: null, criticalRecovery: true } : { action: "WALKING", score: 0, criticalRecovery: true };
+      candidate.targetLocationId = marketLocationId;
+      candidate.resourceIntent = { ...(candidate.resourceIntent || {}), resource: "food", reason: "CRITICAL_NEED_MARKET_RECOVERY",
+        destinationLocationId: marketLocationId, expectedTravelMinutes: Number.isFinite(Number(marketFoodLocation.travelMinutes)) ? Number(marketFoodLocation.travelMinutes) : null };
+      return { critical, mode: "ROUTING", candidate, selectedAction: "WALKING" };
+    }
   }
 
   throw Object.assign(

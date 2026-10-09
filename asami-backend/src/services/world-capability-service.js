@@ -176,8 +176,8 @@ async function ensureCapabilitiesForEmergentStructures(simulationId, simulationT
               ...activityRow,
               parameters: {
                 ...(typeof activityRow.parameters === "object" ? activityRow.parameters : {}),
-                targetLocationId: row.entityId,
-                destinationLocationId: row.entityId,
+                targetLocationId: row.scopeLocationId,
+                destinationLocationId: row.scopeLocationId,
                 emergentStructureId: row.entityId
               }
             }
@@ -270,8 +270,8 @@ async function ensureCapabilitiesForEmergentStructures(simulationId, simulationT
                   durationMinutes: 25,
                   economicType: "BUY_GOOD",
                   goodCode: normalize(good.code),
-                  targetLocationId: row.entityId,
-                  destinationLocationId: row.entityId,
+                  targetLocationId: row.scopeLocationId,
+                  destinationLocationId: row.scopeLocationId,
                   emergentStructureId: row.entityId
                 }
               : {
@@ -282,8 +282,8 @@ async function ensureCapabilitiesForEmergentStructures(simulationId, simulationT
                   durationMinutes: 20,
                   economicType: "SELL_GOOD",
                   goodCode: normalize(good.code),
-                  targetLocationId: row.entityId,
-                  destinationLocationId: row.entityId,
+                  targetLocationId: row.scopeLocationId,
+                  destinationLocationId: row.scopeLocationId,
                   emergentStructureId: row.entityId
                 };
             if (await ensureCapability({
@@ -326,8 +326,8 @@ async function ensureCapabilitiesForEmergentStructures(simulationId, simulationT
           category: DEFAULTS.WORK_JOB.category,
           parameters: {
             ...DEFAULTS.WORK_JOB,
-            targetLocationId: row.entityId,
-            destinationLocationId: row.entityId,
+            targetLocationId: row.scopeLocationId,
+            destinationLocationId: row.scopeLocationId,
             emergentStructureId: row.entityId
           }
         },
